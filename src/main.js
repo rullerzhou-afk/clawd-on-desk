@@ -100,6 +100,9 @@ const { createRecapRuntime } = require("./recap-runtime");
 const { createKimiQuotaClient } = require("./kimi-quota-client");
 const { createKimiQuotaCredentialStore } = require("./kimi-quota-credential-store");
 const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
+const { createDeepseekBalanceClient } = require("./deepseek-balance-client");
+const { createDeepseekBalanceCredentialStore } = require("./deepseek-balance-credential-store");
+const { createDeepseekBalanceRuntime } = require("./deepseek-balance-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
@@ -130,6 +133,7 @@ const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
+const { createClaudeTurnAskReminder, reminderDelayMsFromMinutes } = require("./claude-turn-ask-reminder");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const telegramApprovalSettings = require("./telegram-approval-settings");
@@ -201,12 +205,14 @@ const { createDisplayedVisualProjection } = require("./displayed-visual-projecti
 const { getRightSideMirrorFiles, isVisualMirrored, resolveMirroredFile } = require("./mirrored-files");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
+const { createMeetingModeController } = require("./meeting-mode");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
   mergeSessionFocusEntry,
 } = require("./session-focus");
 const { focusCodexThreadTarget, focusDshDesktopTarget } = require("./session-focus-handoff");
+const { publishDshFocus } = require("./dsh-focus-stream");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
 const { createSessionHistoryRuntime } = require("./session-history-runtime");
@@ -358,6 +364,7 @@ const {
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
+const { effectiveClaudeConfigDirs, claudeConfigDirKey } = require("../hooks/claude-config-dirs");
 const { createCodexAutoStartGateEvaluator } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
@@ -463,6 +470,12 @@ function _getAgentIntegrationOptions(agentId) {
   return options;
 }
 
+function _getClaudeConfigDirEntries() {
+  const agents = _settingsController && _settingsController.get("agents");
+  const entry = agents && agents["claude-code"];
+  return entry && Array.isArray(entry.configDirs) ? entry.configDirs : [];
+}
+
 function _resolveAgentDisplayName(agentId) {
   return resolveAgentDisplayName(agentId, _settingsController.get("customApplications"));
 }
@@ -495,6 +508,7 @@ function _restartClawdNow() {
 
 let shortcutRuntime = null;
 let themeRuntime = null;
+let systemThemeAppearanceHandler = null;
 // Official downloadable theme owner (created after the settings controller).
 let officialThemeMain = null;
 let agentRuntime = null;
@@ -564,10 +578,12 @@ const _settingsController = createSettingsController({
       },
     }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
+    installClaudeConfigDir: (dir) => _server.installClaudeConfigDir(dir),
+    uninstallClaudeConfigDir: (dir) => _server.uninstallClaudeConfigDir(dir),
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
-    startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
+    startMonitorForAgent: (id, intent) => agentRuntime && agentRuntime.startMonitorForAgent(id, intent),
     stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
     syncIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.syncIntegrationForAgent(id, options) : false,
@@ -601,7 +617,12 @@ const _settingsController = createSettingsController({
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
     clearSessionAutomationByAgent: (id) =>
       sessionAutomationCoordinator ? sessionAutomationCoordinator.clearAgent(id) : [],
-    dismissPermissionsByAgent: (id, options) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0,
+    dismissPermissionsByAgent: (id, options) => {
+      if (id === "codex" && !(options && options.subagentOnly) && _codexRemoteFallbackNotice) {
+        _codexRemoteFallbackNotice.clearAll("codex-permissions-disabled");
+      }
+      return agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0;
+    },
     clearRecentHookEvents: (id) => _server.clearRecentHookEvents(id),
     identifyCustomApplication: (sourcePath) => require("./custom-applications").identifyCustomApplication(sourcePath),
     resizePet: _deferredResizePet,
@@ -686,6 +707,21 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
 _settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
+});
+
+function _claudeConfigDirWatcherKey(agents) {
+  const entries = agents && agents["claude-code"] && agents["claude-code"].configDirs;
+  const dirs = effectiveClaudeConfigDirs(entries).map(({ dir }) => claudeConfigDirKey(dir));
+  return JSON.stringify(dirs.sort());
+}
+let _lastClaudeConfigDirWatcherKey = _claudeConfigDirWatcherKey(_settingsController.get("agents"));
+_settingsController.subscribeKey("agents", (agents) => {
+  if (_settingsController.isLocked()) return;
+  const key = _claudeConfigDirWatcherKey(agents);
+  if (key === _lastClaudeConfigDirWatcherKey) return;
+  // Advance the baseline only after sync succeeds so a failure can be retried.
+  _server.syncClaudeConfigDirWatchers();
+  _lastClaudeConfigDirWatcherKey = key;
 });
 let _remoteSshInstallationIdentity = null;
 let _remoteSshInstallationIdentityPromise = null;
@@ -883,6 +919,7 @@ themeRuntime = createThemeRuntime({
   getMiniRuntime: () => _mini,
   getAnimationOverridesRuntime: () => animationOverridesMain,
   getFadeSequencer: () => themeFadeSequencer,
+  getSystemPrefersDark: () => nativeTheme.shouldUseDarkColors === true,
   getPetWindowBounds,
   applyPetWindowBounds,
   computeFinalDragBounds,
@@ -1404,8 +1441,10 @@ let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
 let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
+let quotaRingShownProviders = _settingsController.get("quotaRingShownProviders");
 let quotaRingHiddenProviders = _settingsController.get("quotaRingHiddenProviders");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
+let deepseekBalanceCollectionEnabled = _settingsController.get("deepseekBalanceCollectionEnabled");
 let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
@@ -1555,6 +1594,12 @@ function prepManualPetVisibility() {
 }
 function togglePetVisibility() {
   prepManualPetVisibility();
+  // #1382: during meeting mode the pet is hidden on purpose, so the toggle
+  // means "show it": end the meeting, then apply the user's show intent to
+  // clear fullscreen auto-hide too (the meeting's own restore preserves it).
+  if (meetingMode.noteUserOverride("pet-shown")) {
+    return petWindowRuntime.setPetHidden(false);
+  }
   return petWindowRuntime.togglePetVisibility();
 }
 // Explicit-direction variant for the menus: the Show/Hide Pet items apply the
@@ -1563,9 +1608,13 @@ function togglePetVisibility() {
 // action (see menu.js).
 function setPetVisibility(visible) {
   prepManualPetVisibility();
+  if (visible) meetingMode.noteUserOverride("pet-shown");
   return petWindowRuntime.setPetHidden(!visible);
 }
 function bringPetToPrimaryDisplay() {
+  if (petWindowRuntime.isPetEffectivelyHidden() && !_mini.getMiniMode() && !_mini.getMiniTransitioning()) {
+    meetingMode.noteUserOverride("pet-shown");
+  }
   prepManualPetVisibility();
   return petWindowRuntime.bringPetToPrimaryDisplay();
 }
@@ -1742,6 +1791,46 @@ function broadcastSettingsWindow(channel, payload) {
     if (!settingsWin.webContents || settingsWin.webContents.isDestroyed()) return;
     settingsWin.webContents.send(channel, payload);
   } catch {}
+}
+
+let lastQuotaRingProvidersWindow = null;
+let lastQuotaRingProvidersSignature = null;
+function broadcastQuotaRingProviders(snapshot) {
+  const settingsWin = getSettingsWindow();
+  if (!settingsWin || settingsWin.isDestroyed()
+    || !settingsWin.webContents || settingsWin.webContents.isDestroyed()) {
+    lastQuotaRingProvidersWindow = null;
+    lastQuotaRingProvidersSignature = null;
+    return;
+  }
+  const providers = _ringGeom.listQuotaRingProviders(
+    snapshot, quotaRingHiddenProviders, quotaRingShownProviders
+  );
+  const signature = JSON.stringify(providers);
+  if (settingsWin === lastQuotaRingProvidersWindow
+    && signature === lastQuotaRingProvidersSignature) return;
+  broadcastSettingsWindow("settings:quota-ring-providers-changed", providers);
+  lastQuotaRingProvidersWindow = settingsWin;
+  lastQuotaRingProvidersSignature = signature;
+}
+
+let lastDeepseekBalanceStatusWindow = null;
+let lastDeepseekBalanceStatusSignature = null;
+function broadcastDeepseekBalanceStatus() {
+  const settingsWin = getSettingsWindow();
+  if (!settingsWin || settingsWin.isDestroyed()
+      || !settingsWin.webContents || settingsWin.webContents.isDestroyed()) {
+    lastDeepseekBalanceStatusWindow = null;
+    lastDeepseekBalanceStatusSignature = null;
+    return;
+  }
+  const status = _deepseekBalanceRuntime.getStatus();
+  const signature = JSON.stringify(status);
+  if (settingsWin === lastDeepseekBalanceStatusWindow
+      && signature === lastDeepseekBalanceStatusSignature) return;
+  broadcastSettingsWindow("settings:deepseek-balance-status-changed", status);
+  lastDeepseekBalanceStatusWindow = settingsWin;
+  lastDeepseekBalanceStatusSignature = signature;
 }
 
 function getThemeSoundPreloadUrls() {
@@ -2133,7 +2222,13 @@ const refreshPermissionPresentation = require("./permission-presentation-refresh
   getStateRuntime: () => _state,
   isDisposed: () => isQuitting,
 });
+const createCodexRemoteFallbackNotice = require("./codex-remote-fallback-notice");
+const {
+  isCodexRemoteFallbackSuppressed: isRemoteFallbackSuppressed,
+} = createCodexRemoteFallbackNotice;
+let _codexRemoteFallbackNotice = null;
 const _permCtx = {
+  getClaudeConfigDirs: () => effectiveClaudeConfigDirs(_getClaudeConfigDirEntries()),
   onPermissionsChanged: refreshPermissionPresentation,
   get win() { return win; },
   get lang() { return lang; },
@@ -2256,16 +2351,50 @@ const _permCtx = {
       try { client.notifyPermissionRequest(payload, options); } catch {}
     }
   },
+  notifyCodexRemoteFallback: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
+  ),
+  onCodexRemoteFallbackCardDismissed: (sessionId, entry) => (
+    _codexRemoteFallbackNotice
+      ? _codexRemoteFallbackNotice.noteCardDismissed(sessionId, entry)
+      : false
+  ),
 };
 const _perm = initPermission(_permCtx);
 permissionPresentationRuntime = _perm;
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, wouldAutoAllowPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, wouldAutoAllowPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showClaudeTurnAskBubble, clearClaudeTurnAskBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
+
+_codexRemoteFallbackNotice = createCodexRemoteFallbackNotice({
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle),
+  isSuppressed: () => isQuitting || isRemoteFallbackSuppressed(_permCtx),
+  show: (payload) => callRuntimeMethod(_perm, "showCodexRemoteFallbackNotice", payload),
+  refresh: (entry, payload) => callRuntimeMethod(_perm, "refreshCodexRemoteFallbackNotice", entry, payload),
+  dismiss: (entry, reason) => callRuntimeMethod(_perm, "dismissCodexRemoteFallbackNotice", entry, reason),
+  log: (message) => permLog(message),
+});
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
 let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
 let recordWindowsProcessChainShadow = () => false;
+
+// #1326 follow-up: re-show an unanswered Claude Desktop wrap_up question (with
+// a sound) once it has waited the configured minutes, if the user opted in.
+// Created before _stateCtx so onSessionDeleted can resolve it. The minutes are
+// read when a question starts waiting; the switch, the agent gate and the
+// live-session check are read again when the timer fires.
+const claudeTurnAskReminder = createClaudeTurnAskReminder({
+  isEnabled: () => _settingsController.get("claudeTurnAskReminder") === true,
+  canRemind: (payload) => _runtimeAgentGate.isAgentEnabled("claude-code")
+    && sessions.has(payload.sessionId),
+  getDelayMs: () => reminderDelayMsFromMinutes(_settingsController.get("claudeTurnAskReminderMinutes")),
+  onRemind: (payload) => {
+    if (showClaudeTurnAskBubble(payload)) playSound("confirm");
+  },
+});
+app.on("will-quit", () => claudeTurnAskReminder.dispose());
 
 function getPendingPermissionFocusEntry(sessionId) {
   const id = String(sessionId || "");
@@ -2435,6 +2564,7 @@ const _stateCtx = {
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
   recapSink: recapRuntime,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
+  get deepseekBalanceCollectionEnabled() { return deepseekBalanceCollectionEnabled; },
   get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
@@ -2462,7 +2592,10 @@ const _stateCtx = {
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
-  dismissPermissionsForDnd: (...args) => _perm.dismissPermissionsForDnd(...args),
+  dismissPermissionsForDnd: (...args) => {
+    if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.invalidateAll("dnd-enabled");
+    return _perm.dismissPermissionsForDnd(...args);
+  },
   showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
   clearKimiNotifyBubbles: (...args) => clearKimiNotifyBubbles(...args),
   // state.js needs this to gate startKimiPermissionPoll symmetrically with
@@ -2487,6 +2620,7 @@ const _stateCtx = {
     reconcilePowerSaveBlocker();
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
+    broadcastQuotaRingProviders(snapshot);
     repositionFloatingBubbles();
     // R1a: best-effort completion notifications. Must never throw or block the
     // broadcast — the companion computes synchronously and fires sends async.
@@ -2543,10 +2677,20 @@ const _stateCtx = {
     && telegramDirectSend.hasReplyableCompletionMapping(sessionId, session)
   ),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
+  getClaudeConfigDirs: () => effectiveClaudeConfigDirs(_getClaudeConfigDirEntries()),
   getSessionAutomationRecords: () =>
     sessionAutomationStore ? sessionAutomationStore.list() : [],
   getPermissionAutomationMode: () =>
     _settingsController.get("permissionAutomationMode") || "off",
+  getKiroDesktopPendingSessionIds: () => agentRuntime?.getKiroDesktopPendingSessionIds() || new Set(),
+  getCopilotTerminalWaitSessionIds: () => agentRuntime?.getCopilotTerminalWaitSessionIds() || new Set(),
+  hasPendingClaudeTurnAskReminder: (sessionId) => claudeTurnAskReminder.isPending(sessionId),
+  onSessionDeleted: (sessionId) => {
+    agentRuntime?.clearKiroDesktopSession(sessionId);
+    agentRuntime?.clearCopilotTerminalWaitSession(sessionId);
+    claudeTurnAskReminder.resolve(sessionId);
+  },
+  resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   onSessionAutomationLifecycleEnd: (payload) => {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
   },
@@ -2589,6 +2733,22 @@ displayedVisualProjection = createDisplayedVisualProjection({
     petWindowRuntime.reloadWindowWebContents(win);
   },
 });
+const _deepseekBalanceRuntime = createDeepseekBalanceRuntime({
+  credentialStore: createDeepseekBalanceCredentialStore({ safeStorage }),
+  client: createDeepseekBalanceClient(),
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  setCollectionEnabled: (enabled) => _settingsController.applyCommand(
+    "setDeepseekBalanceCollectionEnabled", { enabled }
+  ),
+  commitLocalDeepseekQuota: (quota) => _state.commitLocalDeepseekQuota(quota),
+  clearLocalDeepseekQuota: () => _state.clearLocalDeepseekQuota(),
+  onStatusChanged: () => broadcastDeepseekBalanceStatus(),
+});
+_settingsController.subscribeKey("deepseekBalanceCollectionEnabled", () => {
+  _deepseekBalanceRuntime.onSettingsChanged();
+});
+_settingsController.subscribeKey("agents", () => _deepseekBalanceRuntime.onSettingsChanged());
+app.on("before-quit", () => _deepseekBalanceRuntime.dispose());
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
 const _kimiQuotaRuntime = createKimiQuotaRuntime({
   credentialStore: _kimiQuotaCredentialStore,
@@ -2618,10 +2778,39 @@ const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride
         startStartupRecovery: _startStartupRecovery } = _state;
 const sessions = _state.sessions;
 
-function disableDoNotDisturb() {
+function disableDoNotDisturbAndObserveQuota() {
   const result = disableDoNotDisturbState();
   quotaAlertsRuntime?.observeQuota();
   return result;
+}
+
+// #1382: meeting mode drives the manual pet hide and DND. Its own restore
+// calls the raw setters below; the user-facing setters above end the meeting
+// first when the user shows the pet or wakes Clawd.
+const meetingMode = createMeetingModeController({
+  hidePet: () => {
+    prepManualPetVisibility();
+    petWindowRuntime.setPetHidden(true);
+  },
+  showPet: () => {
+    prepManualPetVisibility();
+    petWindowRuntime.setPetHidden(false, { keepFullscreenAutoHide: true });
+  },
+  isBusy: () => _mini.getMiniTransitioning(),
+  isPetHidden: () => petWindowRuntime.isPetHidden(),
+  enableDnd: () => enableDoNotDisturb(),
+  disableDnd: () => disableDoNotDisturbAndObserveQuota(),
+  isDnd: () => doNotDisturb,
+  onChange: () => {
+    buildTrayMenu();
+    buildContextMenu();
+  },
+  log: (message) => console.log(`Clawd: ${message}`),
+});
+
+function disableDoNotDisturb() {
+  if (meetingMode.noteUserOverride("wake") && !doNotDisturb) return undefined;
+  return disableDoNotDisturbAndObserveQuota();
 }
 
 function showQuotaAlert(event) {
@@ -2678,7 +2867,7 @@ sessionAutomationCoordinator = createSessionAutomationCoordinator({
 // (kept as a pure helper so the semantics are unit-tested).
 let powerSaveBlockerId = null;
 function anySessionInProgress() {
-  if (_state.hasActiveCodexSubagents()) return true;
+  if (_state.hasActiveCodexSubagents() || _state.hasActiveQoderSubagents()) return true;
   for (const [, s] of sessions) {
     if (isSessionInProgress(s)) return true;
   }
@@ -2837,6 +3026,7 @@ function focusDashboardSession(sessionId, options = {}) {
       requestSource,
       url: focusTarget.url,
       focusLog,
+      publishDshFocus,
     });
     return true;
   }
@@ -3038,6 +3228,7 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudShowQuota() { return sessionHudShowQuota; },
   get quotaRingDisplayMode() { return quotaRingDisplayMode; },
+  get quotaRingShownProviders() { return quotaRingShownProviders; },
   get quotaRingHiddenProviders() { return quotaRingHiddenProviders; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
@@ -3069,6 +3260,7 @@ agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
+  getKiroDesktopReminderContext: () => _permCtx,
   isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   debugLog: (msg) => sessionLog(msg),
@@ -3119,7 +3311,19 @@ const _serverCtx = {
   shouldSyncAgentIntegration: (agentId) =>
     _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
+  // Extra Claude config folders (prefs.agents["claude-code"].configDirs),
+  // read live so every queued hook task sees the current list.
+  getClaudeConfigDirs: _getClaudeConfigDirEntries,
   isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  notifyCodexRemoteFallback: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
+  ),
+  queueCodexRemoteFallbackForEntry: (entry) => (
+    callRuntimeMethod(_perm, "queueCodexRemoteFallbackForEntry", entry)
+  ),
+  onCodexRemoteStateEvent: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.handleStateEvent(payload) : false
+  ),
   // External review (#995): the route derives the review verdict at accept
   // time, so it needs the same effective-mode and reminder gates the
   // permission runtime uses. Values are read from the shared controller and
@@ -3167,6 +3371,10 @@ const _serverCtx = {
   showCodexUserInputBubble,
   syncPermissionBubbleContent,
   clearCodexUserInputBubbles,
+  showClaudeTurnAskBubble,
+  clearClaudeTurnAskBubbles,
+  trackClaudeTurnAskReminder: (payload) => claudeTurnAskReminder.track(payload),
+  resolveClaudeTurnAskReminder: (sessionId) => claudeTurnAskReminder.resolve(sessionId),
   handleTestResult: (result, context) => handleTestResult(result, context),
   maybeStartRemoteApproval,
   replyOpencodeFamilyPermission,
@@ -3215,6 +3423,7 @@ function ensureMobilePreviewServer() {
     sessions,
     rotationMs: !app.isPackaged ? Number(process.env.CLAWD_MOBILE_ROTATION_MS) : undefined,
     permissionObservation: _perm && _perm.permissionObservation,
+    getLang: () => lang,
     log: (message) => sessionLog(message),
   });
   return _lanWss;
@@ -4721,6 +4930,13 @@ const _menuCtx = {
   set contextMenu(v) { contextMenu = v; },
   enableDoNotDisturb: () => enableDoNotDisturb(),
   disableDoNotDisturb: () => disableDoNotDisturb(),
+  getMeetingMode: () => meetingMode.getState(),
+  startMeetingMode: (minutes) => {
+    // Keep a pre-existing OS hide after the meeting, without unhiding the app.
+    if (macHideController) macHideController.noteManualChange();
+    return meetingMode.start(minutes);
+  },
+  endMeetingMode: () => meetingMode.end("menu"),
   enterMiniViaMenu: () => {
     if (!disableMiniModeCached) enterMiniViaMenu();
   },
@@ -4848,10 +5064,11 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
   quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
-  // Normalized to an array here as well as in prefs: this mirror also takes the
-  // value straight from a settings broadcast, and every consumer indexes it.
+  // Preserve null as automatic mode when mirroring settings broadcasts.
+  quotaRingShownProviders: (v) => { quotaRingShownProviders = Array.isArray(v) ? v : null; },
   quotaRingHiddenProviders: (v) => { quotaRingHiddenProviders = Array.isArray(v) ? v : []; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
+  deepseekBalanceCollectionEnabled: (v) => { deepseekBalanceCollectionEnabled = v; },
   kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
@@ -4925,11 +5142,18 @@ const settingsEffectRouter = createSettingsEffectRouter({
   },
   emitSessionSnapshot: (options) => _state.emitSessionSnapshot(options),
   cleanStaleSessions: () => _state.cleanStaleSessions(),
+  refreshPendingAttention: () => _state.refreshPendingAttention(),
   syncPermissionShortcuts,
   dismissInteractivePermissionBubbles: () => callRuntimeMethod(_perm, "dismissInteractivePermissionBubbles"),
   clearCodexNotifyBubbles,
+  clearCodexRemoteFallbackNotices: (reason) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.clearAll(reason) : 0
+  ),
   clearCodexUserInputBubbles,
+  clearClaudeTurnAskBubbles,
   clearKimiNotifyBubbles,
+  clearKiroDesktopReminderCards: (reason) => agentRuntime?.clearKiroDesktopReminderCards(reason),
+  resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
   refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),
   hideUpdateBubbleForPolicy: () => callRuntimeMethod(_updateBubble, "hideForPolicy"),
@@ -4950,6 +5174,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),
+  syncActiveThemeAppearance: () => themeRuntime.syncActiveThemeAppearance(),
   syncHitWin,
   // #509: re-rest the pet on the newly selected idle visual right away, but
   // only while actually idle — task/sleep/mini states pick it up on their
@@ -5242,7 +5467,8 @@ const settingsIpcRuntime = registerSettingsIpc({
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
   getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
     _state.buildSessionSnapshot(),
-    quotaRingHiddenProviders
+    quotaRingHiddenProviders,
+    quotaRingShownProviders
   ),
   themeLoader,
   codexPetMain,
@@ -5285,6 +5511,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
   kimiQuotaRuntime: _kimiQuotaRuntime,
+  deepseekBalanceRuntime: _deepseekBalanceRuntime,
   checkForUpdates,
   getUpdateCheckSnapshot,
   clearUpdateError,
@@ -5444,6 +5671,7 @@ function createWindow() {
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
     rendererConfigChannel,
+    isQuitting: () => isQuitting,
     guardAlwaysOnTop,
     prepareActivation: (createdHitWin) => (
       _hitWindowActivationRuntime.controller.prepare(createdHitWin)
@@ -5598,6 +5826,9 @@ function createWindow() {
       }
       sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
     }
+    // Restored Qoder rows may predate delegation/archive recognition in
+    // main.sqlite; reconcile them against the native database once on launch.
+    try { agentRuntime?.sweepQoderDesktopSessions?.(); } catch {}
     void _remoteSshIpc.connectOnLaunchProfiles().catch((err) => {
       console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
     });
@@ -5742,6 +5973,10 @@ function computeFinalDragBounds(bounds, size, clampPosition = clampToScreenVisua
 
 // ── Mini Mode — initialized here after state module ──
 const _miniCtx = {
+  isMeetingModeActive: () => meetingMode.isActive(),
+  applyDndSleepState: () => _state.applyDndSleepState(),
+  hasPendingReminderAttention: () => _state.hasPendingReminderAttention(),
+  getReminderReselectionOptions: (state) => _state.getReminderReselectionOptions(state),
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get currentSize() { return currentSize; },
@@ -6024,10 +6259,11 @@ if (!gotTheLock) {
   _syncCodexAutoStartGate(startupGateSnapshot, "startup");
   app.on("second-instance", (_event, commandLine) => {
     if (petWindowRuntime.isPetEffectivelyHidden()) {
+      meetingMode.noteUserOverride("pet-shown");
       prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
-      if (win) {
+      if (win && !win.isDestroyed()) {
         win.showInactive();
         keepOutOfTaskbar(win);
       }
@@ -6198,6 +6434,15 @@ if (!gotTheLock) {
     createWindow();
     try { recapRuntime.start(); }
     catch (err) { console.warn("Clawd: local recap startup failed:", err && err.code ? err.code : "storage-error"); }
+    // nativeTheme reads are only used to pick an appearance, so subscribing
+    // after the pet window exists keeps startup free of extra reloads. The
+    // first did-finish-load repeats the resolution once because the value
+    // read before app.whenReady is not guaranteed on every platform.
+    systemThemeAppearanceHandler = () => themeRuntime.syncActiveThemeAppearance();
+    nativeTheme.on("updated", systemThemeAppearanceHandler);
+    if (win && !win.isDestroyed()) {
+      win.webContents.once("did-finish-load", () => themeRuntime.syncActiveThemeAppearance());
+    }
     // Reconcile the local quota binding only after the app has visible UI.
     // initialize() reads opaque credential metadata but never decrypts the key
     // or performs a network request, so ordinary startup cannot be held behind
@@ -6205,6 +6450,11 @@ if (!gotTheLock) {
     void _kimiQuotaRuntime.initialize().catch((err) => {
       console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
     });
+    void _deepseekBalanceRuntime.initialize().catch(() => {
+      console.warn("Clawd: DeepSeek balance startup reconciliation failed");
+    });
+    powerMonitor.on("suspend", () => _deepseekBalanceRuntime.suspend());
+    powerMonitor.on("resume", () => _deepseekBalanceRuntime.resume());
     notifyPrefsAuthorityFailure();
     if (feishuApprovalMigrationNudge) {
       void feishuApprovalMigrationNudge.sync({ allowNotify: true });
@@ -6243,6 +6493,9 @@ if (!gotTheLock) {
     // timeout (system-wake-recovery.js finishWithTimeout), while un-cloaking is
     // a main-process concern that must not depend on renderer health. The two
     // paths coexist; recoverIfCloaked() is a no-op when nothing is cloaked.
+    // #1382: timers may not advance while the machine sleeps.
+    powerMonitor.on("resume", () => meetingMode.checkExpiry());
+    powerMonitor.on("unlock-screen", () => meetingMode.checkExpiry());
     if (isWin) {
       powerMonitor.on("resume", () => petWindowRuntime.recoverIfCloaked());
       powerMonitor.on("unlock-screen", () => petWindowRuntime.recoverIfCloaked());
@@ -6256,6 +6509,7 @@ if (!gotTheLock) {
         isMac,
         app,
         getShowDock: () => showDock,
+        beforeManualShow: () => meetingMode.noteUserOverride("pet-shown"),
         isPetHidden: () => petWindowRuntime.isPetHidden(),
         setPetHidden: (hidden) => petWindowRuntime.setPetHidden(hidden),
       });
@@ -6289,6 +6543,9 @@ if (!gotTheLock) {
     // agent-gate snapshot — a user who disabled Codex at last shutdown
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
+    if (_runtimeAgentGate.isAgentEnabled("kiro-desktop") && _runtimeAgentGate.isAgentIntegrationInstalled("kiro-desktop")) {
+      agentRuntime.startMonitorForAgent("kiro-desktop", { integrationInstalled: true });
+    }
 
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
@@ -6351,6 +6608,8 @@ if (!gotTheLock) {
     }
     if (discordPresenceBridge) discordPresenceBridge.stop();
     stopFeishuApprovalClient();
+    if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.dispose();
+    claudeTurnAskReminder.dispose();
     _perm.cleanup();
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();
@@ -6365,6 +6624,10 @@ if (!gotTheLock) {
     agentRuntime.cleanup();
     topmostRuntime.cleanup();
     themeRuntime.cleanup();
+    if (systemThemeAppearanceHandler) {
+      nativeTheme.removeListener("updated", systemThemeAppearanceHandler);
+      systemThemeAppearanceHandler = null;
+    }
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}

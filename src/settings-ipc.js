@@ -9,6 +9,7 @@ const {
   acknowledgeDeepSeekHarnessNotice: defaultAcknowledgeDshNotice,
 } = require("../hooks/dsh-install");
 const { DEFAULT_INTEGRATION_INSTALLED_IDS } = require("./prefs");
+const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
   listPetTintOptions,
@@ -26,6 +27,12 @@ const CLEANUP_EXEMPT_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 // renderer cannot mint a trusted install binding, advance a deployment
 // transaction, or claim that a remote profile was verified.
 const INTERNAL_SETTINGS_COMMANDS = new Set([
+  // This opt-in can start background requests with a stored key. Only the
+  // trusted balance IPC handlers may ask the main-process owner to change it.
+  "setDeepseekBalanceCollectionEnabled",
+  // Only the trusted Kimi quota IPC handlers may ask the main-process owner
+  // to change this opt-in, matching the DeepSeek balance boundary.
+  "setKimiQuotaCollectionEnabled",
   "remoteSsh.applyInstallationIdentity",
   "remoteSsh.beginIdentityRotation",
   "remoteSsh.updateIdentityStep",
@@ -93,6 +100,16 @@ const AGENT_DISCOVERY_DIALOG_STRINGS = {
   ja: { file: "ツールの実行ファイルを選択", directory: "ツールのインストールフォルダーを選択" },
   "pt-BR": { file: "Escolha o executável da ferramenta", directory: "Escolha a pasta de instalação da ferramenta" },
   es: { file: "Elige el ejecutable de la herramienta", directory: "Elige la carpeta de instalación de la herramienta" },
+};
+
+const CLAUDE_CONFIG_DIR_DIALOG_STRINGS = {
+  en: "Choose a Claude Code config folder",
+  zh: "选择 Claude Code 配置目录",
+  "zh-TW": "選擇 Claude Code 設定資料夾",
+  ko: "Claude Code 설정 폴더 선택",
+  ja: "Claude Code の設定フォルダーを選択",
+  "pt-BR": "Escolha uma pasta de configuração do Claude Code",
+  es: "Elige una carpeta de configuración de Claude Code",
 };
 
 const REMOVE_THEME_DIALOG_STRINGS = {
@@ -566,6 +583,49 @@ function registerSettingsIpc(options = {}) {
       ? runtime.forget()
       : { status: "error", reason: "runtime-unavailable" };
   });
+  handle("settings:deepseek-balance-status", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.getStatus === "function"
+      ? runtime.getStatus()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-connect", async (event, payload) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!payload || typeof payload !== "object" || typeof payload.apiKey !== "string") {
+      return { status: "error", reason: "invalid-credential-input" };
+    }
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.connect === "function"
+      ? runtime.connect(payload.apiKey)
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-reconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.reconnect === "function"
+      ? runtime.reconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-disconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.disconnect === "function"
+      ? runtime.disconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-forget", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.forget === "function"
+      ? runtime.forget()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
   handle("settings:get-pet-tint-options", () => listPetTintOptions());
   handle("settings:get-pet-accessory-options", () => listPetAccessoryOptions());
   handle("settings:get-pet-mouth-accessory-options", () => listPetMouthAccessoryOptions());
@@ -1024,6 +1084,42 @@ function registerSettingsIpc(options = {}) {
       return { status: "ok", path: result.filePaths[0] };
     } catch (err) {
       return { status: "error", message: `agent discovery path picker failed: ${err && err.message}` };
+    }
+  });
+
+  // Claude config folders as Settings shows them: the primary folder Clawd
+  // resolves itself first, then the extra folders from prefs.
+  handle("settings:claude-config-dirs", () => {
+    try {
+      const snapshot = settingsController.getSnapshot() || {};
+      const claude = snapshot.agents && snapshot.agents["claude-code"];
+      const entries = claude && Array.isArray(claude.configDirs) ? claude.configDirs : [];
+      return {
+        status: "ok",
+        dirs: effectiveClaudeConfigDirs(entries).map((entry) => ({
+          ...entry,
+          exists: fs.existsSync(entry.dir),
+        })),
+      };
+    } catch (err) {
+      return { status: "error", message: `claude config dirs failed: ${err && err.message}` };
+    }
+  });
+
+  handle("settings:pick-claude-config-dir", async (event) => {
+    const title = CLAUDE_CONFIG_DIR_DIALOG_STRINGS[getLang()] || CLAUDE_CONFIG_DIR_DIALOG_STRINGS.en;
+    try {
+      const result = await dialog.showOpenDialog(getDialogParent(event), {
+        title,
+        // Config folders are usually dot-folders (~/.claude-work).
+        properties: ["openDirectory", "showHiddenFiles", "createDirectory"],
+      });
+      if (!result || result.canceled || !Array.isArray(result.filePaths) || !result.filePaths[0]) {
+        return { status: "cancel" };
+      }
+      return { status: "ok", path: result.filePaths[0] };
+    } catch (err) {
+      return { status: "error", message: `claude config folder picker failed: ${err && err.message}` };
     }
   });
 

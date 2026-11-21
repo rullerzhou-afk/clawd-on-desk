@@ -263,6 +263,20 @@ body { padding: 6px; }
 }
 .card.expanded .compact-block { display: none !important; }
 
+/* #1326: read-only list of the choices Claude Desktop's end-of-turn box
+   offers. Plain muted text, never button-like: the answer is given in Claude. */
+.native-question-options {
+  display: none;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--cmd-color);
+  opacity: 0.85;
+  word-break: break-word;
+}
+.native-question-options.visible { display: block; }
+.card.expanded .native-question-options { display: none !important; }
+
 .detail-scroll {
   display: none;
   flex: 1 1 auto;
@@ -650,4 +664,13 @@ body { padding: 6px; }
 }
 .plan-feedback-actions .btn {
   flex: 1;
+}
+
+.tool-pill[data-tool="KiroDesktopApproval"] { background: #7056c9; color: #fff; }
+
+/* The bounded Kiro question and read-only instruction stay visible together. */
+.card.kiro-desktop-reminder .compact-block {
+  display: block;
+  white-space: pre-wrap;
+  -webkit-line-clamp: unset;
 }

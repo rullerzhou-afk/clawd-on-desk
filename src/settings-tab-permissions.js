@@ -149,8 +149,7 @@
             if (typeof parent.expand === "function") parent.expand({ animate: false });
           }
           target.row.scrollIntoView({ block: "center" });
-          const active = target.row.querySelector("button.active");
-          if (active) active.focus({ preventScroll: true });
+          target.control.element.focus({ preventScroll: true });
         });
       },
     });

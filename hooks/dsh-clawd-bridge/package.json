@@ -5,7 +5,10 @@
   "type": "module",
   "description": "Forward public DeepSeek Harness session and approval events to Clawd on Desk",
   "main": "./lib/index.js",
-  "exports": { ".": "./lib/index.js" },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
   "license": "MIT",
   "clawd": {
     "versionFamilies": [
@@ -27,6 +30,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   }
 }

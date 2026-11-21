@@ -108,12 +108,16 @@ function createIntegrationSyncRuntime(options = {}) {
     const automatic = options.automatic !== false;
     try {
       if (typeof ctx.syncClawdHooksImpl === "function") {
-        return ctx.syncClawdHooksImpl({
+        const implOptions = {
           autoStart: ctx.autoStartWithClaude,
           port: getHookServerPort(),
           source,
           automatic,
-        });
+        };
+        // Settings passes the folder list it is about to commit, so the
+        // install covers the same extra Claude folders prefs will record.
+        if (Array.isArray(options.claudeConfigDirs)) implOptions.claudeConfigDirs = options.claudeConfigDirs;
+        return ctx.syncClawdHooksImpl(implOptions);
       }
       const {
         registerHooks,
@@ -272,6 +276,21 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync TraeCode hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync TraeCode hooks" };
+    }
+  }
+
+  function syncKiroDesktopHooks() {
+    try {
+      if (typeof ctx.syncKiroDesktopHooksImpl === "function") return ctx.syncKiroDesktopHooksImpl();
+      const { registerKiroDesktopHooks } = require("../hooks/kiro-desktop-install.js");
+      const result = registerKiroDesktopHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced Kiro IDE hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "Kiro IDE", "kiro-desktop-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync Kiro IDE hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Kiro IDE hooks" };
     }
   }
 
@@ -712,6 +731,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "grok-build": syncGrokBuildHooks,
     "kiro-cli": syncKiroHooks,
     kirocrew: syncKiroCrewHooks,
+    "kiro-desktop": syncKiroDesktopHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
     zcode: syncZcodeHooks,
@@ -876,6 +896,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncCodeBuddyHooks,
     syncWorkBuddyHooks,
     syncKiroHooks,
+    syncKiroDesktopHooks,
     syncKimiHooks,
     syncQwenHooks,
     syncZcodeHooks,

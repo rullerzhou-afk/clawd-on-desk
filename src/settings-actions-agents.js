@@ -39,6 +39,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "grok-build",
   "kiro-cli",
   "kirocrew",
+  "kiro-desktop",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -69,6 +70,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "grok-build",
   "kiro-cli",
   "kirocrew",
+  "kiro-desktop",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -184,7 +186,9 @@ function setAgentFlag(payload, deps) {
         if (result && typeof result === "object" && result.status === "error") {
           return { status: "error", message: result.message || `Failed to enable ${agentId}` };
         }
-        if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+        if (typeof deps.startMonitorForAgent === "function") {
+          deps.startMonitorForAgent(agentId, { integrationInstalled: isAgentIntegrationInstalled(snapshot, agentId) });
+        }
         return commitResult;
       })
       .catch((err) => ({ status: "error", message: `setAgentFlag: ${err && err.message}` }));
@@ -209,9 +213,13 @@ function setAgentFlag(payload, deps) {
         ) {
           deps.syncIntegrationForAgent(agentId, buildAgentIntegrationOptions(snapshot, agentId));
         }
-        if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+        if (typeof deps.startMonitorForAgent === "function") {
+          deps.startMonitorForAgent(agentId, { integrationInstalled: isAgentIntegrationInstalled(snapshot, agentId) });
+        }
       }
     } else if (flag === "permissionsEnabled") {
+      // Reminder reopening follows committed agents changes in the effect
+      // router, where gate readers can observe the newly enabled flag.
       if (!value && typeof deps.dismissPermissionsByAgent === "function") {
         deps.dismissPermissionsByAgent(agentId);
       }
@@ -308,6 +316,28 @@ function resultMessage(result, fallback) {
   return manualCommand && !base.includes(manualCommand) ? `${base}\n${manualCommand}` : base;
 }
 
+function summarizeIntegrationTargets(rawTargets) {
+  if (!rawTargets || typeof rawTargets !== "object" || Array.isArray(rawTargets)) return null;
+  const targets = {};
+  let count = 0;
+  for (const [profile, entry] of Object.entries(rawTargets)) {
+    if (typeof profile !== "string" || !profile || !entry || typeof entry !== "object") continue;
+    const summary = {};
+    if (typeof entry.role === "string" && entry.role) summary.role = entry.role;
+    if (typeof entry.reason === "string" && entry.reason) summary.reason = entry.reason;
+    if (entry.result && typeof entry.result === "object") {
+      if (typeof entry.result.status === "string" && entry.result.status) summary.resultStatus = entry.result.status;
+      if (typeof entry.result.reason === "string" && entry.result.reason) summary.resultReason = entry.result.reason;
+      if (typeof entry.result.message === "string" && entry.result.message) summary.resultMessage = entry.result.message;
+    }
+    if (Object.keys(summary).length === 0) continue;
+    targets[profile] = summary;
+    count += 1;
+    if (count >= 8) break;
+  }
+  return count > 0 ? targets : null;
+}
+
 function integrationResultMetadata(result) {
   if (!result || typeof result !== "object") return {};
   const metadata = {};
@@ -327,6 +357,8 @@ function integrationResultMetadata(result) {
     const residualPaths = result.residualPaths.filter((p) => typeof p === "string" && p);
     if (residualPaths.length) metadata.residualPaths = residualPaths;
   }
+  const targets = summarizeIntegrationTargets(result.targets);
+  if (targets) metadata.targets = targets;
   return metadata;
 }
 
@@ -619,7 +651,9 @@ async function installAgentIntegration(payload, deps = {}) {
         message: resultMessage(result, `Failed to install ${agentId}`),
       };
     }
-    if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+    if (typeof deps.startMonitorForAgent === "function") {
+      deps.startMonitorForAgent(agentId, { integrationInstalled: true });
+    }
     return {
       status: "ok",
       message: resultMessage(result, `Installed ${agentId}`),

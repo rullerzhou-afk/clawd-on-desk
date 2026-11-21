@@ -1,35 +1,52 @@
 (function() {
   "use strict";
 
+  // === i18n ===
+
+  // The server injects the desktop language's pack into index.html as
+  // window.__CLAWD_I18N__ before this script runs; resolveStrings() already
+  // merged the en fallback, so a plain lookup is enough here (#1299 D).
+  var I18N = window.__CLAWD_I18N__ || {};
+
+  function t(key, vars) {
+    var s = I18N[key] || key;
+    if (vars) {
+      for (var k in vars) {
+        if (Object.prototype.hasOwnProperty.call(vars, k)) s = s.split("{" + k + "}").join(String(vars[k]));
+      }
+    }
+    return s;
+  }
+
   // === Constants ===
 
   var STATE_CONFIG = {
-    error:        { icon: "error",        color: "#ef4444", priority: 0, label: "错误" },
-    attention:    { icon: "attention",    color: "#b45309", priority: 1, label: "需要关注" },
-    working:      { icon: "working",      color: "#22c55e", priority: 2, label: "工作中" },
-    executing:    { icon: "working",      color: "#22c55e", priority: 2, label: "工具处理中" },
-    juggling:     { icon: "juggling",     color: "#22c55e", priority: 2, label: "多任务" },
-    thinking:     { icon: "thinking",     color: "#3b82f6", priority: 3, label: "思考中" },
-    notification: { icon: "notification", color: "#d97757", priority: 4, label: "通知" },
-    sweeping:     { icon: "sweeping",     color: "#71717a", priority: 5, label: "清理中" },
-    carrying:     { icon: "carrying",     color: "#71717a", priority: 5, label: "搬运中" },
-    idle:         { icon: "idle",         color: "#71717a", priority: 6, label: "空闲" },
-    sleeping:     { icon: "sleeping",     color: "#a1a1aa", priority: 7, label: "休眠" },
+    error:        { icon: "error",        color: "#ef4444", priority: 0, labelKey: "stateError" },
+    attention:    { icon: "attention",    color: "#b45309", priority: 1, labelKey: "stateAttention" },
+    working:      { icon: "working",      color: "#22c55e", priority: 2, labelKey: "stateWorking" },
+    executing:    { icon: "working",      color: "#22c55e", priority: 2, labelKey: "stateExecuting" },
+    juggling:     { icon: "juggling",     color: "#22c55e", priority: 2, labelKey: "stateJuggling" },
+    thinking:     { icon: "thinking",     color: "#3b82f6", priority: 3, labelKey: "stateThinking" },
+    notification: { icon: "notification", color: "#d97757", priority: 4, labelKey: "stateNotification" },
+    sweeping:     { icon: "sweeping",     color: "#71717a", priority: 5, labelKey: "stateSweeping" },
+    carrying:     { icon: "carrying",     color: "#71717a", priority: 5, labelKey: "stateCarrying" },
+    idle:         { icon: "idle",         color: "#71717a", priority: 6, labelKey: "stateIdle" },
+    sleeping:     { icon: "sleeping",     color: "#a1a1aa", priority: 7, labelKey: "stateSleeping" },
   };
 
   var CONNECTION_STATES = {
-    connected:    { dot: "connected", text: "已连接", color: "#22c55e" },
-    connecting:   { dot: "connecting", text: "连接中...", color: "#b45309" },
-    reconnecting: { dot: "reconnecting", text: "重连中...", color: "#ef4444" },
-    disconnected: { dot: "", text: "", color: "#52525b" },
-    auth_failed:  { dot: "", text: "认证失败", color: "#ef4444" },
+    connected:    { dot: "connected", textKey: "connConnected", color: "#22c55e" },
+    connecting:   { dot: "connecting", textKey: "connConnecting", color: "#b45309" },
+    reconnecting: { dot: "reconnecting", textKey: "connReconnecting", color: "#ef4444" },
+    disconnected: { dot: "", textKey: "", color: "#52525b" },
+    auth_failed:  { dot: "", textKey: "connAuthFailed", color: "#ef4444" },
   };
 
-  var EVENT_LABELS_CN = {
-    UserPromptSubmit: "用户输入", PreToolUse: "工具启动", PostToolUse: "工具完成",
-    PostToolUseFailure: "工具失败", Stop: "已完成", SessionStart: "会话开始",
-    SessionEnd: "会话结束", PermissionRequest: "需要权限", Notification: "通知",
-    SubagentStart: "子代理启动", SubagentStop: "子代理停止",
+  var EVENT_LABEL_KEYS = {
+    UserPromptSubmit: "eventUserPromptSubmit", PreToolUse: "eventPreToolUse", PostToolUse: "eventPostToolUse",
+    PostToolUseFailure: "eventPostToolUseFailure", Stop: "eventStop", SessionStart: "eventSessionStart",
+    SessionEnd: "eventSessionEnd", PermissionRequest: "eventPermissionRequest", Notification: "eventNotification",
+    SubagentStart: "eventSubagentStart", SubagentStop: "eventSubagentStop",
   };
 
 
@@ -57,10 +74,10 @@
   function formatAgo(ts) {
     if (!ts) return "";
     var sec = Math.floor((Date.now() - ts) / 1000);
-    if (sec < 5) return "刚刚";
-    if (sec < 60) return sec + "秒前";
-    if (sec < 3600) return Math.floor(sec / 60) + "分钟前";
-    return Math.floor(sec / 3600) + "小时前";
+    if (sec < 5) return t("timeJustNow");
+    if (sec < 60) return t("timeSecondsAgo", { n: sec });
+    if (sec < 3600) return t("timeMinutesAgo", { n: Math.floor(sec / 60) });
+    return t("timeHoursAgo", { n: Math.floor(sec / 3600) });
   }
 
   function monotonicNow() {
@@ -71,10 +88,10 @@
 
   function formatWaitingAge(ms) {
     var sec = Math.max(0, Math.floor(Number(ms || 0) / 1000));
-    if (sec < 5) return "刚刚出现";
-    if (sec < 60) return "已等待 " + sec + " 秒";
-    if (sec < 3600) return "已等待 " + Math.floor(sec / 60) + " 分钟";
-    return "已等待 " + Math.floor(sec / 3600) + " 小时";
+    if (sec < 5) return t("timeAppearedJustNow");
+    if (sec < 60) return t("timeWaitedSeconds", { n: sec });
+    if (sec < 3600) return t("timeWaitedMinutes", { n: Math.floor(sec / 60) });
+    return t("timeWaitedHours", { n: Math.floor(sec / 3600) });
   }
 
   function normalizePermissionFeature(feature) {
@@ -85,7 +102,7 @@
   }
 
   function eventLabel(eventName) {
-    return EVENT_LABELS_CN[eventName] || (typeof EVENT_LABELS !== "undefined" && EVENT_LABELS[eventName]) || eventName || "";
+    return EVENT_LABEL_KEYS[eventName] ? t(EVENT_LABEL_KEYS[eventName]) : (eventName || "");
   }
 
   var EVENT_ICONS = {
@@ -169,10 +186,11 @@
       var config = STATE_CONFIG[s];
       if (!config) return;
       var label = data.title || data.agentId || "Agent";
+      var stateText = t(config.labelKey);
       if (s === "error" || s === "attention") {
-        this._notify(config.label, label + " - " + config.label, s);
+        this._notify(stateText, label + " - " + stateText, s);
       } else if ((prev === "working" || prev === "executing" || prev === "thinking") && s === "idle") {
-        this._notify("任务完成", label + " 已完成任务", "idle");
+        this._notify(t("notifyTaskCompleteTitle"), t("notifyTaskCompleteBody", { label: label }), "idle");
       }
     }
 
@@ -214,8 +232,8 @@
             if (!self.activePermissionIds.has(requestId)
                 || self.pendingPermissionNotifications.get(requestId) !== attempt) return;
             self.pendingPermissionNotifications.delete(requestId);
-            return Promise.resolve(reg.showNotification("Clawd 需要权限", {
-              body: "Clawd 有一个待处理的权限请求。",
+            return Promise.resolve(reg.showNotification(t("notifyPermissionTitle"), {
+              body: t("notifyPermissionBody"),
               tag: tag,
               icon: "/mobile/icons/icon-256.png",
             })).then(function() {
@@ -235,8 +253,8 @@
           if (!self.activePermissionIds.has(requestId)
               || self.pendingPermissionNotifications.get(requestId) !== attempt) return false;
           self.pendingPermissionNotifications.delete(requestId);
-          var notification = new Notification("Clawd 需要权限", {
-            body: "Clawd 有一个待处理的权限请求。",
+          var notification = new Notification(t("notifyPermissionTitle"), {
+            body: t("notifyPermissionBody"),
             tag: tag,
           });
           self.fallbackPermissionNotifications.set(requestId, notification);
@@ -410,7 +428,7 @@
           }
         }
         if (token) this.connect({ host: this.config.host, port: this.config.port, token: token });
-        else this._showPairing("输入电脑设置页上的配对码");
+        else this._showPairing(t("pairPrompt"));
       }
     }
 
@@ -472,7 +490,7 @@
         return;
       }
       if (used.kind !== "pair" && !used.token) {
-        this._showPairing("请输入配对码");
+        this._showPairing(t("pairEmpty"));
         return;
       }
       this.used = used;
@@ -481,6 +499,11 @@
       var url = scheme + host + ":" + this.config.port + "/ws?";
       url += used.kind === "pair" ? "pair=" + encodeURIComponent(used.pair) : "token=" + encodeURIComponent(used.token);
       if (this.storageOk) url += "&proto=2&cid=" + encodeURIComponent(this.cid);
+      // iOS home-screen PWAs share Safari's UA; report the display mode so the
+      // desktop device list can tell the two apart (#1299).
+      var standalone = navigator.standalone === true
+        || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+      if (standalone) url += "&mode=pwa";
       this._setState("connecting");
       log("Connecting to " + this.config.host + ":" + this.config.port + "...");
       var socket;
@@ -534,7 +557,7 @@
         this.backupPair = null;
         this.authBlocked = true;
         this._setState("auth_failed");
-        this._showPairing(event.code === 4005 ? "电脑上已配对的设备满了，请先在电脑上清理" : "配对码无效、已过期或已被使用");
+        this._showPairing(event.code === 4005 ? t("pairDeviceLimit") : t("pairInvalid"));
         return;
       }
       this._scheduleReconnect();
@@ -573,7 +596,7 @@
         if (used.kind === "pair") {
           this.authBlocked = true;
           this._setState("auth_failed");
-          this._showPairing("无法保存配对，这个浏览器现在不能保存配对信息");
+          this._showPairing(t("pairStorageFail"));
           this.ws.onclose = null;
           this.ws.close(1000);
         }
@@ -601,7 +624,7 @@
       if (firstSnapshot) {
         this._setState("connected");
         log("Connected");
-        showToast("已连接到桌面端", "success");
+        showToast(t("toastConnected"), "success");
         var persisted = document.querySelectorAll(".toast-persist");
         for (var i = 0; i < persisted.length; i++) persisted[i].remove();
       }
@@ -634,7 +657,7 @@
       this.reconnectTimer = null;
       if (this.onAccessReset) this.onAccessReset(event);
       this._setState("auth_failed");
-      this._showPairing("凭据无效或已被撤销，请重新配对");
+      this._showPairing(t("credentialsInvalid"));
       if (this.backupPair !== null) this.rePair(this.backupPair);
     }
 
@@ -652,7 +675,7 @@
     }
 
     _storageError() {
-      this._showPairing("这个浏览器现在不能保存配对信息（可能是无痕模式，或者禁止了网站数据）");
+      this._showPairing(t("storageError"));
     }
 
     send(data) { if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(typeof data === "string" ? data : JSON.stringify(data)); }
@@ -662,7 +685,7 @@
       this.retryCount++;
       this._setState("reconnecting");
       // After several retries, give actionable feedback without stopping retries.
-      if (this.retryCount === 5) showToast("仍在重连…请检查地址、端口或桌面端是否已开启", "info", true);
+      if (this.retryCount === 5) showToast(t("toastReconnecting"), "info", true);
       var self = this;
       this.reconnectTimer = setTimeout(function() {
         self.reconnectDelay = Math.min(self.reconnectDelay * 2, self.maxReconnectDelay);
@@ -842,33 +865,33 @@
       }
 
       if (state === "unsupported") {
-        this.container.innerHTML = '<div class="permission-state-message">桌面端不支持权限预览</div>';
+        this.container.innerHTML = '<div class="permission-state-message">' + t("permUnsupported") + '</div>';
         return;
       }
       if (state === "disabled") {
-        this.container.innerHTML = '<div class="permission-state-message">桌面端未开启权限预览</div>';
+        this.container.innerHTML = '<div class="permission-state-message">' + t("permDisabled") + '</div>';
         return;
       }
       if (this.records.size === 0) {
         this.container.innerHTML = '<div class="permission-state-message">' +
-          (state === "stale" ? "连接已断开，等待重新同步" : "权限预览已开启，暂无待处理请求") + '</div>';
+          (state === "stale" ? t("permStale") : t("permEmpty")) + '</div>';
         return;
       }
 
-      var html = '<div class="permission-section-label">待处理权限 · ' + this.records.size + '</div>';
-      if (this.disconnected) html += '<div class="permission-stale-note">连接已断开，以下状态可能已过期</div>';
+      var html = '<div class="permission-section-label">' + t("permPendingCount", { n: this.records.size }) + '</div>';
+      if (this.disconnected) html += '<div class="permission-stale-note">' + t("permStaleNote") + '</div>';
       this.records.forEach(function(entry) {
         var record = entry.record;
         html += '<article class="permission-card">';
         html += '<div class="permission-card-header"><span class="permission-agent">' + esc(record.agentId || "AGENT") + '</span>';
-        html += '<span class="permission-readonly-badge">只读</span></div>';
-        html += '<div class="permission-tool">' + esc(record.toolName || "权限请求") + '</div>';
+        html += '<span class="permission-readonly-badge">' + t("permReadonlyBadge") + '</span></div>';
+        html += '<div class="permission-tool">' + esc(record.toolName || t("permFallbackTool")) + '</div>';
         if (record.summary) html += '<div class="permission-summary">' + esc(record.summary) + '</div>';
         html += '<div class="permission-card-meta">';
         if (record.folder) html += '<span class="permission-folder">' + esc(record.folder) + '</span>';
         html += '<span class="permission-time" aria-live="off" aria-hidden="true" data-permission-id="' + esc(record.requestId) + '">' +
           formatWaitingAge(entry.ageAtReceipt) + '</span></div>';
-        html += '<div class="permission-notice">请在桌面端处理此请求</div></article>';
+        html += '<div class="permission-notice">' + t("permHandleOnDesktop") + '</div></article>';
       });
       this.container.innerHTML = html;
     }
@@ -931,12 +954,12 @@
 
       if (entries.length === 0) {
         this.container.innerHTML = '<div class="empty-state"><div class="empty-icon">' + icon("paw") + '</div>' +
-          '<div class="empty-text">连接桌面端开始监控</div>' +
-          '<div class="empty-hint">前往设置页配置连接</div></div>';
+          '<div class="empty-text">' + t("sessionsEmptyTitle") + '</div>' +
+          '<div class="empty-hint">' + t("sessionsEmptyHint") + '</div></div>';
         return;
       }
 
-      var html = '<div class="section-label">活跃会话 &middot; ' + entries.length + '</div>';
+      var html = '<div class="section-label">' + t("sessionsActiveCount", { n: entries.length }) + '</div>';
       for (var i = 0; i < entries.length; i++) html += this._renderCard(entries[i][0], entries[i][1]);
       this.container.innerHTML = html;
       this.container.querySelectorAll(".card-footer").forEach(function(el) {
@@ -968,14 +991,14 @@
       var html = '<div class="session-card">';
       html += '<div class="card-header"><div class="card-agent"><div class="agent-dot"></div>';
       html += '<span class="agent-name">' + esc(agentLabel) + '</span></div>';
-      html += '<span class="state-badge ' + stateKey + '">' + config.label + '</span></div>';
+      html += '<span class="state-badge ' + stateKey + '">' + t(config.labelKey) + '</span></div>';
       if (sessionTitle) html += '<div class="card-title">' + esc(sessionTitle) + '</div>';
       html += '<div class="card-meta">';
       if (s.basename) { html += '<span class="meta-item mono">' + icon("folder") + '<span>' + esc(s.basename) + '</span></span>'; }
       if (s.updatedAt) { html += '<span class="meta-sep">&middot;</span><span class="meta-item meta-time" data-ts="' + s.updatedAt + '">' + formatAgo(s.updatedAt) + '</span>'; }
       html += '</div>';
       html += '<div class="card-divider"></div>';
-      html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>最近事件</span>';
+      html += '<div class="card-footer" data-sid="' + sid + '"><div class="footer-events">' + icon("activity") + '<span>' + t("recentEvents") + '</span>';
       if (events.length) html += '<span class="event-count">' + events.length + '</span>';
       html += '</div><span class="footer-chevron">' + (isExpanded ? icon("collapse") : icon("expand")) + '</span></div>';
       if (events.length) html += this._renderEvents(events, isExpanded, this._animatingSid === sid);
@@ -1027,19 +1050,19 @@
 
       // Connection status
       html += '<div class="settings-section">';
-      html += '<div class="settings-section-title">连接</div>';
+      html += '<div class="settings-section-title">' + t("settingsConnection") + '</div>';
       var st = connection.state;
       var stCfg = CONNECTION_STATES[st] || CONNECTION_STATES.disconnected;
       html += '<div class="conn-status">';
       html += '<span class="conn-status-dot ' + stCfg.dot + '"></span>';
-      html += '<span class="conn-status-text">' + stCfg.text + '</span>';
+      html += '<span class="conn-status-text">' + t(stCfg.textKey) + '</span>';
       if (connection.config) html += '<span class="conn-status-addr">' + esc(connection.config.host) + ':' + connection.config.port + '</span>';
       html += '</div>';
       html += '</div>';
 
       // Log section (collapsed by default)
       html += '<div class="log-section">';
-      html += '<button class="log-toggle" id="btn-toggle-log">日志 (' + _logBuffer.length + ')</button>';
+      html += '<button class="log-toggle" id="btn-toggle-log">' + t("settingsLogCount", { n: _logBuffer.length }) + '</button>';
       html += '<div class="log-body" id="settings-log-content"></div>';
       html += '</div>';
 
@@ -1177,7 +1200,7 @@
       var dot = document.getElementById("connection-dot");
       var text = document.getElementById("connection-text");
       dot.className = "connection-dot " + config.dot;
-      text.textContent = state === "disconnected" ? "" : config.text;
+      text.textContent = state === "disconnected" ? "" : t(config.textKey);
       text.className = "connection-text" + (state === "connected" ? " connected" : "");
     }
 

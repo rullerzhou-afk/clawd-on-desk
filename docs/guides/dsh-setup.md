@@ -104,6 +104,23 @@ creating a card or changing its activity time. If DSH no longer reports both
 operands, Clawd clears the old percentage instead of displaying a stale one.
 The standard completion bell appears when a finished DSH session is unread.
 
+Clicking a desktop-app DSH session raises the window and, with the browser
+half installed, switches to that conversation. The bridge ships `lib/client.js`
+(declared through `exports["./client"]` and `dsh.client`) because only page-side
+code can call the public client service `uiWorkspace.openSession()`. Clawd
+publishes the clicked session id on a loopback SSE endpoint
+(`GET /dsh/focus-stream`) before opening `dsh://open`. The id is the bridge's own
+session id with the `deepseek-harness:` namespace removed. Only the desktop
+window subscribes: the stream requires the exact Origin `dsh-app://app` and a
+loopback Host. Web tabs never subscribe or switch. Each click has a unique
+`clickId`; the page deduplicates replays, and Clawd retains the latest click for
+30 seconds. During cold start the page waits up to 20 seconds for the session
+list to become ready before switching. The browser tries only ports 23333–23337;
+if Clawd is on another port, the click only raises the window. An older DSH that
+never loads the browser half, an unreachable Clawd, or a deleted session also
+leaves the click as a plain window focus. The stream carries no permission or
+write authority.
+
 The quota coin is separate account telemetry. DSH does not currently expose
 a five-hour usage bucket through this plugin's public session APIs, so Clawd
 does not invent a DSH `5h` percentage. DeepSeek's
@@ -143,8 +160,8 @@ For the DeepSeek Harness desktop app (macOS, Windows):
 
 - macOS: DeepSeek Harness installed in `/Applications` or `~/Applications`.
 - Windows: a per-user install found through the `HKCU` uninstall entry (display
-  name starting with "DeepSeek Harness ") or
-  `%LOCALAPPDATA%\Programs\DeepSeek Harness`.
+  name "DeepSeek Harness" since 0.2.2-alpha.2, "DeepSeek Harness <version>"
+  before that) or `%LOCALAPPDATA%\Programs\DeepSeek Harness`.
 - Windows 11: run Clawd without elevation (not as administrator). An elevated
   process cannot traverse a junction that a non-admin process created, so an
   elevated Clawd may read a plugin installed without elevation as missing. This
@@ -522,9 +539,11 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   `0.2.0-rc.2`: clicking a desktop session brought the window to the front
   through `dsh://open` with another app in front, when the window was minimized,
   and after it was closed. The launch fallback (used when the protocol cannot be
-  opened) is covered by unit tests only. It does not switch to that specific
-  conversation: DSH has no external session-navigation entry point, so the
-  window shows whatever it was already on. Web sessions remain unfocusable.
+  opened) is covered by unit tests only. That 2026-10-05 validation covered
+  raising the window only. With the browser half installed, clicking also
+  selects the requested conversation through the focus stream; real-device
+  evidence for conversation switching is recorded separately. Web sessions
+  remain unfocusable.
   The launch fallback refuses to start when discovery is not a single verified
   install: two valid installs at different real paths are ambiguous (for example
   a system-wide and a per-user copy), and any candidate it cannot verify also
@@ -541,3 +560,23 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   receives no Clawd decision and continues its native flow.
 - Hiding the pet is not DND, so a new approval may still show a bubble. DND
   returns control to DSH without deciding.
+
+
+## DeepSeek 预付余额
+
+在「设置 → AI 编程工具 → DeepSeek Harness → 额度 → 预付余额」粘贴自己的 DeepSeek API key 并连接。
+此功能默认关闭；连接后，只有 DeepSeek Harness 已启用且本机保存了 key 时，才会立即查询并每 5 分钟查询一次。
+余额查询只连接 `api.deepseek.com` 的官方 `/user/balance` 接口，不读取 DSH 或其他软件的凭据。
+key 由系统凭据库加密后保存在本机 `~/.clawd/deepseek-balance-credential.json`，仅主进程解密使用；
+Linux 系统凭据库只有 `basic_text` 时拒绝保存。油表基准单独保存在 `~/.clawd/deepseek-balance-runtime.json`，不含 key。
+API key 也具有调用模型并消费余额的权限，请妥善保管。
+
+余额硬币永远显示剩余：首次余额视为满格；余额比上次增加至少 0.01 时，视为充值并以新余额作为满格。
+断开会停止查询并清掉硬币，但保留本机 key；断开后可再忘记 key。这两个动作都不会撤销 DeepSeek 控制台中的 key。
+401 拒绝状态会与当前 credentialId 一起保存在本机，应用重启或系统唤醒后仍暂停查询。
+更换 key 或重新连接才会解除；忘记 key 会一并移除拒绝记录。其他临时错误保留上次数值并在下个周期自动重试，
+12 分钟没有更新后硬币变灰。
+系统睡眠时暂停，唤醒后满足开关条件就立即查询。首版没有低余额提醒。
+
+桌宠旁最多显示 3 枚，若已经有 3 枚，要到「设置 → 会话 → 在桌宠旁显示」里把 DeepSeek 打开
+（需要先关闭其中一个）；Dashboard 始终显示全部提供方。

@@ -174,6 +174,20 @@ function envFlagEnabled(value) {
   return !!value && !/^(0|false)$/i.test(String(value));
 }
 
+function isRemoteHookRuntime({ argv = process.argv, env = process.env } = {}) {
+  return !!env.CLAWD_REMOTE || argv.slice(2).includes("--clawd-ssh-remote");
+}
+
+function applySshRemoteFlag({ argv = process.argv, env = process.env, scriptDir = __dirname, homedir = os.homedir() } = {}) {
+  if (!argv.slice(2).includes("--clawd-ssh-remote")) return;
+  env.CLAWD_REMOTE = "1";
+  env.CLAWD_SSH_REMOTE = "1";
+  env.CLAWD_REMOTE_IDENTITY_PATH = path.join(scriptDir, REMOTE_IDENTITY_FILENAME);
+  env.CLAWD_SSH_SECURE_MARKER_PATH = path.join(scriptDir, SSH_SECURE_MARKER_FILENAME);
+  env.CLAWD_HOST_PREFIX_PATH = path.join(scriptDir, HOST_PREFIX_FILENAME);
+  env.CLAWD_REMOTE_LAST_LOG_PATH = path.join(homedir, ".clawd", "remote-last-error.log");
+}
+
 function isSshSecureMode(options = {}) {
   if (options.sshSecure === true) return true;
   if (options.sshSecure === false) return false;
@@ -237,6 +251,17 @@ function readRemoteIdentity(options = {}) {
 
 function resolveSecureTransport(options = {}) {
   if (!isSshSecureMode(options)) return { secure: false, identity: null };
+  if ((options.argv || process.argv).slice(2).includes("--clawd-ssh-remote")) {
+    let markerValid = false;
+    try {
+      markerValid = (options.readFileSync || fs.readFileSync)(resolveSshSecureMarkerPath(options), "utf8").trim()
+        === SSH_SECURE_MARKER_FILENAME;
+    } catch {}
+    if (!markerValid) {
+      recordSecureTransportFailure("identity-invalid", options);
+      return { secure: true, identity: null, reason: "identity-invalid" };
+    }
+  }
   const identity = options.remoteIdentity && options.remoteIdentity.ok !== undefined
     ? options.remoteIdentity
     : readRemoteIdentity(options);
@@ -1427,6 +1452,8 @@ module.exports = {
   defaultRuntimeConfigPath,
   isManagedPermissionUrl,
   isRemoteHookMode,
+  isRemoteHookRuntime,
+  applySshRemoteFlag,
   isSshSecureMode,
   discoverClawdPort,
   getPortCandidates,

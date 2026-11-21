@@ -34,37 +34,44 @@
 // identity transaction step of its own (REMOTE_IDENTITY_STEP_NAMES is
 // unchanged) and never sets the local integrationInstalled flag.
 //
-// remote-shell aborts the deploy when the remote default shell is cmd.exe:
-// every later step would fail anyway (`mkdir -p`, `~/...` expansion, the
-// POSIX `sh -c` invoked by buildRemoteHookNodeCommand), and the cmd.exe
-// stderr would land in the renderer as CP936/GBK mojibake — so it's both
-// a cheaper failure and a more actionable message to stop here.
+// Windows deployments require a platform snapshot and use framed native Node
+// operations, including native Windows health and readiness checks.
 
 const childProcess = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const { buildSshArgs, buildScpArgs } = require("./remote-ssh-runtime");
+const { buildSshArgs, buildScpArgs, shouldSuggestGatewayMode } = require("./remote-ssh-runtime");
 const {
   resolveRemoteNodeBin,
   buildRemoteHookNodeCommand,
   buildRemoteNodeEvalCommand,
+  discoverWindowsRemoteNode,
 } = require("./remote-ssh-node");
+const { prepareSshCommandArguments, REMOTE_COMMAND_DECODE_EXIT } = require("./remote-ssh-command");
+const { REMOTE_NODE_LAUNCH_COMMAND, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
+const { buildWindowsOperationFrame, windowsUserInstallerBudgets } = require("./remote-ssh-win-ops");
+const { windowsFailureHint } = require("./remote-ssh-platform");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
 const { detectRemoteShell } = require("./remote-ssh-shell-detect");
 const {
   normalizeRemoteRuntimeIdentity,
   resolveRemoteRuntimeLayout,
+  assertPosixRemoteLayout,
+  remoteLayoutDirectories,
+  toRemoteSftpPath,
 } = require("./remote-ssh-layout");
 const { buildRemoteIdentityDocument } = require("./remote-ssh-identity");
+const { isValidRemoteHome, isValidHostPrefix } = require("./remote-ssh-profile");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const {
   HERMES_RESULT_SENTINEL,
   HERMES_PLUGIN_ASSET_FILES,
   parseHermesInstallerResult,
 } = require("./hermes-installer-result");
+const { BRIDGE_SOURCE_FILES } = require("../hooks/dsh-install");
 
 // ── Hook files manifest ──
 //
@@ -87,6 +94,7 @@ const HOOK_FILES = [
   "state-payload-size.js",
   "claude-stop-disposition.js",
   "claude-tool-batch.js",
+  "claude-config-dirs.js",
   "session-recovery-lease.js",
   "session-history.js",
   "claude-session-id.js",
@@ -109,10 +117,35 @@ const HOOK_FILES = [
   "copilot-hook.js",
   "copilot-install.js",
   "hermes-install.js",
+  "remote-ssh-stdio-bridge.js",
 ];
 // Hermes plugin assets never join HOOK_FILES: they are not hook scripts and
 // go to their own exact staging directory, not ~/.claude/hooks.
 const HERMES_PLUGIN_DIR = "hermes-plugin";
+// Windows-only DSH assets. Never add these to the POSIX-shared HOOK_FILES.
+const DSH_BRIDGE_DIR = "dsh-clawd-bridge";
+const DSH_ASSET_FILES = Object.freeze([
+  "dsh-install.js",
+  "dsh-notices.js",
+  "dsh-remote-task.js",
+  ...BRIDGE_SOURCE_FILES.map((name) => `${DSH_BRIDGE_DIR}/${name}`),
+]);
+const DSH_INSTALLER_TIMEOUT_MS = 300000;
+function dshRemoteRoot(layout) {
+  return path.win32.join(layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+}
+function dshDefaultHome(layout) {
+  return path.win32.join(layout.remoteHome, ".dsh");
+}
+function localClawdVersion(deps = {}) {
+  if (typeof deps.clawdVersion === "string" && deps.clawdVersion.trim()) return deps.clawdVersion.trim();
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    return typeof manifest.version === "string" ? manifest.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 const HERMES_CLI_TIMEOUT_MS = 15000;
 const HERMES_OUTER_TIMEOUT_BASE_MS = 30000;
 const HERMES_OUTER_TIMEOUT_PER_TARGET_MS = 5000;
@@ -136,6 +169,16 @@ function resolveHooksDir({ app, isPackaged } = {}) {
   return path.join(__dirname, "..", "hooks");
 }
 
+function verifyLocalHookFiles({ hooksDir, isPackaged } = {}) {
+  const sourceDir = hooksDir || resolveHooksDir({ isPackaged });
+  const missing = HOOK_FILES
+    .map((name) => path.join(sourceDir, name))
+    .filter((file) => !fs.existsSync(file));
+  return missing.length
+    ? { ok: false, step: "verify", message: `Missing files: ${missing.join(", ")}`, reason: null }
+    : { ok: true };
+}
+
 function spawnAndWait(spawn, command, args, opts = {}) {
   const {
     stdin,
@@ -144,9 +187,12 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     runtime,
     role = command,
     mutation = false,
+    profile,
+    platform = process.platform,
   } = opts;
   return new Promise((resolve, reject) => {
     let child;
+    let transportArgs;
     const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
     const childOptions = {
       env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
@@ -154,9 +200,10 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       windowsHide: true,
     };
     try {
+      transportArgs = prepareSshCommandArguments(command, args, { profile, platform });
       child = managed
-        ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
-        : spawn(command, args, childOptions);
+        ? runtime.spawnManagedTransportChild({ role, tool: command, args: transportArgs, options: childOptions })
+        : spawn(command, transportArgs, childOptions);
     } catch (err) {
       if (managed) {
         reject(err);
@@ -181,6 +228,7 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     let exitCode = null;
     let exitSignal = null;
     let processError = null;
+    let stdinError = null;
     let timedOut = false;
     let drainTimer = null;
     const timer = setTimeout(() => {
@@ -253,16 +301,6 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     if (child.stdout) child.stdout.on("data", (d) => { stdoutChunks.push(d); });
     if (child.stderr) child.stderr.on("data", (d) => { stderrChunks.push(d); });
 
-    if (stdin != null && child.stdin) {
-      try {
-        child.stdin.end(stdin);
-      } catch {
-        // Will surface as exit error.
-      }
-    } else if (child.stdin) {
-      try { child.stdin.end(); } catch {}
-    }
-
     child.on("error", (err) => { processError = err; });
     child.on("exit", (code, signal) => {
       exitCode = code;
@@ -300,17 +338,22 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         return;
       }
       const payload = {
-        code: exitCode === null ? code : exitCode,
+        code: stdinError ? -1 : (exitCode === null ? code : exitCode),
         signal: exitSignal === null ? signal : exitSignal,
         stdout,
-        stderr: stderr || (processError && processError.message) || "",
+        stderr: stderr || (stdinError && `${stdinError.code || "stdin_write_failed"}: ${stdinError.message}`) || (processError && processError.message) || "",
+        ...(stdinError ? { stdinError: true } : {}),
         ...(processError ? { spawnError: true } : {}),
         ...(timedOut ? { timedOut: true, drainVerified: true } : {}),
       };
+      if (transportArgs !== args && payload.code === REMOTE_COMMAND_DECODE_EXIT) {
+        payload.commandDecodeFailed = true;
+        payload.stderr = "Remote base64 is unavailable or could not decode the command (-d/-D/--decode). Install base64 on the remote and retry.\n" + payload.stderr;
+      }
       // A remote command can keep running after either kind of SSH transport
       // loses its result. The ordinary path has no coordinator context, but
       // must preserve the same lease/staging evidence as serialized transport.
-      const ambiguousMutation = mutation && (payload.timedOut === true || payload.signal != null || (
+      const ambiguousMutation = mutation && (stdinError !== null || payload.timedOut === true || payload.signal != null || (
         payload.code !== 0 && (
           payload.code === 255
           || (payload.code == null && !payload.spawnError)
@@ -343,6 +386,17 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         return;
       }
       finish(payload);
+    });
+    if (child.stdin) writeNodeFrameSafely(child, stdin, {
+      onError: (err) => {
+        if (done) return;
+        stdinError = err;
+        // Partial input cannot prove whether a remote mutation ran. Preserve
+        // managed close accounting and let the existing uncertainty fence act.
+        if (!managed) {
+          try { child.kill(); } catch {}
+        }
+      },
     });
   });
 }
@@ -418,7 +472,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
   progress("mkdir", "start");
   {
     const args = buildSshArgs(profile).concat(["mkdir -p ~/.claude/hooks"]);
-    const r = await spawnAndWait(spawn, "ssh", args, { runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, runtime });
     if (r.code !== 0) {
       progress("mkdir", "fail", summarizeStderr(r.stderr) || `ssh exited ${formatExit(r)}`);
       return { ok: false, step: "mkdir", message: r.stderr || `ssh exited ${formatExit(r)}` };
@@ -464,7 +518,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const localFiles = HOOK_FILES.map((name) => path.join(hooksDir, name));
     const remoteTarget = `${profile.host}:~/.claude/hooks/`;
     const args = buildScpArgs(profile).concat([...localFiles, remoteTarget]);
-    const r = await spawnAndWait(spawn, "scp", args, { timeoutMs: 120000, runtime });
+    const r = await spawnAndWait(spawn, "scp", args, { profile, timeoutMs: 120000, runtime });
     if (r.code !== 0) {
       progress("scp", "fail", summarizeStderr(r.stderr) || `scp exited ${formatExit(r)}`);
       return { ok: false, step: "scp", message: r.stderr || `scp exited ${formatExit(r)}` };
@@ -483,7 +537,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     // Write without a trailing newline — remote hooks/server-config.js reads
     // with .trim(), so it's robust to either, but no-newline avoids
     // CRLF / LF surprises across platforms.
-    const r = await spawnAndWait(spawn, "ssh", args, { stdin: profile.hostPrefix, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, stdin: profile.hostPrefix, runtime });
     if (r.code !== 0) {
       progress("host-prefix", "fail", summarizeStderr(r.stderr) || `ssh exited ${formatExit(r)}`);
       return { ok: false, step: "host-prefix", message: r.stderr || `ssh exited ${formatExit(r)}` };
@@ -503,7 +557,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const args = buildSshArgs(profile).concat([
       buildRemoteHookNodeCommand(remoteNode, "install.js", installClaudeArgs),
     ]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 60000, runtime });
     if (r.code !== 0) {
       // Best-effort — log but don't abort. Claude may not be installed remotely.
       progress("install-claude", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
@@ -518,7 +572,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const args = buildSshArgs(profile).concat([
       buildRemoteHookNodeCommand(remoteNode, "codex-install.js", ["--remote"]),
     ]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 60000, runtime });
     if (r.code !== 0) {
       progress("install-codex", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
     } else {
@@ -534,7 +588,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const args = buildSshArgs(profile).concat([
       buildRemoteHookNodeCommand(remoteNode, "copilot-install.js", ["--remote"]),
     ]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 60000, runtime });
     if (r.code !== 0) {
       progress("install-copilot", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
     } else {
@@ -553,6 +607,7 @@ function compactJson(value) {
 }
 
 function assertLeaseCommand(layout, leaseId, remoteNode) {
+  assertPosixRemoteLayout(layout);
   const js = [
     "const fs=require('fs');",
     `const p=${JSON.stringify(path.posix.join(layout.deployLockDir, "owner"))};`,
@@ -563,16 +618,18 @@ function assertLeaseCommand(layout, leaseId, remoteNode) {
 }
 
 function fencedCommand(layout, leaseId, remoteNode, command) {
+  assertPosixRemoteLayout(layout);
   return `${assertLeaseCommand(layout, leaseId, remoteNode)} && (\n${command}\n)`;
 }
 
 async function resolveRemoteHome({ profile, spawn, runtime }) {
+  if (profile.remotePlatform === "win32") throw new TypeError("POSIX remote layout required");
   const command = "printf 'CLAWD_REMOTE_HOME=%s\\n' \"$HOME\"";
   const result = await spawnAndWait(
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { runtime },
+    { profile, runtime },
   );
   if (result.code !== 0) {
     return { ok: false, message: result.stderr || `ssh exited ${formatExit(result)}` };
@@ -585,6 +642,7 @@ async function resolveRemoteHome({ profile, spawn, runtime }) {
       runtimeKey: profile.runtimeKey,
       remoteHome: match[1],
     });
+    assertPosixRemoteLayout(layout);
     return { ok: true, layout };
   } catch (err) {
     return { ok: false, message: err && err.message };
@@ -600,6 +658,7 @@ async function acquireDeployLock({
   runtime,
   now = Date.now,
 }) {
+  assertPosixRemoteLayout(layout);
   if (runtime && typeof runtime.setManagedLockStage === "function") {
     runtime.setManagedLockStage("acquire-attempted");
   }
@@ -629,8 +688,11 @@ async function acquireDeployLock({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(owner), runtime, role: "deploy-lock-acquire", mutation: true },
+    { profile, stdin: compactJson(owner), runtime, role: "deploy-lock-acquire", mutation: true },
   );
+  if (result.commandDecodeFailed) {
+    return { ok: false, reason: "remote_base64_unavailable", message: result.stderr };
+  }
   if (result.code === 0) {
     if (runtime && typeof runtime.setManagedLockStage === "function") {
       runtime.setManagedLockStage("lock-owned");
@@ -673,13 +735,14 @@ async function acquireDeployLock({
 }
 
 async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, runtime }) {
+  assertPosixRemoteLayout(layout);
   const lock = quoteForPosixShellArg(layout.deployLockDir);
   const command = `${assertLeaseCommand(layout, leaseId, remoteNode)} && rm -rf ${lock}`;
   const result = await spawnAndWait(
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { runtime, role: "deploy-lock-release", mutation: true },
+    { profile, runtime, role: "deploy-lock-release", mutation: true },
   );
   if (result.code !== 0) {
     const err = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
@@ -712,6 +775,7 @@ async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, 
 // hermesPresent is deliberately narrow (config.yaml or the venv CLI): an empty
 // ~/.hermes left over from an uninstall is not a Hermes installation.
 function buildHermesPreflightLines(layout) {
+  assertPosixRemoteLayout(layout);
   const hermesHome = resolveRemoteHermesHome(layout);
   if (!hermesHome) {
     // Phase 1 scope: profile-isolated runtimes report the phase as not
@@ -759,7 +823,29 @@ function buildHermesPreflightLines(layout) {
   ];
 }
 
+function buildClaudePermissionVerifyScript(layout) {
+  assertPosixRemoteLayout(layout);
+  const serverConfigPath = path.posix.join(layout.claudeHooksDir, "server-config.js");
+  return [
+    // Match the installer's ownership test instead of "the first URL containing
+    // 127.0.0.1:". A third-party approval hook can also live on loopback and
+    // be listed before Clawd's entry; a substring check would pick it up and
+    // fail the nonce comparison. The uploaded server-config.js is the source
+    // of truth, so loading it must fail closed.
+    `const c=require(${JSON.stringify(serverConfigPath)});`,
+    "if(typeof c.isManagedPermissionUrl!=='function')process.exit(1);",
+    "const fs=require('fs');",
+    `const s=JSON.parse(fs.readFileSync(${JSON.stringify(layout.claudeSettingsFile)},'utf8'));`,
+    `const i=JSON.parse(fs.readFileSync(${JSON.stringify(layout.identityFile)},'utf8'));`,
+    "const a=Array.isArray(s&&s.hooks&&s.hooks.PermissionRequest)?s.hooks.PermissionRequest:[];",
+    "const flat=[];for(const e of a){if(e&&Array.isArray(e.hooks))flat.push(...e.hooks);else flat.push(e)}",
+    "const ours=flat.find(h=>h&&h.type==='http'&&typeof h.url==='string'&&c.isManagedPermissionUrl(h.url));",
+    "if(ours){const u=new URL(ours.url);const n=u.pathname==='/permission'?u.searchParams.get('nonce'):u.pathname.split('/').pop();if(n!==i.routingNonce)process.exit(1);console.log('managed')}else console.log('native')",
+  ].join("");
+}
+
 function buildOwnershipPreflightScript({ profile, layout, installId }) {
+  assertPosixRemoteLayout(layout);
   const expected = {
     installId,
     profileId: profile.id,
@@ -827,7 +913,7 @@ async function runOwnershipPreflight({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { runtime },
+    { profile, runtime },
   );
   let detail = null;
   try {
@@ -850,6 +936,7 @@ async function runOwnershipPreflight({
 }
 
 function buildLegacyMonitorCleanupScript(layout) {
+  assertPosixRemoteLayout(layout);
   if (!layout || layout.runtimeMode !== "account-default" || !layout.legacyMonitorPidFile) {
     throw new TypeError("legacy monitor cleanup is account-default only");
   }
@@ -894,7 +981,7 @@ async function cleanupLegacyMonitor({
         buildRemoteNodeEvalCommand(remoteNode, buildLegacyMonitorCleanupScript(layout)),
       ),
     ]),
-    { runtime, role: "legacy-monitor-cleanup", mutation: true },
+    { profile, runtime, role: "legacy-monitor-cleanup", mutation: true },
   );
   let detail = null;
   try {
@@ -911,12 +998,14 @@ async function cleanupLegacyMonitor({
 // profile-isolated runtimes get null — the Hermes phase is not applicable
 // there and no HERMES_HOME is exported to the remote installers.
 function resolveRemoteHermesHome(layout) {
+  assertPosixRemoteLayout(layout);
   if (!layout || layout.runtimeMode !== "account-default") return null;
   if (typeof layout.remoteHome !== "string" || !layout.remoteHome) return null;
   return path.posix.join(layout.remoteHome, ".hermes");
 }
 
 function buildRemoteInstallerEnv(layout, remotePermissionTransport = "path") {
+  assertPosixRemoteLayout(layout);
   const hermesHome = resolveRemoteHermesHome(layout);
   return [
     `CLAUDE_CONFIG_DIR=${quoteForPosixShellArg(layout.claudeConfigDir)}`,
@@ -939,6 +1028,7 @@ function buildRemoteInstallerEnv(layout, remotePermissionTransport = "path") {
 }
 
 function buildInstallerVerificationCommand(txnStep, layout, remoteNode) {
+  assertPosixRemoteLayout(layout);
   const specs = {
     installClaude: {
       file: layout.claudeSettingsFile,
@@ -989,6 +1079,7 @@ function buildInstallerVerificationCommand(txnStep, layout, remoteNode) {
 }
 
 function buildMonitorVerificationCommand(layout, remoteNode) {
+  assertPosixRemoteLayout(layout);
   const script = [
     "const fs=require('fs'),cp=require('child_process');",
     `const pidFile=${JSON.stringify(layout.monitorPidFile)};`,
@@ -1044,6 +1135,7 @@ async function probeRemoteCliCapabilities({
   runtime,
   minimums = ISOLATED_CLI_MINIMUMS,
 }) {
+  assertPosixRemoteLayout(layout);
   const script = [
     "const cp=require('child_process'),fs=require('fs'),p=require('path');",
     "const names=['claude','codex','copilot'];",
@@ -1071,7 +1163,7 @@ async function probeRemoteCliCapabilities({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([buildRemoteNodeEvalCommand(remoteNode, script)]),
-    { runtime },
+    { profile, runtime },
   );
   if (result.code !== 0) return { ok: false, reason: "cli_probe_failed", stderr: result.stderr };
   let raw;
@@ -1110,6 +1202,7 @@ function buildWrapperEvidence(executablePath, envName, envValue) {
 }
 
 function buildIsolatedWrapper(layout, executablePath, envName, envValue, evidenceFile) {
+  assertPosixRemoteLayout(layout);
   const evidenceTmp = `${evidenceFile}.tmp.$$`;
   const evidence = buildWrapperEvidence(executablePath, envName, envValue);
   return [
@@ -1175,7 +1268,7 @@ async function writeIsolatedWrappers({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(files), runtime, role: "isolated-wrapper-write", mutation: true },
+    { profile, stdin: compactJson(files), runtime, role: "isolated-wrapper-write", mutation: true },
   );
   return { ok: result.code === 0, stderr: result.stderr, files };
 }
@@ -1241,7 +1334,7 @@ async function verifyIsolatedArtifacts({
     buildSshArgs(profile).concat([
       fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, script)),
     ]),
-    { runtime },
+    { profile, runtime },
   );
   let artifactMap = {};
   try { artifactMap = JSON.parse(String(result.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
@@ -1298,10 +1391,475 @@ function summarizeHermesTargets(targets) {
   return [actions, activation].filter(Boolean).join("; ");
 }
 
+// Windows programs use the deployment transport, including its mutation
+// uncertainty fence. runWindowsOperation is intentionally not used here.
+async function runWindowsDeployOperation({ profile, spawn, runtime, layout, execPath, operation, mutation = false, timeoutMs, transportWait = spawnAndWait, ...args }) {
+  const frame = buildWindowsOperationFrame({ layout, execPath, operation, ...args });
+  // The DSH installer is a new operation: its outer SSH budget must cover the
+  // inner installer plus the scheduled task's result wait. Existing installers
+  // keep their caller-provided budget unchanged.
+  const effectiveTimeoutMs = operation === "runInstallerAsUser" && Number.isInteger(args.installerTimeoutMs)
+    ? windowsUserInstallerBudgets(args.installerTimeoutMs).transportTimeoutMs
+    : timeoutMs;
+  const transport = await transportWait(spawn, "ssh", buildSshArgs(profile).concat([REMOTE_NODE_LAUNCH_COMMAND]), {
+    profile,
+    stdin: frame, runtime, role: `windows-${operation}`, mutation, timeoutMs: effectiveTimeoutMs,
+  });
+  let detail;
+  try { detail = JSON.parse(String(transport.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
+  const refusal = /^([a-z][a-z0-9_]+): /m.exec(String(transport.stderr || ""));
+  let reason = transport.code === 7 ? "windows_node_changed"
+    : (refusal && refusal[1]) || (detail && detail.reason) || "windows_operation_failed";
+  if (reason === "installer_failed" && detail && /^Windows remote PowerShell hooks cannot use paths containing \$, backtick or double quotes: /m.test(detail.stderrTail || "")) {
+    reason = "windows_powershell_path_unsupported";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-unsafe-path: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_powershell_path_unsupported";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-ownership-conflict: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_ownership_conflict";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-hooks-disabled: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_hooks_disabled";
+  }
+  if (reason === "installer_result_unknown") throw windowsRecoveryError(runtime, reason);
+  return {
+    ok: transport.code === 0 && !!detail && typeof detail === "object" && !Array.isArray(detail)
+      && (detail.ok === true || (operation === "readIdentity" && Object.hasOwn(detail, "identity"))),
+    code: transport.code, detail, reason,
+    message: transport.stderr || (detail && (detail.stderrTail || detail.message)) || `Windows ${operation} failed.`,
+  };
+}
+
+function windowsRecoveryError(runtime, code = "manual_lock_inspection_required") {
+  const err = Object.assign(new Error("Remote deployment lock requires manual inspection"), {
+    name: "TransportRecoveryError", code, recoveryCode: "manual_lock_inspection_required", drainVerified: true,
+  });
+  if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+    try { runtime.invalidateManagedOperation(err); } catch {}
+  }
+  return err;
+}
+
+function windowsDeployContext({ profile, installId, layout, execPath, leaseId, spawn, runtime, transportWait, now = Date.now }) {
+  return {
+    profile, spawn, runtime, layout, execPath, transportWait,
+    owner: { leaseId, installId, profileId: profile.id, runtimeKey: layout.runtimeKey, layoutVersion: layout.layoutVersion, acquiredAt: now() },
+    expected: { installId, profileId: profile.id, runtimeKey: layout.runtimeKey, layoutVersion: layout.layoutVersion },
+  };
+}
+
+function createWindowsOperationRunner(context) {
+  return (operation, mutation, args = {}) => runWindowsDeployOperation({ ...context, operation, mutation, ...args });
+}
+
+async function acquireWindowsDeployLock(context) {
+  const { runtime } = context;
+  if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("acquire-attempted");
+  const result = await runWindowsDeployOperation({ ...context, operation: "acquireLock", mutation: true });
+  if (result.code === 0 && result.detail && result.detail.ok === true) {
+    if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("lock-owned");
+    return result;
+  }
+  if (result.code === 0 && result.detail && result.detail.ok === false && result.detail.reason === "lock_busy") {
+    if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("before-acquire");
+    return { ...result, reason: "lock_busy", message: "Another Clawd deployment owns this remote runtime; try again later." };
+  }
+  if (result.reason === "windows_node_changed") {
+    if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("before-acquire");
+    return { ...result, hint: "remoteSshErrWindowsNodeChanged" };
+  }
+  throw windowsRecoveryError(runtime, "lock_acquire_unknown");
+}
+
+async function settleWindowsDeployLease(context, operation, progress = () => {}) {
+  let result;
+  let primaryError;
+  try { result = await operation(); } catch (err) { primaryError = err; }
+  let releaseError;
+  if (!requiresManualLockInspection(primaryError) && !requiresManualLockInspection(result) && managedTransportIsActive(context.runtime)) {
+    try {
+      const released = await runWindowsDeployOperation({ ...context, operation: "releaseLock", mutation: true });
+      if (!released.ok) throw windowsRecoveryError(context.runtime);
+      if (context.runtime && typeof context.runtime.setManagedLockStage === "function") context.runtime.setManagedLockStage("before-acquire");
+      progress("lock-release", "ok");
+    } catch (err) {
+      releaseError = err;
+      progress("lock-release", "fail", `Lock release requires manual inspection at ${context.layout.deployLockDir}`);
+    }
+  }
+  if (releaseError) {
+    const recoveryCode = releaseError.recoveryCode || "manual_lock_inspection_required";
+    if (primaryError) Object.assign(primaryError, { recoveryCode, recoveryError: releaseError.message });
+    else if (result && result.ok === false) return { ...result, recoveryCode, recoveryError: releaseError.message };
+    else throw Object.assign(releaseError, { recoveryCode });
+  }
+  if (primaryError) throw primaryError;
+  return result;
+}
+
+function windowsInstallerEnv(layout, permissionTransport) {
+  return {
+    CLAUDE_CONFIG_DIR: layout.claudeConfigDir, COPILOT_HOME: layout.copilotHome, CODEX_HOME: layout.codexHome,
+    CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1", CLAWD_REMOTE_IDENTITY_PATH: layout.identityFile,
+    CLAWD_SSH_SECURE_MARKER_PATH: layout.secureMarkerFile, CLAWD_HOST_PREFIX_PATH: layout.hostPrefixFile,
+    CLAWD_REMOTE_LAST_LOG_PATH: layout.lastLogFile, CLAWD_STATUSLINE_SIDECAR_PATH: layout.statuslineSidecarFile,
+    CLAWD_REMOTE_PERMISSION_TRANSPORT: permissionTransport === "query" || permissionTransport === "native" ? permissionTransport : "path",
+  };
+}
+
+function dshDeploymentArgs({ layout, profile, installId, clawdVersion, mode, allowLocalMigration = false }) {
+  const args = [
+    mode === "inspect" ? "--remote-inspect" : "--remote",
+    "--profile", "desktop",
+    "--remote-root", dshRemoteRoot(layout),
+    "--install-id", installId,
+    "--profile-id", profile.id,
+    "--runtime-key", layout.runtimeKey,
+    "--layout-version", String(layout.layoutVersion),
+    "--identity-path", layout.identityFile,
+    "--host-prefix-path", layout.hostPrefixFile,
+  ];
+  if (mode !== "inspect") args.splice(1, 0, "--clawd-version", clawdVersion);
+  if (mode !== "inspect" && allowLocalMigration) args.push("--allow-local-migration");
+  return args;
+}
+
+async function uploadDshAssets({ run, spawn, runtime, profile, layout, hooksDir, leaseId }) {
+  const stage = path.win32.join(layout.deployStagingDir, `${leaseId}-dsh`);
+  const parentDirs = new Set([stage]);
+  for (const relative of DSH_ASSET_FILES) {
+    let directory = path.win32.dirname(path.win32.join(stage, relative));
+    while (directory !== stage && directory.startsWith(`${stage}${path.win32.sep}`)) {
+      parentDirs.add(directory);
+      directory = path.win32.dirname(directory);
+    }
+  }
+  const mkdir = await run("mkdir", true, { directories: [...parentDirs] });
+  if (!mkdir.ok) return { ok: false, reason: mkdir.reason, message: mkdir.message };
+  const groups = new Map();
+  for (const relative of DSH_ASSET_FILES) {
+    const remoteDir = path.win32.dirname(path.win32.join(stage, relative));
+    if (!groups.has(remoteDir)) groups.set(remoteDir, []);
+    groups.get(remoteDir).push(path.join(hooksDir, ...relative.split("/")));
+  }
+  for (const [remoteDir, localFiles] of groups) {
+    const upload = await spawnAndWait(spawn, "scp", buildScpArgs(profile).concat([
+      ...localFiles,
+      buildScpRemoteTarget(profile.host, toRemoteSftpPath(remoteDir)),
+    ]), { profile, timeoutMs: 120000, runtime, role: "dsh-files-upload", mutation: true });
+    if (upload.code !== 0) return { ok: false, reason: "dsh_asset_upload_failed", message: upload.stderr || "DSH asset staging upload failed" };
+  }
+  const hashes = Object.fromEntries(DSH_ASSET_FILES.map((relative) => [
+    relative,
+    crypto.createHash("sha256").update(fs.readFileSync(path.join(hooksDir, ...relative.split("/")))).digest("hex"),
+  ]));
+  const promoted = await run("promoteMany", true, { hashes, staging: stage });
+  if (!promoted.ok) return { ok: false, reason: promoted.reason, message: promoted.message };
+  return { ok: true };
+}
+
+async function runDshInstaller({ run, layout, profile, installId, clawdVersion, mode, allowLocalMigration, dshHome }) {
+  const budgets = windowsUserInstallerBudgets(DSH_INSTALLER_TIMEOUT_MS);
+  const result = await run("runInstallerAsUser", true, {
+    script: "dsh-install.js",
+    argv: dshDeploymentArgs({ layout, profile, installId, clawdVersion, mode, allowLocalMigration }),
+    env: {},
+    dshHome: dshHome || dshDefaultHome(layout),
+    installerTimeoutMs: budgets.installerTimeoutMs,
+    transportTimeoutMs: budgets.transportTimeoutMs,
+  });
+  const envelope = result && result.detail && result.detail.installerResult;
+  if (!result.ok || !envelope || envelope.status !== "ok") {
+    const rawReason = (envelope && envelope.reason) || result.reason || "dsh_install_failed";
+    const reason = rawReason === "local-migration-required" ? "dsh_local_migration_required" : rawReason;
+    return {
+      ok: false,
+      reason,
+      message: (envelope && envelope.message) || result.message || "DeepSeek Harness remote installer failed",
+      envelope: envelope || null,
+    };
+  }
+  return { ok: true, envelope };
+}
+
+async function cleanupDshWindows({ runWindows, layout, installId }) {
+  const remoteRoot = dshRemoteRoot(layout);
+  const preflight = await runWindows("dshCleanupPreflight", false, {
+    remoteRoot,
+    installId,
+    assets: DSH_ASSET_FILES,
+  });
+  if (!preflight.ok) return { ok: false, reason: preflight.reason, message: preflight.message };
+  const state = preflight.detail;
+  const incomplete = (reason, message) => ({ ok: false, reason: "windows_dsh_cleanup_incomplete", message, dshReason: reason });
+  if (state.recordReadable === false || state.recordInvalid || state.assetUnreadable) {
+    return incomplete("dsh_state_unreadable", "DeepSeek Harness remote state could not be read safely");
+  }
+  if (state.desktop.unreadable || state.web.unreadable
+    || state.desktop.state === "unreadable" || state.web.state === "unreadable") {
+    return incomplete("dsh_reference_unreadable", "A DeepSeek Harness profile reference could not be read safely");
+  }
+  const anyState = state.recordExists || state.assetPresent
+    || state.desktop.referenced || state.web.referenced;
+  if (!anyState) return { ok: true, skipped: true };
+  if (state.installerLoadFailed) {
+    return incomplete("dsh_installer_unreadable", "The remote DeepSeek Harness installer could not be loaded");
+  }
+  if (state.recordExists && !state.installerCapable) {
+    return incomplete("dsh_installer_cannot_uninstall", "The remote DeepSeek Harness installer cannot remove an owned deployment");
+  }
+  if (state.recordExists) {
+    const budgets = windowsUserInstallerBudgets(DSH_INSTALLER_TIMEOUT_MS);
+    const result = await runWindows("runInstallerAsUser", true, {
+      script: "dsh-install.js",
+      argv: ["--remote-uninstall-owned", "--profile", "desktop", "--remote-root", remoteRoot, "--install-id", installId],
+      env: {},
+      dshHome: state.dshHome,
+      installerTimeoutMs: budgets.installerTimeoutMs,
+      transportTimeoutMs: budgets.transportTimeoutMs,
+    });
+    const envelope = result && result.detail && result.detail.installerResult;
+    if (!result.ok || !envelope || envelope.status !== "ok"
+      || envelope.registrationRemoved === false
+      || (Array.isArray(envelope.conflicts) && envelope.conflicts.length > 0)) {
+      return incomplete(
+        "dsh_uninstall_incomplete",
+        (envelope && (envelope.message || envelope.reason)) || result.message || "DeepSeek Harness cleanup was incomplete",
+      );
+    }
+  } else if (state.desktop.referenced || state.web.referenced) {
+    return incomplete(
+      "dsh_reference_unconfirmed",
+      "DeepSeek Harness profiles still reference this deployment but the installer cannot remove it",
+    );
+  }
+  const files = DSH_ASSET_FILES.map((relative) => path.win32.join(layout.claudeHooksDir, relative));
+  const removed = await runWindows("removeFiles", true, { files });
+  if (!removed.ok) return incomplete(removed.reason || "dsh_asset_cleanup_failed", removed.message);
+  await runWindows("rmdirEmpty", false, {
+    directories: [
+      path.win32.join(layout.claudeHooksDir, DSH_BRIDGE_DIR, "lib"),
+      path.win32.join(layout.claudeHooksDir, DSH_BRIDGE_DIR),
+    ],
+  });
+  return { ok: true, removed: true };
+}
+
+async function secureWindowsDeploy({ profile, installId, identityTxn, platformSnapshot, legacyMigrationConfirmed,
+  runtime, spawn, hooksDir, leaseId, deps, progress, recordStep, fail }) {
+  if (profile.runtimeMode === "profile-isolated") return fail("layout", "Profile-isolated runtimes are not supported on Windows remote hosts.", "windows_profile_isolated_unsupported");
+  if (profile.hostPrefix != null && !isValidHostPrefix(profile.hostPrefix)) {
+    return fail("host-prefix", "Host prefix contains characters that cannot be written to Windows hooks.", "host_prefix_invalid");
+  }
+  progress("layout", "start");
+  let layout;
+  try {
+    layout = resolveRemoteRuntimeLayout({ runtimeMode: profile.runtimeMode, runtimeKey: profile.runtimeKey, remoteHome: platformSnapshot.node.homedir });
+    if (layout.platform !== "win32") throw new Error("Windows remote home required");
+  } catch (err) { return fail("layout", err.message, "remote_home_invalid"); }
+  if (layout.runtimeKey !== identityTxn.runtimeKey || layout.layoutVersion !== identityTxn.layoutVersion) {
+    return fail("layout", "Identity transaction belongs to another remote runtime layout", "layout_drift");
+  }
+  progress("layout", "ok", layout.runtimeKey);
+  progress("check-node", "start");
+  const resolved = platformSnapshot.remoteNode;
+  if (!resolved || !resolved.ok) return fail("check-node", "A probed Windows Node execPath is required.", "node_unavailable");
+  const remoteNode = { nodeBin: resolved.nodeBin, version: resolved.version || null, source: resolved.source || null };
+  progress("check-node", "ok", resolved.version);
+  const context = windowsDeployContext({ profile, installId, layout, execPath: resolved.nodeBin, leaseId, spawn, runtime, transportWait: deps.transportWait, now: deps.now });
+  progress("lock", "start");
+  const lock = await acquireWindowsDeployLock(context);
+  if (!lock.ok) return fail("lock", lock.message, lock.reason);
+  progress("lock", "ok");
+  return settleWindowsDeployLease(context, async () => {
+    const run = createWindowsOperationRunner(context);
+    progress("preflight", "start");
+    const preflight = await run("preflight", false);
+    if (!preflight.ok) return fail("preflight", preflight.message, preflight.reason);
+    const presence = preflight.detail;
+    const dshState = presence.dsh || { status: "absent" };
+    if (dshState.status === "ambiguous") {
+      return fail("preflight", "More than one DeepSeek Harness desktop installation was found on the remote host.", "dsh_desktop_ambiguous");
+    }
+    if (dshState.status === "unknown") {
+      const reason = dshState.reason === "dsh-home-ambiguous" ? "dsh_home_ambiguous" : "dsh_desktop_unreadable";
+      return fail("preflight", "The DeepSeek Harness desktop installation could not be verified on the remote host.", reason);
+    }
+    if (dshState.status === "present" && dshState.profileReadable === false) {
+      return fail("preflight", "The DeepSeek Harness desktop profile manifest could not be read.", "dsh_profile_unreadable");
+    }
+    const dshApplicable = dshState.status === "present" && dshState.profileInitialized === true;
+    const dshDiscoveryIncomplete = dshState.status === "absent" && dshState.reason === "registry-unreadable";
+    const dshLocalLinked = dshState.localClawdLinked === true;
+    if (presence.identity !== true
+      && (presence.legacyTraces > 0 || presence.legacyConfigTraces > 0 || dshLocalLinked)
+      && legacyMigrationConfirmed !== true) {
+      return fail("preflight", "This remote runtime contains a legacy Clawd deployment with no verifiable owner. Confirm migration before changing it.", "legacy_deployment_confirmation_required");
+    }
+    if (dshApplicable && presence.identity === true && dshLocalLinked && legacyMigrationConfirmed !== true) {
+      return fail("preflight", "The DeepSeek Harness desktop profile is linked to the local Clawd generation. Confirm migration before replacing it.", "dsh_local_migration_required");
+    }
+    const dshAllowMigration = dshApplicable && dshLocalLinked && legacyMigrationConfirmed === true;
+    progress("preflight", "ok");
+    // Windows remote hosts do not support the Codex fallback monitor,
+    // isolated wrappers, or the Hermes phase.
+    const stagingNative = path.win32.join(layout.deployStagingDir, leaseId);
+    const mkdir = await run("mkdir", true, { directories: [...remoteLayoutDirectories(layout), stagingNative] });
+    if (!mkdir.ok) return fail("mkdir", mkdir.message, mkdir.reason);
+    const identity = buildRemoteIdentityDocument({ profile: { ...profile, routingNonce: identityTxn.toNonce }, installId, deployedAt: identityTxn.startedAt });
+    // Each write couples its progress row with an identity step and readback evidence.
+    for (const [operation, step, txnStep, evidence, args] of [
+      ["writeIdentity", "identity", "identity", "identity read-back matched transaction", { identity }],
+      ["writeMarker", "secure-marker", "secureMarker", "marker atomically written and read back", {}],
+    ]) {
+      progress(step, "start");
+      const result = await run(operation, true, args);
+      if (!result.ok) return fail(step, result.message, result.reason, txnStep);
+      await recordStep(txnStep, "done", evidence);
+      progress(step, "ok");
+    }
+    progress("hook-files", "start");
+    const localFiles = HOOK_FILES.map((name) => path.join(hooksDir, name));
+    const upload = await spawnAndWait(spawn, "scp", buildScpArgs(profile).concat([...localFiles, buildScpRemoteTarget(profile.host, toRemoteSftpPath(stagingNative))]), {
+      profile,
+      timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true,
+    });
+    if (upload.code !== 0) return fail("hook-files", upload.stderr || "Hook staging upload failed", "hook_upload_failed", "hookFiles");
+    const hashes = Object.fromEntries(HOOK_FILES.map((name, i) => [name, crypto.createHash("sha256").update(fs.readFileSync(localFiles[i])).digest("hex")]));
+    const promoted = await run("promoteMany", true, { hashes });
+    if (!promoted.ok) return fail("hook-files", promoted.message, promoted.reason, "hookFiles");
+    await recordStep("hookFiles", "done", "uploaded hook hashes matched local files");
+    progress("hook-files", "ok");
+    let dshAssetsReady = false;
+    if (dshApplicable) {
+      progress("dsh-files", "start");
+      const dshUpload = await uploadDshAssets({ run, spawn, runtime, profile, layout, hooksDir, leaseId });
+      if (!dshUpload.ok) return fail("dsh-files", dshUpload.message, dshUpload.reason);
+      dshAssetsReady = true;
+      progress("dsh-files", "ok");
+    }
+    if (profile.hostPrefix) {
+      const prefix = await run("writeHostPrefix", true, { text: profile.hostPrefix });
+      if (!prefix.ok) return fail("host-prefix", prefix.message, prefix.reason);
+    }
+    const env = windowsInstallerEnv(layout, profile.remotePermissionTransport);
+    let codexHooksInstalled = false;
+    for (const [txnStep, progressStep, script, present] of [
+      ["installClaude", "install-claude", "install.js", presence.claudePresent],
+      ["installCodex", "install-codex", "codex-install.js", presence.codexPresent],
+      ["installCopilot", "install-copilot", "copilot-install.js", presence.copilotPresent],
+    ]) {
+      progress(progressStep, "start");
+      if (!present) {
+        await recordStep(txnStep, "not-applicable", `${script} target root absent before deploy`);
+      } else {
+        const installed = await run("runInstaller", true, { script, argv: ["--remote"], env, verify: txnStep, timeoutMs: 60000 });
+        if (!installed.ok || installed.detail.verified !== true) return fail(progressStep, installed.message, installed.reason === "windows_operation_failed" ? "installer_verification_failed" : installed.reason, txnStep);
+        await recordStep(txnStep, "done", `${script} settings readback verified secure managed command shape`);
+        if (txnStep === "installCodex") codexHooksInstalled = true;
+      }
+      progress(progressStep, "ok", present ? null : "not applicable", txnStep === "installClaude" ? "remoteSshWindowsQuotaUnsupported" : null);
+    }
+    if (!presence.claudePresent) {
+      await recordStep("claudePermission", "not-applicable", "Claude config root absent before deploy; native approval remains");
+    } else {
+      const permission = await run("readClaudePermission", false);
+      if (!permission.ok || !["native", "managed"].includes(permission.detail.mode)) return fail("claude-permission", permission.message, permission.reason, "claudePermission");
+      const native = permission.detail.mode === "native";
+      await recordStep("claudePermission", native ? "not-applicable" : "done", native
+        ? "no managed PermissionRequest; Claude native approval retained" : "managed PermissionRequest URL contains transaction nonce");
+    }
+    await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts");
+    let dshBridgeInstalled = false;
+    let dshRestartRequired = false;
+    if (dshAssetsReady) {
+      progress("install-dsh", "start");
+      const install = await runDshInstaller({
+        run, layout, profile, installId, clawdVersion: localClawdVersion(deps),
+        mode: "install", allowLocalMigration: dshAllowMigration,
+        dshHome: dshState.dshHome || dshDefaultHome(layout),
+      });
+      if (!install.ok) return fail("install-dsh", install.message, install.reason);
+      const readback = await runDshInstaller({
+        run, layout, profile, installId, clawdVersion: localClawdVersion(deps),
+        mode: "inspect", allowLocalMigration: false,
+        dshHome: dshState.dshHome || dshDefaultHome(layout),
+      });
+      const desktop = readback.ok ? readback.envelope.desktop : null;
+      if (!readback.ok
+        || !desktop
+        || desktop.kind !== "ours"
+        || desktop.withinDeployment !== true
+        || desktop.hashMatches !== true
+        || desktop.manifestDeploymentMatches !== true
+        || readback.envelope.phase !== "installed"
+        || desktop.incomplete === true
+        || desktop.residuePresent === true) {
+        return fail("install-dsh", "The DeepSeek Harness desktop bridge did not verify as this deployment.", "dsh_readback_failed");
+      }
+      dshBridgeInstalled = true;
+      dshRestartRequired = install.envelope.restartRequired === true;
+      progress("install-dsh", "ok");
+    }
+    progress("install-hermes", "ok", "not applicable", "remoteSshWindowsHermesSkipped");
+    return {
+      ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true,
+      codexHooksInstalled, isolation: null, hermes: null,
+      dshBridgeInstalled, dshRestartRequired,
+      ...(dshDiscoveryIncomplete ? {
+        dshDiscoveryWarning: {
+          reason: "dsh_discovery_incomplete",
+          hint: "remoteSshWarnDshDiscoveryIncomplete",
+          message: "DeepSeek Harness discovery was incomplete because the Windows registry could not be read; deployment continued without DSH integration.",
+        },
+      } : {}),
+    };
+  }, progress);
+}
+
+// Revalidate historical Windows targets before acquiring a mutation lease.
+// POSIX deliberately retains its existing SSH command count and ordering.
+async function withWindowsRemoteLease({ profile, runtime, deps = {}, operation, requireIdentity = true }) {
+  const spawn = deps.spawn || childProcess.spawn;
+  const discovered = await discoverWindowsRemoteNode({ profile, spawn, buildSshArgs, runtime, runFrame: deps.runRemoteNodeFrame });
+  if (!discovered.ok) return { ...discovered, skipped: true };
+  if (typeof discovered.homedir !== "string" || path.win32.normalize(discovered.homedir).toLowerCase() !== String(profile.remoteHome).toLowerCase()) {
+    return { ok: false, skipped: true, reason: "platform_changed" };
+  }
+  let layout;
+  try {
+    layout = resolveRemoteRuntimeLayout({ runtimeMode: profile.runtimeMode, runtimeKey: profile.runtimeKey, remoteHome: profile.remoteHome });
+  } catch (err) { return { ok: false, skipped: true, reason: "layout_invalid", stderr: err.message }; }
+  if (layout.platform !== "win32" || layout.runtimeMode === "profile-isolated") return { ok: false, skipped: true, reason: "windows_profile_isolated_unsupported" };
+  const leaseId = (deps.randomBytes || crypto.randomBytes)(16).toString("hex");
+  const context = windowsDeployContext({ profile, installId: profile.installId, layout, execPath: discovered.nodeBin, leaseId, spawn, runtime, transportWait: deps.transportWait, now: deps.now });
+  const run = createWindowsOperationRunner(context);
+  // Missing identity must stop cleanup before even creating a deployment lock.
+  // Recheck under the lease below so this read never authorizes a later write.
+  if (requireIdentity) {
+    const read = await run("readIdentity", false);
+    if (!read.ok || !read.detail.identity) return { ok: false, skipped: true, reason: read.ok ? "ownership_identity_missing" : read.reason, stderr: read.message };
+  }
+  const lock = await acquireWindowsDeployLock(context);
+  if (!lock.ok) return { ok: false, skipped: true, reason: lock.reason, stderr: lock.message };
+  return settleWindowsDeployLease(context, async () => {
+    if (requireIdentity) {
+      const preflight = await run("preflight", false);
+      if (!preflight.ok) return { ok: false, skipped: true, reason: preflight.reason, stderr: preflight.message };
+      const read = await run("readIdentity", false);
+      if (!read.ok || !read.detail.identity) return { ok: false, skipped: true, reason: read.ok ? "ownership_identity_missing" : read.reason, stderr: read.message };
+      return operation({ spawn, layout, remoteNode: discovered.nodeBin, leaseId, runWindows: run, identity: read.detail.identity });
+    }
+    return operation({ layout, runWindows: run });
+  });
+}
+
 async function secureDeploy({
   profile,
   installId,
   identityTxn,
+  platformSnapshot,
   legacyMigrationConfirmed = false,
   runtime,
   deps = {},
@@ -1325,48 +1883,59 @@ async function secureDeploy({
   let remoteNode = null;
   let lockHeld = false;
 
-  function progress(step, status, message, hint) {
+  function progress(step, status, message, hint, helpHint) {
     runtime.emit("progress", {
       profileId: profile.id,
       step,
       status,
       message: message ? redactTransportDiagnostic(message, profile) : null,
       hint: hint || null,
+      ...(helpHint ? { helpHint } : {}),
     });
   }
   async function recordStep(name, status, evidence) {
     await onStep(name, { status, ...(evidence ? { evidence } : {}) });
   }
-  async function fail(step, message, reason = null, identityStep = null) {
+  async function fail(step, message, reason = null, identityStep = null, hint = null, stderr = message, exitCode = null) {
+    if ((platformSnapshot ? platformSnapshot.remotePlatform : profile.remotePlatform) === "win32") {
+      hint = hint || windowsFailureHint(reason);
+    }
+    const helpHint = !hint && shouldSuggestGatewayMode(profile, step, stderr, exitCode)
+      ? "remoteSshGatewayHelp" : null;
     const safeMessage = redactTransportDiagnostic(message, profile);
-    progress(step, "fail", safeMessage);
+    progress(step, "fail", safeMessage, hint, helpHint);
     if (identityStep) {
       try { await recordStep(identityStep, "failed", String(safeMessage || "failed").slice(0, 500)); } catch {}
     }
-    return { ok: false, step, message: safeMessage, reason };
+    return { ok: false, step, message: safeMessage, reason, ...(hint ? { hint } : {}), ...(helpHint ? { helpHint } : {}) };
   }
 
-  const missing = HOOK_FILES
-    .map((name) => path.join(hooksDir, name))
-    .filter((file) => !fs.existsSync(file));
-  if (missing.length) return fail("verify", `Missing files: ${missing.join(", ")}`);
+  const verification = verifyLocalHookFiles({ hooksDir });
+  if (!verification.ok) return fail(verification.step, verification.message, verification.reason);
   progress("verify", "ok");
 
   progress("remote-shell", "start");
-  const shell = await detectShellFn({ profile, spawn, buildSshArgs, runtime });
-  if (shell && shell.shell === "windows-cmd") {
-    return fail(
-      "remote-shell",
-      "Remote default shell is Windows cmd.exe. Remote SSH needs a POSIX shell.",
-      "windows_cmd_shell",
-    );
+  const shell = platformSnapshot
+    ? platformSnapshot.shell
+    : await detectShellFn({ profile, spawn, buildSshArgs, runtime });
+  if (platformSnapshot && platformSnapshot.remotePlatform === "win32") {
+    progress("remote-shell", "ok", "Windows", "remoteSshWindowsPlatform");
+    return secureWindowsDeploy({ profile, installId, identityTxn, platformSnapshot, legacyMigrationConfirmed,
+      runtime, spawn, hooksDir, leaseId, deps, progress, recordStep, fail });
+  }
+  if (!platformSnapshot && (profile.remotePlatform === "win32" || (shell && shell.shell === "windows-cmd"))) {
+    return fail("remote-shell", "Probe the remote platform before deploying to Windows.", "windows_platform_snapshot_required");
   }
   progress("remote-shell", "ok", shell && shell.os);
 
   progress("layout", "start");
-  const homeResult = await resolveRemoteHome({ profile, spawn, runtime });
+  const homeResult = await resolveRemoteHome({
+    profile: platformSnapshot ? { ...profile, remotePlatform: platformSnapshot.remotePlatform } : profile,
+    spawn, runtime,
+  });
   if (!homeResult.ok) return fail("layout", homeResult.message, "remote_home_invalid");
   layout = homeResult.layout;
+  assertPosixRemoteLayout(layout);
   if (layout.runtimeKey !== identityTxn.runtimeKey
     || layout.layoutVersion !== identityTxn.layoutVersion) {
     return fail("layout", "Identity transaction belongs to another remote runtime layout", "layout_drift");
@@ -1374,14 +1943,17 @@ async function secureDeploy({
   progress("layout", "ok", layout.runtimeKey);
 
   progress("check-node", "start");
-  const resolved = await resolveRemoteNodeBin({
-    profile,
+  const resolved = (platformSnapshot && platformSnapshot.remoteNode) || await resolveRemoteNodeBin({
+    profile: platformSnapshot ? { ...profile, remotePlatform: platformSnapshot.remotePlatform } : profile,
     spawn,
     buildSshArgs,
     runtime,
     verifyCache: true,
   });
-  if (!resolved.ok) return fail("check-node", resolved.message || "Remote Node.js not found");
+  if (!resolved.ok) {
+    return fail("check-node", resolved.message || "Remote Node.js not found", null, null,
+      resolved.hint || null, resolved.stderr || resolved.message, resolved.code);
+  }
   remoteNode = resolved.nodeBin;
   const remoteNodeInfo = {
     nodeBin: resolved.nodeBin,
@@ -1389,6 +1961,19 @@ async function secureDeploy({
     source: resolved.source || null,
   };
   progress("check-node", "ok", resolved.version || null);
+
+  // Direct callers that do not go through IPC have no trusted platform snapshot.
+  if (!platformSnapshot && (!shell || !/^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX)$/i.test(shell.os))) {
+    const checked = await spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([
+      buildRemoteNodeEvalCommand(remoteNode, "console.log(process.platform)"),
+    ]), { profile, runtime });
+    if (checked.code !== 0 || !String(checked.stdout || "").trim()) {
+      return fail("check-node", "Remote Node platform could not be verified.");
+    }
+    if (String(checked.stdout).trim() === "win32") {
+      return fail("remote-shell", "Probe the remote platform before deploying to Windows.", "windows_platform_snapshot_required");
+    }
+  }
 
   progress("lock", "start");
   const lock = await acquireDeployLock({
@@ -1487,7 +2072,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([mkdirCommand]),
-      { runtime, role: "layout-create", mutation: true },
+      { profile, runtime, role: "layout-create", mutation: true },
     );
     if (mkdirResult.code !== 0) return fail("mkdir", mkdirResult.stderr || "Remote layout creation failed");
 
@@ -1509,7 +2094,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([identityCommand]),
-      { stdin: compactJson(identityDocument), runtime, role: "identity-write", mutation: true },
+      { profile, stdin: compactJson(identityDocument), runtime, role: "identity-write", mutation: true },
     );
     if (identityWrite.code !== 0) {
       return fail("identity", identityWrite.stderr || "Identity write failed", null, "identity");
@@ -1526,7 +2111,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, identityVerifyScript)),
       ]),
-      { stdin: compactJson(identityDocument), runtime },
+      { profile, stdin: compactJson(identityDocument), runtime },
     );
     if (identityVerify.code !== 0) return fail("identity", "Identity read-back verification failed", null, "identity");
     await recordStep("identity", "done", "identity read-back matched transaction");
@@ -1544,7 +2129,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([markerCommand]),
-      { stdin: "clawd-ssh-secure-v1", runtime, role: "secure-marker-write", mutation: true },
+      { profile, stdin: "clawd-ssh-secure-v1", runtime, role: "secure-marker-write", mutation: true },
     );
     if (markerWrite.code !== 0) return fail("secure-marker", markerWrite.stderr || "Secure marker write failed", null, "secureMarker");
     await recordStep("secureMarker", "done", "marker atomically written and read back");
@@ -1558,7 +2143,7 @@ async function secureDeploy({
       spawn,
       "scp",
       buildScpArgs(profile).concat([...localFiles, remoteTarget]),
-      { timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true },
+      { profile, timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true },
     );
     if (scp.code !== 0) return fail("hook-files", scp.stderr || "Hook staging upload failed", null, "hookFiles");
     const promotion = HOOK_FILES
@@ -1570,7 +2155,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, `${promotion} && rmdir ${quoteForPosixShellArg(stagingDir)}`),
       ]),
-      { runtime, role: "hook-files-promote", mutation: true },
+      { profile, runtime, role: "hook-files-promote", mutation: true },
     );
     if (promote.code !== 0) return fail("hook-files", promote.stderr || "Hook promotion lost its deployment lease", null, "hookFiles");
     const expectedHashes = Object.fromEntries(HOOK_FILES.map((name) => [
@@ -1588,7 +2173,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, hashScript)),
       ]),
-      { runtime },
+      { profile, runtime },
     );
     if (hashVerify.code !== 0) return fail("hook-files", "Remote hook manifest hash verification failed", null, "hookFiles");
     await recordStep("hookFiles", "done", `sha256 verified ${HOOK_FILES.length} files`);
@@ -1621,7 +2206,7 @@ async function secureDeploy({
         spawn,
         "ssh",
         buildSshArgs(profile).concat([hpCommand]),
-        { stdin: profile.hostPrefix, runtime, role: "host-prefix-write", mutation: true },
+        { profile, stdin: profile.hostPrefix, runtime, role: "host-prefix-write", mutation: true },
       );
       if (hp.code !== 0) return fail("host-prefix", hp.stderr || "Host prefix write failed");
     }
@@ -1654,7 +2239,7 @@ async function secureDeploy({
             `${envPrefix} ${nodeCommand} && ${verifyCommand}`,
           ),
         ]),
-        { timeoutMs: 60000, runtime, role: `installer-${txnStep}`, mutation: true },
+        { profile, timeoutMs: 60000, runtime, role: `installer-${txnStep}`, mutation: true },
       );
       if (result.code !== 0) {
         return fail(progressStep, summarizeStderr(result.stderr) || "Remote installer failed", null, txnStep);
@@ -1674,22 +2259,14 @@ async function secureDeploy({
         "Claude config root absent before deploy; native approval remains",
       );
     } else {
-      const permissionVerifyScript = [
-      "const fs=require('fs');",
-      `const s=JSON.parse(fs.readFileSync(${JSON.stringify(layout.claudeSettingsFile)},'utf8'));`,
-      `const i=JSON.parse(fs.readFileSync(${JSON.stringify(layout.identityFile)},'utf8'));`,
-      "const a=Array.isArray(s&&s.hooks&&s.hooks.PermissionRequest)?s.hooks.PermissionRequest:[];",
-      "const flat=[];for(const e of a){if(e&&Array.isArray(e.hooks))flat.push(...e.hooks);else flat.push(e)}",
-      "const ours=flat.find(h=>h&&typeof h.url==='string'&&h.url.includes('127.0.0.1:'));",
-      "if(ours){const u=new URL(ours.url);const n=u.pathname==='/permission'?u.searchParams.get('nonce'):u.pathname.split('/').pop();if(n!==i.routingNonce)process.exit(1);console.log('managed')}else console.log('native')",
-    ].join("");
+      const permissionVerifyScript = buildClaudePermissionVerifyScript(layout);
       const permissionVerify = await spawnAndWait(
       spawn,
       "ssh",
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, permissionVerifyScript)),
       ]),
-      { runtime },
+      { profile, runtime },
     );
       if (permissionVerify.code !== 0) return fail("claude-permission", "Claude PermissionRequest shape verification failed", null, "claudePermission");
       const permissionMode = String(permissionVerify.stdout || "").trim().endsWith("native") ? "native" : "managed";
@@ -1723,7 +2300,7 @@ async function secureDeploy({
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, monitorCommand),
         ]),
-        { runtime, role: "codex-monitor-restart", mutation: true },
+        { profile, runtime, role: "codex-monitor-restart", mutation: true },
       );
       if (monitor.code !== 0) return fail("codex-monitor", monitor.stderr || "Codex monitor verification failed", null, "codexMonitor");
       await recordStep(
@@ -1813,7 +2390,7 @@ async function secureDeploy({
             `umask 077 && mkdir -p ${hermesStageArg} && chmod 700 ${hermesStageArg}`,
           ),
         ]),
-        { runtime, role: "hermes-stage-create", mutation: true },
+        { profile, runtime, role: "hermes-stage-create", mutation: true },
       );
       if (hermesStageMkdir.code !== 0) {
         return fail("hermes-files", hermesStageMkdir.stderr || "Hermes staging directory creation failed");
@@ -1825,7 +2402,7 @@ async function secureDeploy({
           ...hermesAssetPaths,
           buildScpRemoteTarget(profile.host, hermesStage),
         ]),
-        { timeoutMs: 120000, runtime, role: "hermes-files-upload", mutation: true },
+        { profile, timeoutMs: 120000, runtime, role: "hermes-files-upload", mutation: true },
       );
       if (hermesScp.code !== 0) {
         return fail("hermes-files", hermesScp.stderr || "Hermes asset staging upload failed");
@@ -1845,7 +2422,7 @@ async function secureDeploy({
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, hermesHashScript)),
         ]),
-        { runtime },
+        { profile, runtime },
       );
       if (hermesHashVerify.code !== 0) {
         return fail("hermes-files", "Hermes staged asset hash verification failed");
@@ -1876,6 +2453,7 @@ async function secureDeploy({
           ),
         ]),
         {
+          profile,
           timeoutMs: hermesOuterTimeoutMs(hermesTargets.length),
           runtime,
           role: "installer-hermes",
@@ -1917,7 +2495,7 @@ async function secureDeploy({
                 .join(" ")} && rmdir ${hermesStageArg}`,
             ),
           ]),
-          { timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
+          { profile, timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
         );
       } catch (err) {
         if (hermesFailure && requiresManualLockInspection(err)) {
@@ -1956,6 +2534,7 @@ async function secureDeploy({
       layout,
       remoteNode: remoteNodeInfo,
       transactionReady: true,
+      codexHooksInstalled: componentPresence.codexPresent === true,
       isolation,
       hermes: hermesSummary,
     };
@@ -2033,6 +2612,9 @@ async function bootstrapIsolatedRuntime({
   runtime = null,
   deps = {},
 }) {
+  if (profile && profile.remotePlatform === "win32") {
+    return { ok: false, reason: "windows_profile_isolated_unsupported" };
+  }
   if (!profile || !profile.id || !INSTALL_ID_RE.test(installId || "")) {
     return { ok: false, skipped: true, reason: "secure_identity_required" };
   }
@@ -2123,7 +2705,7 @@ async function bootstrapIsolatedRuntime({
       buildSshArgs(accountProfile).concat([
         fencedCommand(accountLayout, leaseId, remoteNode, command),
       ]),
-      { runtime, role: "isolated-runtime-bootstrap", mutation: true },
+      { profile: accountProfile, runtime, role: "isolated-runtime-bootstrap", mutation: true },
     );
     if (created.code !== 0) {
       return {
@@ -2191,14 +2773,14 @@ async function legacyStartCodexMonitor({ profile, runtime = null, deps = {} }) {
     "[ -f ~/.clawd-codex-monitor.pid ] && kill $(cat ~/.clawd-codex-monitor.pid) 2>/dev/null; " +
     "rm -f ~/.clawd-codex-monitor.pid; true";
   const cleanArgs = buildSshArgs(profile).concat([cleanCmd]);
-  await spawnAndWait(spawn, "ssh", cleanArgs, { runtime });
+  await spawnAndWait(spawn, "ssh", cleanArgs, { profile, runtime });
 
   // Launch new monitor in background and capture its PID.
   const startCmd =
     `nohup ${buildRemoteHookNodeCommand(remoteNode, "codex-remote-monitor.js", ["--port", profile.remoteForwardPort])} ` +
     "> /dev/null 2>&1 & echo $! > ~/.clawd-codex-monitor.pid";
   const startArgs = buildSshArgs(profile).concat([startCmd]);
-  const r = await spawnAndWait(spawn, "ssh", startArgs, { runtime });
+  const r = await spawnAndWait(spawn, "ssh", startArgs, { profile, runtime });
   return { ok: r.code === 0, stderr: r.stderr };
 }
 
@@ -2208,7 +2790,7 @@ async function legacyStopCodexMonitor({ profile, runtime = null, deps = {} }) {
     "[ -f ~/.clawd-codex-monitor.pid ] && kill $(cat ~/.clawd-codex-monitor.pid) 2>/dev/null; " +
     "rm -f ~/.clawd-codex-monitor.pid";
   const args = buildSshArgs(profile).concat([cmd]);
-  const r = await spawnAndWait(spawn, "ssh", args, { runtime });
+  const r = await spawnAndWait(spawn, "ssh", args, { profile, runtime });
   // best-effort — don't surface failures. Caller decides whether to log.
   return { ok: true, stderr: r.stderr };
 }
@@ -2254,7 +2836,7 @@ async function legacyUninstallRemoteIntegrations({ profile, runtime = null, deps
   let ok = true;
   for (const cmd of steps) {
     const args = buildSshArgs(profile).concat([cmd]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 30000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 30000, runtime });
     if (r.code !== 0) {
       ok = false;
       lastStderr = r.stderr;
@@ -2266,8 +2848,7 @@ async function legacyUninstallRemoteIntegrations({ profile, runtime = null, deps
 function hasSecureRemoteOwnership(profile) {
   return !!profile
     && INSTALL_ID_RE.test(profile.installId || "")
-    && typeof profile.remoteHome === "string"
-    && profile.remoteHome.startsWith("/")
+    && isValidRemoteHome(profile.remoteHome, profile.remotePlatform || "posix")
     && typeof profile.runtimeKey === "string"
     && Number.isInteger(profile.layoutVersion);
 }
@@ -2281,6 +2862,9 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
       stderr: "Remote ownership metadata is incomplete; no remote mutation was attempted.",
     };
   }
+  if (profile.remotePlatform === "win32") {
+    return withWindowsRemoteLease({ profile, runtime, deps, operation });
+  }
   const spawn = deps.spawn || childProcess.spawn;
   let layout;
   try {
@@ -2292,6 +2876,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
   } catch (err) {
     return { ok: false, skipped: true, reason: "layout_invalid", stderr: err && err.message };
   }
+  assertPosixRemoteLayout(layout);
   let remoteNode = deps.nodeBin;
   if (!remoteNode) {
     const resolved = await resolveRemoteNodeBin({
@@ -2390,6 +2975,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
 }
 
 function secureMonitorStopCommand(layout) {
+  assertPosixRemoteLayout(layout);
   const pidFile = quoteForPosixShellArg(layout.monitorPidFile);
   const marker = quoteForPosixShellArg(path.posix.join(layout.claudeHooksDir, "codex-remote-monitor.js"));
   return [
@@ -2424,7 +3010,7 @@ async function secureStartCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, start),
         ]),
-        { runtime, role: "codex-monitor-start", mutation: true },
+        { profile, runtime, role: "codex-monitor-start", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -2443,7 +3029,7 @@ async function secureStopCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, secureMonitorStopCommand(layout)),
         ]),
-        { runtime, role: "codex-monitor-stop", mutation: true },
+        { profile, runtime, role: "codex-monitor-stop", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -2460,7 +3046,40 @@ async function secureUninstallRemoteIntegrations({
     profile,
     runtime,
     deps,
-    operation: async ({ spawn, layout, remoteNode, leaseId }) => {
+    operation: async ({ spawn, layout, remoteNode, leaseId, runWindows, identity }) => {
+      if (layout.platform === "win32") {
+        const env = windowsInstallerEnv(layout, profile.remotePermissionTransport);
+        const argv = ["--remote-uninstall-owned", "--hooks-dir", layout.claudeHooksDir, "--routing-nonce", identity.routingNonce];
+        for (const script of ["install.js", "copilot-install.js"]) {
+          const result = await runWindows("runInstaller", true, { script, argv, env });
+          if (!result.ok) return { ok: false, reason: result.reason, stderr: result.message, layout };
+        }
+        const codex = await runWindows("uninstallCodexOwned", true);
+        if (!codex.ok) {
+          const reason = codex.reason || "windows_codex_cleanup_incomplete";
+          return {
+            ok: false, reason, stderr: codex.message, message: codex.message,
+            hint: windowsFailureHint(reason), layout,
+          };
+        }
+        const dshCleanup = await cleanupDshWindows({ runWindows, layout, installId: profile.installId });
+        if (!dshCleanup.ok) {
+          const reason = dshCleanup.reason || "windows_dsh_cleanup_incomplete";
+          return {
+            ok: false, reason, stderr: dshCleanup.message, message: dshCleanup.message,
+            hint: windowsFailureHint(reason), layout,
+          };
+        }
+        const files = [...HOOK_FILES.map((name) => path.win32.join(layout.claudeHooksDir, name)), layout.hostPrefixFile, layout.lastLogFile,
+          ...(preserveIdentity ? [] : [layout.identityFile, layout.secureMarkerFile])];
+        const removed = await runWindows("removeFiles", true, { files });
+        return {
+          ok: !!removed.ok,
+          ...(removed.ok ? {} : { reason: removed.reason, stderr: removed.message }),
+          ...(dshCleanup && dshCleanup.removed ? { dshBridgeRemoved: true } : {}),
+          layout,
+        };
+      }
       const envPrefix = buildRemoteInstallerEnv(layout, profile.remotePermissionTransport);
       const optionalInstaller = (script, argv, whenAbsent = "") => {
         const scriptPath = path.posix.join(layout.claudeHooksDir, script);
@@ -2501,7 +3120,7 @@ async function secureUninstallRemoteIntegrations({
           buildSshArgs(profile).concat([
             fencedCommand(layout, leaseId, remoteNode, command),
           ]),
-          { timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
+          { profile, timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
         );
         if (command === hermesCommand) {
           const parsed = parseHermesInstallerResult(result.stdout, "uninstall");
@@ -2543,6 +3162,14 @@ async function finalizeRetiredRemoteLayout({
       stderr: "Remote ownership metadata is incomplete; retirement could not be finalized.",
     };
   }
+  if (profile.remotePlatform === "win32") {
+    return withWindowsRemoteLease({ profile, runtime, deps, requireIdentity: false,
+      operation: async ({ layout, runWindows }) => {
+        const result = await runWindows("finalizeIdentity", true);
+        return { ok: !!result.ok, ...(result.ok ? {} : { reason: result.reason, stderr: result.message }), layout };
+      },
+    });
+  }
   const spawn = deps.spawn || childProcess.spawn;
   let layout;
   try {
@@ -2554,6 +3181,7 @@ async function finalizeRetiredRemoteLayout({
   } catch (err) {
     return { ok: false, reason: "layout_invalid", stderr: err && err.message };
   }
+  assertPosixRemoteLayout(layout);
   let remoteNode = deps.nodeBin;
   if (!remoteNode) {
     const resolved = await resolveRemoteNodeBin({
@@ -2602,7 +3230,7 @@ async function finalizeRetiredRemoteLayout({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, script)),
       ]),
-      { runtime, role: "runtime-layout-retire", mutation: true },
+      { profile, runtime, role: "runtime-layout-retire", mutation: true },
     );
     if (result.code !== 0) {
       const reason = result.code === 83
@@ -2634,11 +3262,19 @@ async function finalizeRetiredRemoteLayout({
 }
 
 async function startCodexMonitor(options) {
+  if (isWindowsRemoteTarget(options)) return { ok: true, skipped: true, reason: "not-applicable" };
   return secureStartCodexMonitor(options || {});
 }
 
 async function stopCodexMonitor(options) {
+  if (isWindowsRemoteTarget(options)) return { ok: true, skipped: true, reason: "not-applicable" };
   return secureStopCodexMonitor(options || {});
+}
+
+function isWindowsRemoteTarget(options) {
+  return !!options && (options.platformSnapshot
+    ? options.platformSnapshot.remotePlatform === "win32"
+    : options.profile && options.profile.remotePlatform === "win32");
 }
 
 async function uninstallRemoteIntegrations(options) {
@@ -2661,6 +3297,7 @@ function summarizeStderr(text) {
 module.exports = {
   HOOK_FILES,
   resolveHooksDir,
+  verifyLocalHookFiles,
   deploy,
   startCodexMonitor,
   stopCodexMonitor,
@@ -2668,6 +3305,7 @@ module.exports = {
   finalizeRetiredRemoteLayout,
   bootstrapIsolatedRuntime,
   __test: {
+    runWindowsDeployOperation,
     spawnAndWait,
     legacyDeploy,
     legacyStartCodexMonitor,
@@ -2680,6 +3318,7 @@ module.exports = {
     acquireDeployLock,
     releaseDeployLock,
     buildOwnershipPreflightScript,
+    buildClaudePermissionVerifyScript,
     buildHermesPreflightLines,
     resolveRemoteHermesHome,
     hermesOuterTimeoutMs,
@@ -2696,5 +3335,7 @@ module.exports = {
     buildRemoteInstallerEnv,
     fencedCommand,
     hasSecureRemoteOwnership,
+    secureMonitorStopCommand,
+    resolveRemoteHome,
   },
 };

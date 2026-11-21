@@ -54,6 +54,8 @@ on:
       - "scripts/assert-no-retired-telegram-sidecar.js"
       - "scripts/audit-repository-assets.js"
       - "scripts/after-pack-koffi.js"
+      - "build/installer.nsh"
+      - "build/uninstall-claude-hooks.ps1"
       - "scripts/audit-packaged-native.js"
       - "scripts/native-package-policy.json"
       - "scripts/run-packaged-koffi-smoke.js"

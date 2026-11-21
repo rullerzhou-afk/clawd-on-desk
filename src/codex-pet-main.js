@@ -184,6 +184,7 @@ function createCodexPetMain(options = {}) {
       "themeVariant",
       "idleVisual",
       "petTint",
+      "themeAppearance",
       "petAccessory",
       "petMouthAccessory",
       "holidayAccessoryEnabled",

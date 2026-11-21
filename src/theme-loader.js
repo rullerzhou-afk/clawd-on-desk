@@ -13,6 +13,7 @@ const {
   getThemeMetadata: _getThemeMetadata,
   listThemesWithMetadata: _listThemesWithMetadata,
 } = require("./theme-metadata");
+const { inspectDarkAppearance: _inspectDarkAppearance } = require("./theme-appearance");
 const {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
@@ -213,6 +214,17 @@ function loadTheme(themeId, opts = {}) {
   // Merge defaults for optional fields
   const theme = mergeDefaults(patchedRaw, themeId, isBuiltin);
   theme._themeDir = themeDir;
+  // Appearance has to be resolved before idle-visual filtering: the filter
+  // checks the same asset directory the renderer will later use. The cache
+  // failure fallback re-enters this function with dark disabled, so no field
+  // is patched after filtering.
+  const darkAppearance = (isBuiltin || opts._darkAppearanceUnavailable === true)
+    ? { ok: false, reason: null, dir: null }
+    : _inspectDarkAppearance(themeDir, raw.appearance);
+  theme._appearance = opts.appearance === "dark" && darkAppearance.ok ? "dark" : "light";
+  theme._assetsSourceDir = isBuiltin
+    ? null
+    : (theme._appearance === "dark" ? darkAppearance.dir : _externalAssetsSourceDir(themeDir));
   _filterIdleVisualOptionsByAsset(theme, (file) => {
     try { return fs.statSync(_resolveAssetPath(theme, file)).isFile(); } catch { return false; }
   });
@@ -241,6 +253,12 @@ function loadTheme(themeId, opts = {}) {
   theme._capabilities = _buildCapabilities(theme, { trustedRuntimeAllowed: !!theme._builtin });
   theme._capabilities.accessories = authoredAccessorySupported;
   theme._capabilities.mouthAccessories = authoredMouthAccessorySupported;
+  theme._capabilities.darkAppearance = darkAppearance.ok;
+  if (!isBuiltin && !darkAppearance.ok && darkAppearance.reason) {
+    console.warn(
+      `[theme-loader] Theme "${themeId}" dark appearance unavailable: ${darkAppearance.reason}`
+    );
+  }
   theme.customization.accessories = authoredAccessorySupported
     ? _resolveEffectiveAccessoryAttachments(authoredVisuals, theme)
     : null;
@@ -250,7 +268,28 @@ function loadTheme(themeId, opts = {}) {
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {
-    const assetsDir = _resolveExternalAssetsDir(themeId, themeDir, { strict, themeCacheDir });
+    let assetsDir;
+    try {
+      assetsDir = _resolveExternalAssetsDir(themeId, themeDir, {
+        strict,
+        themeCacheDir,
+        sourceAssetsDir: theme._assetsSourceDir,
+        cacheSubdir: theme._appearance === "dark" ? path.basename(theme._assetsSourceDir) : "assets",
+        // The dark cache must expose missing rasters even when the caller is
+        // lenient (startup), otherwise it would be used with broken images.
+        requireRasterDependencies: theme._appearance === "dark",
+      });
+    } catch (err) {
+      if (theme._appearance !== "dark" || err.code !== "MISSING_RASTER_DEPENDENCIES") throw err;
+      console.warn(`[theme-loader] Theme "${themeId}" dark appearance unavailable: ${err.message}`);
+      // Re-run the whole load against the light resources so idle-visual
+      // filtering and every derived field match a normal light load.
+      return loadTheme(themeId, {
+        ...opts,
+        appearance: "light",
+        _darkAppearanceUnavailable: true,
+      });
+    }
     theme._assetsDir = assetsDir;
     theme._assetsFileUrl = pathToFileURL(assetsDir).href;
   } else {
@@ -512,6 +551,24 @@ function ensureUserThemesDir() {
   return userThemesDir;
 }
 
+// Delete the sanitized-asset caches (light and every dark directory) for a
+// theme that is being removed. Without this the caches would outlive the
+// theme and keep using disk space.
+function removeThemeCacheDir(themeId) {
+  if (!themeCacheDir || !isScannableThemeDirName(themeId)) return false;
+  const cacheRoot = path.resolve(themeCacheDir);
+  const target = path.resolve(themeCacheDir, themeId);
+  // The id is used as a single directory name. Re-check the resolved shape so
+  // an id such as "../x" or "a/b" can never address a cache outside the root.
+  if (path.dirname(target) !== cacheRoot || path.basename(target) !== themeId) return false;
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Validation ──
 
 /**
@@ -640,6 +697,7 @@ module.exports = {
   getRendererConfig,
   getHitRendererConfig,
   ensureUserThemesDir,
+  removeThemeCacheDir,
   getSoundUrl,
   getPreviewSoundUrl,
   getSoundOverridesDir,

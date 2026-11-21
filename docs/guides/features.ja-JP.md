@@ -51,6 +51,7 @@
 - **単一インスタンスロック** — Clawd ウィンドウの重複起動を防ぎます
 - **自動起動** — Claude Code の SessionStart hook により、Clawd が起動していない場合に自動で起動できます
 - **Do Not Disturb** — 右クリックまたは tray メニューから sleep mode に入り、起こすまで hook event をすべて抑制します。DND 中は権限バブルも抑制されます。Codex、opencode、MiMo Code はネイティブプロンプトに戻り、Claude Code と CodeBuddy は組み込みの権限フローに戻ります。Antigravity と Pi は state-only です
+- **会議モード** — 画面共有の前に tray または右クリック →「会議モード」で 30 分 / 1 時間 / 2 時間を選ぶと、ペット・Session HUD・バブルを隠して Do Not Disturb を有効にします。新しい権限リクエストは agent 自身の確認に戻ります。時間が来ると自動で終了し（スリープ復帰後も確認）、「会議モードを終了」、ペット表示のショートカットやメニュー、起こす操作でも早めに終了できます。終了時は会議モードが変えた部分だけを元に戻します。再起動後は保持しません。content protection は使いません：macOS 15 以降、ScreenCaptureKit ベースのキャプチャ（Zoom、Teams、システムのスクリーンショット）はこれを無視します。
 - **効果音** — タスク完了や権限リクエスト時に短い音を鳴らします（システムトレイまたは設定から切り替え、10 秒クールダウン、DND 中は自動ミュート）
 - **システムトレイ** — DND mode、自動起動、更新確認
 - **i18n** — English、簡体中文、繁体中文、Korean、Japanese、Português (Brasil)、Español UI。設定 → 一般から切り替えできます

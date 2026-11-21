@@ -36,6 +36,7 @@ The script prints the new theme directory. Edit its `theme.json` and `assets/`. 
 - `idle`, `thinking`, and `working` need real files; `sleeping` needs files or a valid `fallbackTo`. Completion, errors, and notifications should have understandable visuals or fallbacks.
 - A small, complete theme is a good start. You do not need to match an existing theme's animation count. Explicitly disable eye tracking or mini mode if you do not provide them. Set `sleepSequence.mode: "direct"` to omit the full sleep sequence. See the creation guide for details.
 - Choose a distinct theme ID, used as the folder name. Do not use `clawd`, `calico`, `cloudling`, `hash-sage`, `whale-chan`, `template`, or another existing catalog ID.
+- If the same design has light and dark art, publish it as **one theme**, not two IDs. Add a mirrored asset directory and `appearance.dark.assetsDir` in `theme.json`; users then choose Follow system / Light / Dark in Settings. See the [theme creation guide](guide-theme-creation.md#light-and-dark-appearances).
 - External SVGs are sanitized. They cannot rely on embedded JavaScript, network resources, or `trustedRuntime`. Include the required artwork as local assets.
 
 Run the validator from the application repository, replacing the path with the directory printed by the scaffold:

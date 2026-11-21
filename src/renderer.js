@@ -1144,8 +1144,15 @@ function getAccessoryFollowDelayMs(context) {
     const sampled = doc && discreteSamplingFollowByDocument.get(doc);
     if (!sampled || _useLayeredTracking) return null;
     // Cursor tracking moves the body through a transition between grid points.
-    if (bodyTarget && bodyTarget.ownerDocument === doc && bodyTarget.getAnimations().length > 0) return null;
-    const { animation, stepMs } = sampled;
+    // A one-shot that stays in the list after it finished no longer moves it.
+    const bodyAnimations = bodyTarget && bodyTarget.ownerDocument === doc
+      ? bodyTarget.getAnimations()
+      : [];
+    if (bodyAnimations.some((entry) => entry.playState !== "finished")) return null;
+    const { animation, oneShots, stepMs } = sampled;
+    // One-shot entrances move the document until they land; afterwards the
+    // grid is the only thing still changing the picture.
+    if (oneShots.some((oneShot) => oneShot.playState !== "finished")) return null;
     if (animation.playState !== "running" || !Number.isFinite(animation.startTime)) return null;
     return stepMs - (animation.currentTime % stepMs);
   } catch {
@@ -1991,6 +1998,11 @@ function computeDiscreteSamplingTiming({ durationMs, delayMs }, rate) {
   };
 }
 
+function isCssAnimation(animation, contentWindow) {
+  const CSSAnimationCtor = contentWindow && contentWindow.CSSAnimation;
+  return typeof CSSAnimationCtor === "function" && animation instanceof CSSAnimationCtor;
+}
+
 /**
  * A CSSAnimation that loops forever is the only thing worth sampling. One-shot
  * animations (sleep-collapse, transitions) finish long before the cap pays off,
@@ -2007,10 +2019,7 @@ function readSampleableAnimation(animation, contentWindow) {
   ) {
     return null;
   }
-  const CSSAnimationCtor = contentWindow && contentWindow.CSSAnimation;
-  if (typeof CSSAnimationCtor !== "function" || !(animation instanceof CSSAnimationCtor)) {
-    return null;
-  }
+  if (!isCssAnimation(animation, contentWindow)) return null;
   if (animation.playState !== "running") return null;
   if (animation.playbackRate !== 1) return null;
 
@@ -2036,6 +2045,26 @@ function readSampleableAnimation(animation, contentWindow) {
 }
 
 /**
+ * A one-shot CSS animation cannot join the shared grid: snapping its duration
+ * would move the moment it lands. It still moves the picture, so accessory
+ * following stays on every frame until it reports `finished`. Initially paused
+ * animations are excluded because they may be started later.
+ */
+function readOneShotAnimation(animation, contentWindow) {
+  if (!animation || !animation.effect) return null;
+  if (!isCssAnimation(animation, contentWindow)) return null;
+  if (animation.playState !== "running" && animation.playState !== "finished") return null;
+  let timing = null;
+  try {
+    timing = animation.effect.getComputedTiming();
+  } catch {
+    return null;
+  }
+  if (!timing || !Number.isFinite(timing.iterations)) return null;
+  return animation;
+}
+
+/**
  * Rewrite every sampleable animation onto one grid and one start time.
  * Pending animations have no startTime yet; their ready promise is awaited and
  * the identity check runs again before touching them, because the document may
@@ -2043,9 +2072,15 @@ function readSampleableAnimation(animation, contentWindow) {
  */
 function alignDiscreteSamplingAnimations(animations, contentWindow, rate, isStillCurrent) {
   const sampleable = [];
+  const oneShots = [];
   for (const animation of animations) {
     const entry = readSampleableAnimation(animation, contentWindow);
-    if (entry) sampleable.push(entry);
+    if (entry) {
+      sampleable.push(entry);
+      continue;
+    }
+    const oneShot = readOneShotAnimation(animation, contentWindow);
+    if (oneShot) oneShots.push(oneShot);
   }
   if (!sampleable.length) return;
 
@@ -2096,9 +2131,11 @@ function alignDiscreteSamplingAnimations(animations, contentWindow, rate, isStil
       ready.then(applyStartTime, () => {});
     }
   }
-  // A mixed document can still move between grid points through an animation
-  // the sampler leaves alone, so only wholly sampled documents may follow it.
-  return sampleable.length === animations.length ? sampleable[0].animation : null;
+  // A document whose remaining animations are all one-shot may still follow the
+  // grid once they finish. Anything else the sampler leaves alone can move
+  // between grid points at any time, so it keeps the document on every frame.
+  if (sampleable.length + oneShots.length !== animations.length) return null;
+  return { animation: sampleable[0].animation, oneShots };
 }
 
 /**
@@ -2208,8 +2245,14 @@ function applyDiscreteSampling(objectEl, file) {
       }
     };
 
-    const animation = alignDiscreteSamplingAnimations(animations, contentWindow, rate, isSameDocument);
-    if (animation) discreteSamplingFollowByDocument.set(contentDocument, { animation, stepMs: 1000 / rate });
+    const sampled = alignDiscreteSamplingAnimations(animations, contentWindow, rate, isSameDocument);
+    if (sampled) {
+      discreteSamplingFollowByDocument.set(contentDocument, {
+        animation: sampled.animation,
+        oneShots: sampled.oneShots,
+        stepMs: 1000 / rate,
+      });
+    }
   };
 
   trySample(0);

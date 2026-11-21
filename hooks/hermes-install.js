@@ -494,7 +494,8 @@ function installNewRemotePlugin(options, sourceHashes) {
   const { pluginDir } = options;
   const stageDir = fs.mkdtempSync(path.join(path.dirname(pluginDir), ".clawd-hermes-install-"));
   fs.chmodSync(stageDir, 0o700);
-  const stageStat = fs.lstatSync(stageDir);
+  // Keep IDs exact; remote deployment uses an explicit file list without the shared helper.
+  const stageStat = fs.lstatSync(stageDir, { bigint: true });
   try {
     const copied = copyManagedPluginFiles({ ...options, pluginDir: stageDir });
     const hashes = readManagedPluginHashes(stageDir);
@@ -508,7 +509,8 @@ function installNewRemotePlugin(options, sourceHashes) {
     // Remove only unchanged files from this invocation's private staging
     // directory. A replacement or unexpected entry is retained for inspection.
     try {
-      const current = fs.lstatSync(stageDir);
+      // Keep IDs exact here too; the shared helper is absent from the explicit remote file list.
+      const current = fs.lstatSync(stageDir, { bigint: true });
       if (current.isSymbolicLink() || !current.isDirectory()
         || current.dev !== stageStat.dev || current.ino !== stageStat.ino) {
         throw new Error("staging directory changed");

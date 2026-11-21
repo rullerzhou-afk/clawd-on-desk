@@ -613,6 +613,17 @@ function detectInstallation(descriptor, paths, options) {
         }
       }
       return notFound();
+    case "kiro-desktop": {
+      const homeDir = options.homeDir || os.homedir();
+      if ((options.platform || process.platform) === "darwin") {
+        const applications = ["/Applications/Kiro.app", path.join(homeDir, "Applications", "Kiro.app")];
+        const application = applications.find(filename => dirExists(fsImpl, filename));
+        if (application) return installationResult(true, "high", "desktop-app", `${application} exists`);
+      }
+      const sessionsDir = path.join(homeDir, ".kiro", "sessions");
+      if (dirExists(fsImpl, sessionsDir)) return installationResult(true, "medium", "sessions-dir", `${sessionsDir} exists`);
+      return notFound();
+    }
     case "kiro-cli":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       if (dirExists(fsImpl, paths.configPath)) return installationResult(true, "medium", "config-dir", `${paths.configPath} exists`);

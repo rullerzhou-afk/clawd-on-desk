@@ -26,6 +26,11 @@ const {
 const { isWslSourced, stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const { resolveDshCarrier } = require("./dsh-carrier");
 const {
+  CLAUDE_WRAP_UP_TOOL_NAME,
+  normalizeClaudeTurnAsk,
+  decideClaudeTurnAskAction,
+} = require("./claude-turn-ask");
+const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
 } = require("./server-permission-utils");
@@ -43,6 +48,30 @@ const {
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeClaudePhaseId, normalizeClaudeBatchToolUseIds } = require("../hooks/claude-tool-batch");
 const { normalizeTranscriptPath } = require("./transcript-path");
+const { normalizeClaudeConfigDir } = require("../hooks/claude-config-dirs");
+
+// CLAUDE_CONFIG_DIR as the Claude hook saw it. Remote and WSL hosts report
+// their own paths, so accept either path flavour; it is only used as a label.
+function normalizeReportedClaudeConfigDir(value) {
+  return normalizeClaudeConfigDir(value, { platform: "linux" })
+    || normalizeClaudeConfigDir(value, { platform: "win32" });
+}
+
+// Mirrors hooks/clawd-hook.js normalizeClaudeEntrypoint: both ends accept only
+// a short opaque token, so a malformed value is dropped instead of stored.
+// Keep the allowlist and length in sync with the hook side.
+const CLAUDE_ENTRYPOINT_MAX_LENGTH = 64;
+const CLAUDE_ENTRYPOINT_RE = /^[A-Za-z0-9._-]+$/;
+
+function normalizeClaudeEntrypoint(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > CLAUDE_ENTRYPOINT_MAX_LENGTH || !CLAUDE_ENTRYPOINT_RE.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
@@ -385,6 +414,8 @@ function handleStatePost(req, res, options) {
       const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
         ? data.wsl_distro.trim()
         : null;
+      const claudeConfigDir = normalizeReportedClaudeConfigDir(data.claude_config_dir);
+      const claudeEntrypoint = normalizeClaudeEntrypoint(data.claude_entrypoint);
       const headless = data.headless === true;
       const platform = typeof data.platform === "string" && data.platform.trim()
         ? data.platform.trim()
@@ -449,6 +480,14 @@ function handleStatePost(req, res, options) {
       const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
         ? data.tool_input_fingerprint
         : null;
+      const isCopilotWaitKey = value => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
+      const copilotWaitKey = agentId === "copilot-cli" && isCopilotWaitKey(data.copilot_wait_key)
+        ? data.copilot_wait_key : null;
+      const copilotToolKeys = agentId === "copilot-cli" && Array.isArray(data.copilot_tool_keys)
+        && data.copilot_tool_keys.length <= 4 && data.copilot_tool_keys.every(isCopilotWaitKey)
+        ? [...new Set(data.copilot_tool_keys)] : null;
+      const copilotEventTs = agentId === "copilot-cli" && Number.isFinite(data.copilot_event_ts)
+        && data.copilot_event_ts > 0 ? data.copilot_event_ts : null;
       const claudePromptId = agentId === "claude-code" ? normalizeClaudePhaseId(data.prompt_id) : null;
       const batchToolUseIds = event === "PostToolBatch" ? normalizeClaudeBatchToolUseIds(data.tool_use_ids) : null;
       if (event === "PostToolBatch" && (agentId !== "claude-code" || !claudePromptId
@@ -469,6 +508,8 @@ function handleStatePost(req, res, options) {
       const sessionTitleFromPrompt =
         sessionTitle !== null && data.session_title_from_prompt === true;
       const contextUsage = normalizeContextUsage(data.context_usage);
+      // DeepSeek balance is owned by the local API-key runtime. Deliberately
+      // exclude deepseek_quota/deepseekQuota from HTTP ingress, even on localhost.
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const codexQuota = normalizeCodexQuota(data.codex_quota);
@@ -586,13 +627,16 @@ function handleStatePost(req, res, options) {
         const sequenceResult = dshStateSequenceFence
           && typeof dshStateSequenceFence.accept === "function"
           ? dshStateSequenceFence.accept({
-              // The fence is upstream-protocol scoped. Keep it on DSH's raw
-              // canonical id; the local/remote profile key is a separate
-              // Clawd storage concern applied by resolveSessionIdentity.
+              // The fence keeps DSH's raw canonical id. A remote session also
+              // needs its own namespace: profile ids are only unique per
+              // upstream profile, so two machines may legitimately use the
+              // same raw id. Local sessions pass no remoteProfile and keep
+              // their existing key and capacity.
               sessionId: sessionIdentity.rawSessionId,
               event,
               eventSeq: data.event_seq,
               sessionSeq: data.session_seq,
+              remoteProfile,
             })
           : { accepted: false, reason: "sequence-fence-unavailable" };
         if (!sequenceResult.accepted) {
@@ -773,6 +817,24 @@ function handleStatePost(req, res, options) {
           ctx.codexSubagentClassifier,
           sid,
         );
+        // Remote Codex fallback notices are cleared by the same lifecycle
+        // events that finish a native request. This runs after the identity
+        // gates (metadata-only returned above) and before state-machine drops,
+        // so a turn's Stop still releases its notice even when the visual
+        // state is dropped as a continuation.
+        if (remoteProfile && agentId === "codex"
+          && typeof ctx.onCodexRemoteStateEvent === "function") {
+          ctx.onCodexRemoteStateEvent({
+            sessionId: sessionIdentity.sessionId,
+            rawSessionId: sessionIdentity.rawSessionId,
+            profileId: trustedProfileId,
+            event,
+            toolName,
+            toolUseId,
+            toolInputFingerprint,
+            turnId: codexHookState.turnId || null,
+          });
+        }
         if (codexHookState.drop) {
           res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
           res.end();
@@ -1116,11 +1178,51 @@ function handleStatePost(req, res, options) {
             "Plan dialog dismissed in terminal"
           );
         }
+        // #1326: Claude Desktop's end-of-turn question box. Main-thread Claude
+        // Code events only; the show/clear/ignore rules live in
+        // claude-turn-ask.js. A non-empty subagentId excludes a child or a
+        // prompt-suggestion phantom that carries a fresh agent_id, and a
+        // retired phase excludes stale tool evidence from an older turn.
+        if (hasExplicitPermissionLifecycleSession
+          && agentId === "claude-code"
+          && !subagentId
+          && !isRetiredClaudePhase) {
+          const claudeTurnAsk = event === "PreToolUse" && toolName === CLAUDE_WRAP_UP_TOOL_NAME
+            ? normalizeClaudeTurnAsk(data.claude_turn_ask)
+            : null;
+          const turnAskAction = decideClaudeTurnAskAction({
+            event,
+            toolName,
+            hasAsk: !!claudeTurnAsk,
+            subagentLifecycleSource,
+          });
+          if (turnAskAction === "show") {
+            const turnAskPayload = {
+              sessionId: sid,
+              toolUseId,
+              ask: claudeTurnAsk.ask,
+              actions: claudeTurnAsk.actions,
+              sourcePid: effectiveProcessMetadata.sourcePid,
+              agentPid: effectiveProcessMetadata.agentPid,
+              cwd,
+              host,
+            };
+            if (typeof ctx.showClaudeTurnAskBubble === "function") ctx.showClaudeTurnAskBubble(turnAskPayload);
+            // Opt-in "still unanswered" reminder; the countdown runs even if the
+            // card is dismissed, until the session actually moves on.
+            if (typeof ctx.trackClaudeTurnAskReminder === "function") ctx.trackClaudeTurnAskReminder(turnAskPayload);
+          } else if (turnAskAction === "clear") {
+            if (typeof ctx.clearClaudeTurnAskBubbles === "function") {
+              ctx.clearClaudeTurnAskBubbles(sid, `claude-turn-ask:${event}`);
+            }
+            if (typeof ctx.resolveClaudeTurnAskReminder === "function") ctx.resolveClaudeTurnAskReminder(sid);
+          }
+        }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
         let sessionUpdateApplied = true;
         if (svg && !(claudeToolPhaseDecision && claudeToolPhaseDecision.preservePhase)) {
           const safeSvg = pathApi.basename(svg);
-          ctx.setState(state, safeSvg);
+          ctx.setState(state, safeSvg, { notificationCue: state === "notification" });
         } else {
           sessionUpdateApplied = ctx.updateSession(sid, state, event, {
             sourcePid: effectiveProcessMetadata.sourcePid,
@@ -1145,6 +1247,8 @@ function handleStatePost(req, res, options) {
             rawSessionId: rawStateSessionId,
             host,
             wslDistro,
+            ...(agentId === "claude-code" && claudeConfigDir ? { claudeConfigDir } : {}),
+            ...(agentId === "claude-code" && claudeEntrypoint ? { claudeEntrypoint } : {}),
             headless: headless || codexHookState.headless === true,
             platform,
             model,
@@ -1171,6 +1275,9 @@ function handleStatePost(req, res, options) {
             assistantLastOutputTruncated,
             toolName,
             ...(toolUseId ? { toolUseId } : {}),
+            ...(copilotWaitKey ? { copilotWaitKey } : {}),
+            ...(copilotToolKeys ? { copilotToolKeys } : {}),
+            ...(copilotEventTs ? { copilotEventTs } : {}),
             ...(claudePromptId ? { claudePromptId } : {}),
             ...(batchToolUseIds ? { batchToolUseIds } : {}),
             ...(claudeToolPhaseDecision ? { claudeToolPhaseDecision } : {}),

@@ -64,6 +64,18 @@ describe("Kimi permission hold by session", () => {
     mock.timers.reset();
   });
 
+  it("deduplicates the bell for consecutive gate PermissionRequests without reminder waits", () => {
+    const sounds = [];
+    ctx.playSound = name => sounds.push(name);
+    for (const permissionGateId of ["gate-one", "gate-two", "gate-three"]) {
+      api.updateSession("kimi-a", "notification", "PermissionRequest", {
+        agentId: "kimi-cli", permissionGateOpen: true, permissionGateId,
+      });
+    }
+    assert.strictEqual(api.resolveDisplayState(), "notification");
+    assert.deepStrictEqual(sounds, ["confirm"]);
+  });
+
   it("does not block other sessions from updating while pinned notification is active", () => {
     api.updateSession("kimi-a", "notification", "PermissionRequest", { agentId: "kimi-cli" });
     api.updateSession("kimi-b", "working", "PreToolUse", { agentId: "kimi-cli" });

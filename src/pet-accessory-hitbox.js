@@ -30,7 +30,7 @@ const BUILTIN_ACCESSORY_MOTION_PADDING = Object.freeze({
     "clawd-mini-happy.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
     "clawd-mini-peek.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
     "clawd-mini-typing.svg": Object.freeze({ left: 3.2, top: 1.6, right: 0.2, bottom: 2.4 }),
-    "clawd-mini-crabwalk.svg": Object.freeze({ left: 1.8, right: 3.9, bottom: 1.3 }),
+    "clawd-mini-crabwalk.svg": Object.freeze({ left: 1.5, top: 0.2, right: 1.4, bottom: 0.3 }),
     "clawd-mini-enter.svg": Object.freeze({ left: 6.2, top: 2.4, right: 25, bottom: 2.1 }),
     "clawd-working-thinking.svg": Object.freeze({ left: 1.6, top: 0.2, right: 1.6, bottom: 0.8 }),
     "clawd-working-typing.svg": Object.freeze({ bottom: 1.5 }),

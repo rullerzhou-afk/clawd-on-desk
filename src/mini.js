@@ -43,6 +43,13 @@ function syncSessionHudVisibility() {
   if (typeof ctx.syncSessionHudVisibility === "function") ctx.syncSessionHudVisibility();
 }
 
+// The tray menu is static; rebuild on transition flag changes so dependent
+// items do not retain stale enabled states (#1382).
+function rebuildMenus() {
+  ctx.buildContextMenu();
+  ctx.buildTrayMenu();
+}
+
 function refreshTheme() {
   cancelPendingMiniPeek(true);
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
@@ -442,7 +449,8 @@ function getMiniEnterDurationMs(state) {
 }
 
 function getMiniRestState() {
-  return ctx.doNotDisturb ? "mini-sleep" : "mini-idle";
+  if (ctx.doNotDisturb) return "mini-sleep";
+  return ctx.hasPendingReminderAttention?.() ? "mini-alert" : "mini-idle";
 }
 
 // §4.5 point 4.5-4 default topology consumption: mini mode is still active,
@@ -506,6 +514,7 @@ function consumeTopologyForMiniPeekIn() {
 // actually check" since nothing was left to call
 // releaseReconcileProtection().
 function finalizeMiniProtectionExit(onConsumeTopology) {
+  const wasTransitioning = miniTransitioning;
   miniTransitioning = false;
   isAnimating = false;
   if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
@@ -513,6 +522,7 @@ function finalizeMiniProtectionExit(onConsumeTopology) {
     pendingTopologyMaterialize = false;
     if (typeof onConsumeTopology === "function") onConsumeTopology();
   }
+  if (wasTransitioning) rebuildMenus();
 }
 
 function finishMiniEntry(delayMs) {
@@ -521,7 +531,8 @@ function finishMiniEntry(delayMs) {
   miniTransitionTimer = setTimeout(() => {
     miniTransitionTimer = null;
     finalizeMiniProtectionExit(consumeTopologyForMiniRest);
-    ctx.applyState(getMiniRestState());
+    const rest = getMiniRestState();
+    ctx.applyState(rest, undefined, ctx.getReminderReselectionOptions?.(rest));
   }, settleMs);
 }
 
@@ -612,8 +623,7 @@ function enterMiniMode(wa, viaMenu, edge) {
   ctx.sendToRenderer("mini-mode-change", true, miniEdge);
   ctx.sendToHitWin("hit-state-sync", { miniMode: true });
   miniTransitioning = true;
-  ctx.buildContextMenu();
-  ctx.buildTrayMenu();
+  rebuildMenus();
   syncSessionHudVisibility();
 
   const enterSvgState = ctx.doNotDisturb ? "mini-enter-sleep" : "mini-enter";
@@ -722,6 +732,7 @@ function exitMiniMode() {
   // display-metrics-changed, move-window-by, checkMiniModeSnap, etc.)
   // from interfering with the animation. Both flags clear in onDone.
   miniTransitioning = true;
+  rebuildMenus();
   miniSnap = null;
   miniSleepPeeked = false;
   miniPeeked = false;
@@ -749,10 +760,10 @@ function exitMiniMode() {
     ctx.sendToRenderer("mini-clip", null);
     ctx.sendToRenderer("mini-mode-change", false);
     ctx.sendToHitWin("hit-state-sync", { miniMode: false });
-    ctx.buildContextMenu();
-    ctx.buildTrayMenu();
     syncSessionHudVisibility();
-    if (ctx.doNotDisturb) {
+    if (ctx.doNotDisturb && ctx.isMeetingModeActive?.()) {
+      ctx.applyDndSleepState();
+    } else if (ctx.doNotDisturb) {
       ctx.doNotDisturb = false;
       ctx.sendToRenderer("dnd-change", false);
       ctx.sendToHitWin("hit-state-sync", { dndEnabled: false });
@@ -761,7 +772,7 @@ function exitMiniMode() {
       ctx.applyState("waking");
     } else {
       const resolved = ctx.resolveDisplayState();
-      ctx.applyState(resolved, ctx.getSvgOverride(resolved));
+      ctx.applyState(resolved, ctx.getSvgOverride(resolved), ctx.getReminderReselectionOptions?.(resolved));
     }
     // #329: a deferred update bubble may be waiting on mini exit.
     if (typeof ctx.notifyUpdaterSilentExit === "function") {
@@ -791,6 +802,7 @@ function enterMiniViaMenu() {
   miniEdge = edge;
 
   miniTransitioning = true;
+  rebuildMenus();
   syncSessionHudVisibility();
 
   // Pre-entry crabwalk still uses the normal-size render/layout path. Send the

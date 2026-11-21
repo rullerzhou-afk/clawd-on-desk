@@ -243,6 +243,20 @@ describe("Kimi quota collection opt-in", () => {
   });
 });
 
+describe("DeepSeek balance collection opt-in", () => {
+  it("persists only through its command path", async () => {
+    const prefsPath = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath });
+    assert.strictEqual(ctrl.get("deepseekBalanceCollectionEnabled"), false);
+    assert.strictEqual((await ctrl.applyUpdate("deepseekBalanceCollectionEnabled", true)).status, "error");
+    const enabled = await ctrl.applyCommand("setDeepseekBalanceCollectionEnabled", { enabled: true });
+    assert.strictEqual(enabled.status, "ok");
+    assert.strictEqual(ctrl.get("deepseekBalanceCollectionEnabled"), true);
+    const relaunched = createSettingsController({ prefsPath });
+    assert.strictEqual(relaunched.get("deepseekBalanceCollectionEnabled"), true);
+  });
+});
+
 describe("permission automation safe startup persistence", () => {
   it("keeps off across a relaunch", async () => {
     const p = makeTempPath();
@@ -1863,5 +1877,27 @@ describe("idle behavior controller boundary", () => {
     assert.match(result.message, /disk full/);
     assert.deepStrictEqual(ctrl.getSnapshot(), before);
     assert.strictEqual(events.length, 0);
+  });
+});
+
+
+describe("quota ring selection commits", () => {
+  it("persists and broadcasts the first toggle once without an intermediate automatic selection", async () => {
+    const prefsPath = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath });
+    const events = [];
+    ctrl.subscribe(event => events.push(event.changes));
+    const result = await ctrl.applyCommand("setQuotaRingProviderShown", {
+      key: "claudeQuota", shown: false,
+      currentShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"],
+    });
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(events, [{ quotaRingShownProviders: ["antigravityQuota", "codexQuota"] }]);
+    assert.deepStrictEqual(prefs.load(prefsPath).snapshot.quotaRingShownProviders, ["antigravityQuota", "codexQuota"]);
+    const rejected = await ctrl.applyCommand("setQuotaRingProviderShown", { key: "kimiQuota", shown: true });
+    assert.strictEqual(rejected.status, "ok");
+    const overflow = await ctrl.applyCommand("setQuotaRingProviderShown", { key: "claudeQuota", shown: true });
+    assert.strictEqual(overflow.status, "error");
+    assert.strictEqual(events.length, 2);
   });
 });

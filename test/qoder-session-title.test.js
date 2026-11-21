@@ -62,7 +62,7 @@ function recordingFs(ranges, beforeRead = async () => {}) {
     async open(...args) {
       const fd = await fs.promises.open(...args);
       return {
-        stat: () => fd.stat(),
+        stat: (...args) => fd.stat(...args),
         close: () => fd.close(),
         async read(buffer, offset, length, position) {
           await beforeRead({ position, length });

@@ -169,23 +169,33 @@ function stateChipInfo(session) {
 function usageChipInfo(session) {
   if (snapshot.hudShowContextUsage === false) return null;
   const usage = session && session.contextUsage;
-  if (!usage || !Number.isFinite(Number(usage.used))) return null;
-  const usedLabel = formatTokenCount(usage.used);
+  if (!usage) return null;
+  const usedKnown = Number.isFinite(Number(usage.used));
   const percentKnown = Number.isFinite(Number(usage.percent));
+  if (!usedKnown && !percentKnown) return null;
   if (percentKnown) {
     const percent = Math.max(0, Math.min(100, Math.round(Number(usage.percent))));
     const hasLimit = Number.isFinite(Number(usage.limit));
+    let title;
+    if (usedKnown && hasLimit) {
+      title = t("sessionHudContextUsageTooltip")
+        .replace("{used}", formatTokenCount(usage.used))
+        .replace("{limit}", formatTokenCount(usage.limit))
+        .replace("{percent}", percent);
+    } else if (usedKnown) {
+      title = t("sessionHudContextUsageTooltipUnknownLimit").replace("{used}", formatTokenCount(usage.used));
+    } else {
+      // Token counts unavailable (e.g. Qoder tokenCountsAvailable:false):
+      // show only the percentage, never a misleading "0 tokens" tooltip.
+      title = `${percent}%`;
+    }
     return {
       label: `${percent}%`,
       cls: percent >= 90 ? "usage-hot" : (percent >= 75 ? "usage-warm" : "usage-neutral"),
-      title: hasLimit
-        ? t("sessionHudContextUsageTooltip")
-          .replace("{used}", usedLabel)
-          .replace("{limit}", formatTokenCount(usage.limit))
-          .replace("{percent}", percent)
-        : t("sessionHudContextUsageTooltipUnknownLimit").replace("{used}", usedLabel),
+      title,
     };
   }
+  const usedLabel = formatTokenCount(usage.used);
   return {
     label: usedLabel,
     cls: "usage-neutral",
@@ -388,6 +398,17 @@ function createRowForSession(session, now) {
       right.appendChild(openFolder);
       hasRightContent = true;
     }
+  }
+
+  if (!feedbackText && session.claudeProfileLabel) {
+    const profileChip = document.createElement("span");
+    profileChip.className = "profile-chip";
+    profileChip.textContent = session.claudeProfileLabel;
+    profileChip.title = session.claudeConfigDir
+      ? `${t("sessionClaudeProfile")}: ${session.claudeConfigDir}`
+      : t("sessionClaudeProfile");
+    right.appendChild(profileChip);
+    hasRightContent = true;
   }
 
   const chipInfo = feedbackText ? null : stateChipInfo(session);

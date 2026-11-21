@@ -82,6 +82,12 @@ describe("prefs.getDefaults", () => {
     );
   });
 
+  it("defaults the Claude turn-ask reminder off at five minutes", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.claudeTurnAskReminder, false);
+    assert.strictEqual(d.claudeTurnAskReminderMinutes, 5);
+  });
+
   it("defaults Claude hook management on and agent-triggered cold launch off", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
@@ -2685,5 +2691,21 @@ describe("idle behavior file normalization", () => {
     assert.strictEqual(snapshot.freeRoam, true);
     assert.strictEqual(snapshot.idleActivities, prefs.getDefaults().idleActivities);
     assert.strictEqual(snapshot.idleActivities, false);
+  });
+});
+
+
+describe("quota ring manual selection preference", () => {
+  it("preserves automatic null and explicit empty manual selections", () => {
+    assert.strictEqual(prefs.getDefaults().quotaRingShownProviders, null);
+    for (const raw of [undefined, null, 5, "kimiQuota", {}]) {
+      assert.strictEqual(prefs.validate({ quotaRingShownProviders: raw }).quotaRingShownProviders, null);
+    }
+    assert.deepStrictEqual(prefs.validate({ quotaRingShownProviders: [] }).quotaRingShownProviders, []);
+  });
+  it("cleans and deduplicates provider keys and caps persisted arrays at three", () => {
+    assert.deepStrictEqual(prefs.validate({ quotaRingShownProviders:
+      [" kimiQuota ", null, "", "kimiQuota", "newProvider", "codex\0Quota", "claudeQuota"]
+    }).quotaRingShownProviders, ["kimiQuota", "newProvider", "codexQuota"]);
   });
 });

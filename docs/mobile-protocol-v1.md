@@ -423,7 +423,9 @@ policy exempts their first-party domains from this limit.
   or system notifications; the live in-page card works without those APIs.
 - One global consent setting; no per-device permission-preview entitlement.
 - PR A and the PR B device-list UI must ship in the same release. PR A alone does
-  not finish #487. No QR code or device-list UI is included in PR A.
+  not finish #487. PR A itself includes no QR code or device-list UI; the
+  Settings pairing card later added a scannable QR code (#1315) that encodes the
+  same one-time pairing link.
 - The old shared token stops rotating and remains usable until revoked. Holders
   can register again after an individual device is revoked.
 - Cross-tab localStorage read/write is not atomic. A controlled interleaving can

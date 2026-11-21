@@ -393,6 +393,7 @@ function rawSession(state, opts = {}) {
     codexOriginator: opts.codexOriginator || null,
     codexSource: opts.codexSource || null,
     ghosttyTerminalId: opts.ghosttyTerminalId || null,
+    claudeEntrypoint: opts.claudeEntrypoint ?? null,
     sessionTitle: opts.sessionTitle ?? null,
     recentEvents: opts.recentEvents || [],
     pidReachable: opts.pidReachable ?? false,
@@ -1840,6 +1841,92 @@ describe("cleanStaleSessions()", () => {
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.size, 0);
     assert.deepStrictEqual(cleared, [{ id: "k1", reason: "kimi-session-disposed" }]);
+  });
+
+  it("issue #1365: keeps an expired Claude desktop session while its question card is pending", () => {
+    const pending = [{ agentId: "claude-code", sessionId: "s1", res: null, isClaudeTurnAskNotify: true }];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      pendingPermissions: pending,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+
+    pending.length = 0;
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0, "once the card is gone the next sweep retires the row");
+  });
+
+  it("issue #1365: keeps an expired Claude desktop session while its permission connection is open", () => {
+    const res = { destroyed: false, writableEnded: false };
+    const pending = [{ agentId: "claude-code", sessionId: "s1", res }];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      pendingPermissions: pending,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+
+    res.writableEnded = true;
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0, "an ended connection no longer holds the session");
+  });
+
+  it("issue #1365: another session's or another agent's card does not hold the Claude desktop row", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      pendingPermissions: [
+        { agentId: "claude-code", sessionId: "other", res: null },
+        { agentId: "codex", sessionId: "s1", res: null },
+      ],
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0);
+  });
+
+  it("issue #1365: a pending Claude turn-ask reminder holds the Claude desktop row", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      hasPendingClaudeTurnAskReminder: (sessionId) => sessionId === "s1",
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
   });
 
   it("last non-headless deleted → returns to idle", () => {
@@ -3911,6 +3998,33 @@ describe("updateSession()", () => {
     assert.strictEqual(reloaded.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
   });
 
+  it("persists and broadcasts DeepSeek amount changes and clears a disabled startup cache", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-deepseek-state-"));
+    const persistPath = path.join(dir, "account-quota.json");
+    const broadcasts = [];
+    const localApi = require("../src/state")(makeCtx({ accountQuotaPersistPath: persistPath,
+      deepseekBalanceCollectionEnabled: true,
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot) }));
+    try {
+      const capturedAt = Date.now();
+      const make = (amount) => ({ deepseekBalance: { usedPercent: 55, amount, baseline: 100,
+        currency: "CNY", capturedAt } });
+      assert.deepStrictEqual(localApi.commitLocalDeepseekQuota(make(45.20)), { accepted: true, persisted: true });
+      const before = broadcasts.length;
+      localApi.commitLocalDeepseekQuota(make(45.21));
+      assert.strictEqual(broadcasts.length, before + 1);
+      assert.strictEqual(localApi.buildSessionSnapshot().accountQuota[0].deepseekQuota.group.deepseekBalance.amount,
+        45.21);
+    } finally { localApi.cleanup(); }
+    const restarted = require("../src/state")(makeCtx({ accountQuotaPersistPath: persistPath,
+      deepseekBalanceCollectionEnabled: false }));
+    try { assert.strictEqual(restarted.buildSessionSnapshot().accountQuota.length, 0); }
+    finally { restarted.cleanup(); }
+    const reloaded = require("../src/state-account-quota").createAccountQuotaStore({ persistPath });
+    assert.strictEqual(reloaded.snapshot().length, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("commits, flushes, and clears only local Kimi quota", () => {
     const persistPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kimi-state-")), "account-quota.json");
     const localApi = require("../src/state")(makeCtx({
@@ -4827,7 +4941,7 @@ describe("buildSessionSnapshot", () => {
     // shape, then compare the rest exactly.
     const { quotaAgentIcons, ...rest } = snapshot;
     assert.deepStrictEqual(Object.keys(quotaAgentIcons).sort(), [
-      "antigravityQuota", "claudeQuota", "codexQuota", "kimiQuota",
+      "antigravityQuota", "claudeQuota", "codexQuota", "deepseekQuota", "kimiQuota",
     ]);
     assert.deepStrictEqual(rest, {
       sessions: [],
@@ -7582,10 +7696,30 @@ describe("antigravity trailing PostToolUse filter", () => {
 // Desktop apps can reopen a previous conversation on launch, so their
 // SessionStart only means "opened", not "used". Clawd keeps that row out of the
 // HUD until the user does something, while the Dashboard keeps listing and
-// opening it. DSH and Kimi Code both behave this way.
+// opening it. DSH and Kimi Code both behave this way. Copilot (the CLI, or the
+// runtime inside VS Code) also sends a sessionStart when a conversation is
+// opened or restored, before the user has acted.
 // ═════════════════════════════════════════════════════════════════════════════
 
 describe("reopened conversation stays out of the HUD until activity", () => {
+  // DSH and Kimi post the PascalCase spellings; Copilot posts the camelCase hook
+  // names from its hooks.json verbatim, so the state machine must recognize both.
+  const PASCAL_EVENTS = {
+    start: "SessionStart",
+    prompt: "UserPromptSubmit",
+    preTool: "PreToolUse",
+    postTool: "PostToolUse",
+    stop: "Stop",
+    end: "SessionEnd",
+  };
+  const COPILOT_EVENTS = {
+    start: "sessionStart",
+    prompt: "userPromptSubmitted",
+    preTool: "preToolUse",
+    postTool: "postToolUse",
+    stop: "agentStop",
+    end: "sessionEnd",
+  };
   const CASES = [
     {
       label: "DSH",
@@ -7594,6 +7728,7 @@ describe("reopened conversation stays out of the HUD until activity", () => {
       ghostId: "deepseek-harness:ghost",
       extra: { dshCarrier: "desktop" },
       focusTarget: { type: "dsh-desktop", url: "dsh://open" },
+      events: PASCAL_EVENTS,
     },
     {
       label: "Kimi Code",
@@ -7602,7 +7737,26 @@ describe("reopened conversation stays out of the HUD until activity", () => {
       ghostId: "kimi-cli:ghost",
       extra: { sourcePid: 4242 },
       focusTarget: { type: "terminal", url: null },
+      events: PASCAL_EVENTS,
     },
+    {
+      label: "Copilot",
+      agentId: "copilot-cli",
+      sessionId: "copilot-cli:conversation",
+      ghostId: "copilot-cli:ghost",
+      extra: { sourcePid: 4242 },
+      focusTarget: { type: "terminal", url: null },
+      events: COPILOT_EVENTS,
+    },
+  ];
+  // Each action clears the marker on its own, so every case starts from a session
+  // that only received the start event.
+  const ACTIVITY_EVENTS = [
+    { label: "a user prompt", state: "thinking", event: (events) => events.prompt },
+    { label: "a tool call", state: "working", event: (events) => events.preTool },
+    { label: "a finished tool call", state: "working", event: (events) => events.postTool },
+    { label: "a stop", state: "attention", event: (events) => events.stop },
+    { label: "a notification", state: "notification", event: () => "Notification" },
   ];
 
   for (const testCase of CASES) {
@@ -7622,11 +7776,32 @@ describe("reopened conversation stays out of the HUD until activity", () => {
         update(api, {
           id: testCase.sessionId,
           state: "idle",
-          event: "SessionStart",
+          event: testCase.events.start,
           agentId: testCase.agentId,
           rawSessionId: "conversation",
           ...testCase.extra,
           ...overrides,
+        });
+      }
+
+      function startOn(targetApi) {
+        update(targetApi, {
+          id: testCase.sessionId,
+          state: "idle",
+          event: testCase.events.start,
+          agentId: testCase.agentId,
+          rawSessionId: "conversation",
+          ...testCase.extra,
+        });
+      }
+
+      function actOn(targetApi) {
+        update(targetApi, {
+          id: testCase.sessionId,
+          state: "working",
+          event: testCase.events.preTool,
+          agentId: testCase.agentId,
+          ...testCase.extra,
         });
       }
 
@@ -7658,7 +7833,7 @@ describe("reopened conversation stays out of the HUD until activity", () => {
         update(api, {
           id: testCase.sessionId,
           state: "thinking",
-          event: "UserPromptSubmit",
+          event: testCase.events.prompt,
           agentId: testCase.agentId,
           ...testCase.extra,
         });
@@ -7699,7 +7874,7 @@ describe("reopened conversation stays out of the HUD until activity", () => {
           update(localApi, {
             id: testCase.sessionId,
             state: "idle",
-            event: "SessionStart",
+            event: testCase.events.start,
             agentId: testCase.agentId,
             rawSessionId: "conversation",
             ...testCase.extra,
@@ -7747,7 +7922,7 @@ describe("reopened conversation stays out of the HUD until activity", () => {
         update(api, {
           id: testCase.sessionId,
           state: "thinking",
-          event: "UserPromptSubmit",
+          event: testCase.events.prompt,
           agentId: testCase.agentId,
           ...testCase.extra,
         });
@@ -7758,6 +7933,130 @@ describe("reopened conversation stays out of the HUD until activity", () => {
         assert.strictEqual(api.sessions.get(testCase.sessionId).awaitingActivity, true);
         assert.strictEqual(snapshotEntry(api.buildSessionSnapshot()).hiddenFromHud, true);
       });
+
+      for (const activity of ACTIVITY_EVENTS) {
+        it(`reveals the conversation after ${activity.label}`, () => {
+          sessionStart();
+          assert.strictEqual(api.sessions.get(testCase.sessionId).awaitingActivity, true);
+
+          update(api, {
+            id: testCase.sessionId,
+            state: activity.state,
+            event: activity.event(testCase.events),
+            agentId: testCase.agentId,
+            ...testCase.extra,
+          });
+
+          assert.strictEqual(api.sessions.get(testCase.sessionId).awaitingActivity, false);
+          assert.strictEqual(snapshotEntry(api.buildSessionSnapshot()).hiddenFromHud, false);
+        });
+      }
+
+      it("keeps the conversation visible when a repeated start arrives during a live approval", () => {
+        const pending = [];
+        const localApi = require("../src/state")(makeCtx({ pendingPermissions: pending }));
+        try {
+          startOn(localApi);
+          actOn(localApi);
+          assert.strictEqual(localApi.sessions.get(testCase.sessionId).awaitingActivity, false);
+
+          pending.push({
+            sessionId: testCase.sessionId,
+            agentId: testCase.agentId,
+            res: { destroyed: false, writableEnded: false },
+          });
+          startOn(localApi);
+
+          assert.strictEqual(localApi.sessions.get(testCase.sessionId).awaitingActivity, false);
+          const entry = localApi.buildSessionSnapshot().sessions.find((s) => s.id === testCase.sessionId);
+          assert.strictEqual(entry.hiddenFromHud, false);
+        } finally {
+          localApi.cleanup();
+        }
+      });
+
+      it("re-marks the conversation when the approval connection has already ended", () => {
+        const localApi = require("../src/state")(makeCtx({
+          pendingPermissions: [{
+            sessionId: testCase.sessionId,
+            agentId: testCase.agentId,
+            res: { writableEnded: true },
+          }],
+        }));
+        try {
+          startOn(localApi);
+          actOn(localApi);
+
+          startOn(localApi);
+
+          assert.strictEqual(localApi.sessions.get(testCase.sessionId).awaitingActivity, true);
+          const entry = localApi.buildSessionSnapshot().sessions.find((s) => s.id === testCase.sessionId);
+          assert.strictEqual(entry.hiddenFromHud, true);
+        } finally {
+          localApi.cleanup();
+        }
+      });
+
+      it("re-marks the conversation when the live approval belongs to another session or agent", () => {
+        for (const pendingApproval of [
+          { sessionId: `${testCase.sessionId}-other`, agentId: testCase.agentId },
+          { sessionId: testCase.sessionId, agentId: "claude-code" },
+        ]) {
+          const localApi = require("../src/state")(makeCtx({
+            pendingPermissions: [{ ...pendingApproval, res: {} }],
+          }));
+          try {
+            startOn(localApi);
+            actOn(localApi);
+
+            startOn(localApi);
+
+            assert.strictEqual(localApi.sessions.get(testCase.sessionId).awaitingActivity, true);
+          } finally {
+            localApi.cleanup();
+          }
+        }
+      });
+
+      if (testCase.events.end === "sessionEnd") {
+        it("deletes an untouched conversation when its session ends", () => {
+          sessionStart();
+          assert.strictEqual(api.sessions.get(testCase.sessionId).awaitingActivity, true);
+
+          update(api, {
+            id: testCase.sessionId,
+            state: "sleeping",
+            event: testCase.events.end,
+            agentId: testCase.agentId,
+            ...testCase.extra,
+          });
+
+          assert.strictEqual(api.sessions.has(testCase.sessionId), false);
+          assert.strictEqual(snapshotEntry(api.buildSessionSnapshot()), undefined);
+        });
+
+        it("deletes a used conversation when its session ends", () => {
+          sessionStart();
+          update(api, {
+            id: testCase.sessionId,
+            state: "thinking",
+            event: testCase.events.prompt,
+            agentId: testCase.agentId,
+            ...testCase.extra,
+          });
+          assert.strictEqual(api.sessions.get(testCase.sessionId).awaitingActivity, false);
+
+          update(api, {
+            id: testCase.sessionId,
+            state: "sleeping",
+            event: testCase.events.end,
+            agentId: testCase.agentId,
+            ...testCase.extra,
+          });
+
+          assert.strictEqual(api.sessions.has(testCase.sessionId), false);
+        });
+      }
     });
   }
 
@@ -7791,5 +8090,107 @@ describe("reopened conversation stays out of the HUD until activity", () => {
       api.cleanup();
       mock.timers.reset();
     }
+  });
+});
+
+describe("Copilot session end deletes the row", () => {
+  let api;
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    // Keep the reported PIDs alive so only the end event can remove the row.
+    api = require("../src/state")(makeCtx({ processKill: () => true }));
+  });
+  afterEach(() => {
+    api.cleanup();
+    mock.timers.reset();
+  });
+
+  function copilotEvent(id, state, event, overrides = {}) {
+    update(api, {
+      id,
+      state,
+      event,
+      agentId: "copilot-cli",
+      sourcePid: 4242,
+      agentPid: 4242,
+      ...overrides,
+    });
+  }
+
+  const STATES = [
+    { label: "an untouched session", setup: () => {} },
+    { label: "an idle session", setup: (id) => copilotEvent(id, "attention", "agentStop") },
+    { label: "a working session", setup: (id) => copilotEvent(id, "working", "preToolUse") },
+  ];
+
+  for (const entry of STATES) {
+    it(`deletes ${entry.label} when its session ends`, () => {
+      const id = "copilot-ended";
+      copilotEvent(id, "idle", "sessionStart");
+      entry.setup(id);
+      assert.ok(api.sessions.has(id), "the session is live before the end event");
+
+      copilotEvent(id, "sleeping", "sessionEnd");
+
+      assert.strictEqual(api.sessions.has(id), false);
+      assert.strictEqual(
+        api.buildSessionSnapshot().sessions.some((sessionEntry) => sessionEntry.id === id),
+        false
+      );
+    });
+  }
+
+  it("ends only the matching child for a subagent-scoped lowercase sessionEnd", () => {
+    const id = "copilot-parent";
+    copilotEvent(id, "working", "preToolUse");
+    copilotEvent(id, "juggling", "subagentStart", { subagentId: "child-a", subagentLifecycleSource: "native" });
+    copilotEvent(id, "juggling", "subagentStart", { subagentId: "child-b", subagentLifecycleSource: "native" });
+
+    copilotEvent(id, "sleeping", "sessionEnd", { subagentId: "child-a", subagentLifecycleSource: "native" });
+
+    assert.ok(api.sessions.has(id), "a child end must keep the parent row");
+    assert.deepStrictEqual(
+      [...api.sessions.get(id).subagentTracker.confirmedIds],
+      ["child-b"]
+    );
+  });
+
+  for (const endEvent of ["sessionEnd", "SessionEnd"]) {
+    it(`does not evict a live session when an unknown id ends with ${endEvent}`, () => {
+      for (let i = 0; i < 20; i++) {
+        copilotEvent(`keep-${i}`, "working", "preToolUse", { sourcePid: 5000 + i, agentPid: 5000 + i });
+      }
+      assert.strictEqual(api.sessions.size, 20);
+
+      copilotEvent("never-seen", "sleeping", endEvent);
+
+      assert.strictEqual(api.sessions.size, 20);
+      for (let i = 0; i < 20; i++) assert.ok(api.sessions.has(`keep-${i}`));
+      assert.strictEqual(api.sessions.has("never-seen"), false);
+    });
+  }
+});
+
+describe("Claude profile folder on sessions (#1250)", () => {
+  let api;
+  afterEach(() => { if (api) api.cleanup(); });
+
+  it("keeps the folder across later events, including permission requests", () => {
+    api = require("../src/state")(makeCtx());
+    api.updateSession("p1", "working", "PreToolUse", {
+      cwd: "/tmp", agentId: "claude-code", claudeConfigDir: "/home/u/.claude-work",
+    });
+    api.updateSession("p1", "thinking", "UserPromptSubmit", { cwd: "/tmp", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.get("p1").claudeConfigDir, "/home/u/.claude-work");
+    api.updateSession("p1", "notification", "PermissionRequest", {
+      cwd: "/tmp", agentId: "claude-code", transientPermissionEvent: true,
+    });
+    assert.strictEqual(api.sessions.get("p1").claudeConfigDir, "/home/u/.claude-work");
+  });
+
+  it("leaves default-profile sessions without a folder", () => {
+    api = require("../src/state")(makeCtx());
+    api.updateSession("p2", "working", "PreToolUse", { cwd: "/tmp", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.get("p2").claudeConfigDir, null);
   });
 });

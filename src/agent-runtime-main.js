@@ -1,5 +1,7 @@
 "use strict";
 
+const { createCopilotTerminalWait } = require("./copilot-terminal-wait");
+const { createKiroDesktopRuntime } = require("./kiro-desktop-runtime");
 const DefaultCodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const {
   buildCodexMonitorSessionOptions,
@@ -16,7 +18,8 @@ const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
 const { normalizeDelegatedThread } = require("../agents/codex-delegated-child");
 const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: CHILD_ACTIVITY_TTL_MS } = require("./state-stale-cleanup");
-const { createQoderSessionTitleTracker, QODER_TITLE_EVENTS } = require("./qoder-session-title");
+const { createQoderSessionTitleTracker, normalizeQoderSessionId, QODER_TITLE_EVENTS } = require("./qoder-session-title");
+const { createQoderDesktopTitleTracker, isLocalQoderSession } = require("./qoder-desktop-sessions");
 const { createWorkBuddySessionTitleTracker } = require("./workbuddy-session-title");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
@@ -93,6 +96,9 @@ function createAgentRuntimeMain(options = {}) {
   const getPermissionRuntime = options.getPermissionRuntime || (() => null);
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
+  const kiroDesktop = createKiroDesktopRuntime({ ...options, getStateRuntime, getPermissionRuntime, updateSession });
+  const copilotTerminalWait = createCopilotTerminalWait({ now });
+  copilotTerminalWait.onChange(() => getStateRuntime()?.refreshPendingAttention?.());
   // A startup scan may encounter a child before its already-active parent.
   // Keep only live, fenced starts; this ledger never creates a session.
   const pendingCodexChildren = new Map();
@@ -220,8 +226,75 @@ function createAgentRuntimeMain(options = {}) {
     return false;
   }
 
+  const QODER_CHILD_ACTIVE_STATES = new Set(["working", "thinking"]);
+
+  function updateQoderParent(state, parentSessionId, childId, phase, occurredAt) {
+    const raw = normalizeQoderSessionId(parentSessionId);
+    if (!raw) return;
+    const parentId = resolveSessionIdentity(`qoder:${raw}`, "local").sessionId;
+    state?.updateQoderSubagentActivity?.(parentId, { childId, phase, occurredAt });
+  }
+
+  function dismissQoderDesktopSession(state, sessionId, rawSessionId) {
+    qoderSessionTitleTracker.clear(rawSessionId);
+    state.dismissSession?.(sessionId);
+  }
+
+  function handleQoderRetired({ sessionId, rawSessionId, meta }) {
+    const state = getStateRuntime();
+    const session = state?.sessions?.get(sessionId);
+    if (!session) return;
+    const { state: childState, updatedAt } = session;
+    dismissQoderDesktopSession(state, sessionId, rawSessionId);
+    if (meta.delegated && !meta.archived && !meta.deleted && QODER_CHILD_ACTIVE_STATES.has(childState)) {
+      updateQoderParent(state, meta.parentSessionId, rawSessionId, "activity", updatedAt);
+    }
+  }
+
+  function inspectQoderDesktopEvent(sessionId, hookState, event, opts) {
+    if (!isLocalQoderSession(opts) || disposed || !isAgentEnabled("qoder")) return null;
+    const state = getStateRuntime();
+    const session = state?.sessions?.get(sessionId);
+    if (session && !isLocalQoderSession(session)) return null;
+    const rawSessionId = normalizeQoderSessionId(opts.rawSessionId || session?.rawSessionId || sessionId);
+    if (!rawSessionId) return null;
+    const active = QODER_CHILD_ACTIVE_STATES.has(hookState);
+    const { reading, parentSessionId } = qoderDesktopTitleTracker.readEventMeta(rawSessionId, event, active);
+    const meta = reading?.meta;
+    const retired = meta?.archived || meta?.deleted;
+    const suppressed = !!(parentSessionId || meta?.delegated || retired);
+    if (suppressed && session) {
+      qoderDesktopTitleTracker.clear(sessionId);
+      dismissQoderDesktopSession(state, sessionId, rawSessionId);
+    }
+    if (parentSessionId) {
+      if (event === "Stop" || event === "SessionEnd" || retired) {
+        updateQoderParent(state, parentSessionId, rawSessionId, "stop");
+      } else if (meta && active) {
+        updateQoderParent(state, parentSessionId, rawSessionId, "activity", now());
+      }
+    }
+    return { suppressed, rawSessionId, reading };
+  }
+
   const qoderSessionTitleTracker = options.qoderSessionTitleTracker
     || createQoderSessionTitleTracker();
+  const { now: qoderDesktopNow, pollMs, readerOptions } = options.qoderDesktopTrackerOptions || {};
+  const qoderDesktopTitleTracker = createQoderDesktopTitleTracker({
+    now: qoderDesktopNow,
+    pollMs,
+    readerOptions,
+    getSession: localQoderSession,
+    onRetired: handleQoderRetired,
+    updateTitle(sessionId, title) {
+      getStateRuntime()?.updateSessionMetadata?.(sessionId, { sessionTitle: title, expectedAgentId: "qoder" });
+    },
+    updateContextUsage(sessionId, contextUsage) {
+      getStateRuntime()?.updateSessionMetadata?.(sessionId, {
+        contextUsage, contextUsageOrigin: "qoder-native", expectedAgentId: "qoder",
+      });
+    },
+  });
   const workBuddySessionTitleTracker = options.workBuddySessionTitleTracker
     || createWorkBuddySessionTitleTracker({
       ...options.workBuddySessionTitleOptions,
@@ -491,15 +564,15 @@ function createAgentRuntimeMain(options = {}) {
     return codexArchiveTracker.isArchived(raw) === true;
   }
 
-  // JSONL fallback rescue. Official Codex hooks normally emit a Stop that closes
-  // the turn, so the matching JSONL event_msg:task_complete is suppressed as a
-  // duplicate. But when the official Stop never arrives, the session stays stuck
-  // working-like while the rollout JSONL still records task_complete. Let that one
-  // JSONL completion through to close the turn — only for a local (non-remote,
-  // non-headless) Codex session the state runtime still shows as working-like.
-  // Once Stop (or this very fallback) idles the session it is no longer
-  // working-like, so a later duplicate task_complete is suppressed again and we
-  // avoid double done/celebration.
+  // Official Codex hooks normally close the turn with Stop. If it never arrives,
+  // JSONL task_complete can finish a local turn that is still working-like or
+  // has a matching compaction hold. Headless sessions only accept idle here:
+  // the monitor resolves tracked subagent completions to idle so their rows
+  // settle silently.
+  // The turn fence drops repeated terminals with the same turn ID. Once the
+  // fallback idles a row, it is no longer working-like, so repeated task_complete
+  // stays suppressed within the recent official-hook window unless there is a
+  // matching compaction hold.
   function shouldAllowCodexJsonlCompletionFallback(sessionId, state, event, turnId, extra) {
     if (event !== "event_msg:task_complete") return false;
     // codex-log-monitor only resolves task_complete to a completion state.
@@ -507,7 +580,7 @@ function createAgentRuntimeMain(options = {}) {
     const stateRuntime = getStateRuntime();
     const sessions = stateRuntime && stateRuntime.sessions;
     const session = sessions && typeof sessions.get === "function" ? sessions.get(sessionId) : null;
-    if (!isLocalCodexSessionRecord(session) || session.headless) return false;
+    if (!isLocalCodexSessionRecord(session) || (session.headless && state !== "idle")) return false;
     return CODEX_WORKING_LIKE_STATES.has(session.state)
       || (typeof stateRuntime.hasCodexCompactionHold === "function"
         && stateRuntime.hasCodexCompactionHold(sessionId, {
@@ -592,6 +665,10 @@ function createAgentRuntimeMain(options = {}) {
     )) {
       return false;
     }
+    const qoderDesktop = inspectQoderDesktopEvent(sessionId, state, event, opts);
+    if (qoderDesktop?.suppressed) {
+      return false;
+    }
     const isLocalOfficialCodexEvent = !!(opts
       && opts.agentId === "codex"
       && opts.hookSource === "codex-official"
@@ -672,9 +749,25 @@ function createAgentRuntimeMain(options = {}) {
     const preserveCodexInitialization = isLocalOfficialCodexEvent
       && event === "SessionStart" && state === "idle"
       && shouldPreserveCodexInitialization(sessionId, opts, stateRuntime);
-    const result = preserveCodexInitialization
-      ? stateRuntime.updateCodexInitializationMetadata(sessionId, opts)
-      : updateSession(sessionId, state, event, opts);
+    // An Interrupt closes a turn without providing a completion to display.
+    // Keep the fence and child cleanup, but do not create a card for a turn
+    // that has no current session record.
+    const orphanCodexInterrupt = isLocalOfficialCodexEvent && event === "Interrupt" && state === "idle"
+      && typeof sessions?.has === "function" && !sessions.has(sessionId);
+    kiroDesktop.onHook(sessionId, event, opts);
+    let result = false;
+    if (orphanCodexInterrupt) {
+      // The accepted event proves hooks are arriving, even without a row.
+      stateRuntime.endStartupRecovery?.();
+      stateRuntime.releaseCodexCompactionOnTerminal?.(sessionId, event, {
+        turnId: opts.turnId, occurredAt: now(),
+      });
+    } else if (preserveCodexInitialization) {
+      result = stateRuntime.updateCodexInitializationMetadata(sessionId, opts);
+    } else {
+      result = updateSession(sessionId, state, event, opts);
+    }
+    if (opts.agentId === "copilot-cli") copilotTerminalWait.onHook(sessionId, event, opts);
     if (officialChildTerminalId
       && resolveSessionIdentity(officialChildTerminalId, "local").sessionId === sessionId) {
       // The official turn fence above has accepted this terminal. The monitor
@@ -710,7 +803,7 @@ function createAgentRuntimeMain(options = {}) {
       rememberCodexSessionEndTombstone(sessionId);
     }
     maybeCaptureGhosttyTerminalId(sessionId, event, opts);
-    enrichQoderSessionTitle(sessionId, event, opts);
+    if (qoderDesktop) enrichQoderSessionTitle(sessionId, event, opts, qoderDesktop);
     enrichWorkBuddySessionTitle(sessionId, event, opts);
     return result;
   }
@@ -767,9 +860,7 @@ function createAgentRuntimeMain(options = {}) {
     if (disposed || !isAgentEnabled("qoder")) return null;
     const state = getStateRuntime();
     const session = state && state.sessions && state.sessions.get(sessionId);
-    return session && session.agentId === "qoder"
-      && (session.profileId || "local") === "local"
-      && !session.host && !session.wslDistro ? session : null;
+    return isLocalQoderSession(session) ? session : null;
   }
 
   function noteQoderExternalTitle(sessionId, title) {
@@ -786,25 +877,30 @@ function createAgentRuntimeMain(options = {}) {
     return accepted;
   }
 
-  function enrichQoderSessionTitle(sessionId, event, opts) {
-    if (opts.agentId !== "qoder" || (opts.profileId || "local") !== "local"
-      || opts.host || opts.wslDistro) return;
-    const session = localQoderSession(sessionId);
-    const rawSessionId = (session && session.rawSessionId) || opts.rawSessionId || sessionId;
+  function enrichQoderSessionTitle(sessionId, event, opts, { rawSessionId, reading }) {
     // A new lifecycle must invalidate work from an earlier --resume of this id.
     if (event === "SessionStart" || event === "SessionEnd") {
       qoderSessionTitleTracker.clear(rawSessionId, { preserveExternalTitle: event === "SessionStart" });
+      qoderDesktopTitleTracker.clear(sessionId);
     }
     if (event === "SessionEnd") return;
+    const session = localQoderSession(sessionId);
     if (!session) return;
+    // The DB observer may run on any hook event; its poll window bounds reads.
+    // Track before the external-title shortcut so DB title/usage still start
+    // if a future hook begins carrying session_title.
+    qoderDesktopTitleTracker.track({
+      sessionId,
+      rawSessionId,
+      transcriptPath: session.transcriptPath,
+      reading,
+    });
     if (opts.sessionTitle) {
       noteQoderExternalTitle(sessionId, opts.sessionTitle);
       return;
     }
     if (!QODER_TITLE_EVENTS.has(event) || !session.transcriptPath) return;
     const transcriptPath = session.transcriptPath;
-    // Lifecycle acceptance is already complete. This result only annotates a
-    // surviving local session and must not refresh activity or replay an event.
     qoderSessionTitleTracker.resolve({ event, sessionId: rawSessionId, transcriptPath }).then((title) => {
       const live = localQoderSession(sessionId);
       if (!title || !live || live.transcriptPath !== transcriptPath
@@ -814,6 +910,19 @@ function createAgentRuntimeMain(options = {}) {
         state.updateSessionMetadata(sessionId, { sessionTitle: title });
       }
     }).catch(() => {});
+  }
+
+  function sweepQoderDesktopSessions() {
+    if (disposed || !isAgentEnabled("qoder")) return;
+    const state = getStateRuntime();
+    if (!state || !state.sessions) return;
+    const rows = [];
+    for (const [sessionId, session] of state.sessions) {
+      if (isLocalQoderSession(session)) {
+        rows.push({ sessionId, rawSessionId: session.rawSessionId, transcriptPath: session.transcriptPath });
+      }
+    }
+    qoderDesktopTitleTracker.sweep(rows);
   }
 
   function maybeCaptureGhosttyTerminalId(sessionId, event, opts = {}) {
@@ -831,7 +940,11 @@ function createAgentRuntimeMain(options = {}) {
     });
   }
 
-  function startMonitorForAgent(agentId) {
+  function startMonitorForAgent(agentId, intent = {}) {
+    if (agentId === "kiro-desktop") {
+      if (!disposed && intent.integrationInstalled === true) kiroDesktop.start();
+      return;
+    }
     // Caller (Settings pre-commit enable/install, or startup) has already
     // decided to start; re-reading the persisted gate here races the settings
     // store write. Match the existing monitor.start() semantics.
@@ -841,6 +954,7 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function stopMonitorForAgent(agentId) {
+    if (agentId === "kiro-desktop") { kiroDesktop.stop(); return; }
     if (agentId !== "codex") return;
     if (codexMonitor) codexMonitor.stop();
     pendingCodexChildren.clear();
@@ -932,8 +1046,9 @@ function createAgentRuntimeMain(options = {}) {
       resetLocalCodexLifecycleTracking();
       stopCodexArchiveTracker();
     }
-    if (agentId === "qoder" && qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
-      qoderSessionTitleTracker.clear();
+    if (agentId === "qoder") {
+      qoderSessionTitleTracker.clear?.();
+      qoderDesktopTitleTracker.clear();
     }
     const state = getStateRuntime();
     return state && typeof state.clearSessionsByAgent === "function"
@@ -1220,6 +1335,8 @@ function createAgentRuntimeMain(options = {}) {
 
   function cleanup() {
     disposed = true;
+    kiroDesktop.stop();
+    copilotTerminalWait.clearAll();
     workBuddySessionTitleTracker.clear();
     clearRetiredWorkBuddySessions();
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
@@ -1229,6 +1346,7 @@ function createAgentRuntimeMain(options = {}) {
     if (qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
       qoderSessionTitleTracker.clear();
     }
+    qoderDesktopTitleTracker.clear();
   }
 
   function resetLocalCodexLifecycleTracking() {
@@ -1240,6 +1358,12 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   return {
+    getCopilotTerminalWaitSessionIds: copilotTerminalWait.getPendingSessionIds,
+    clearCopilotTerminalWaitSession: copilotTerminalWait.clearSession,
+    getKiroDesktopPendingSessionIds: kiroDesktop.getPendingSessionIds,
+    clearKiroDesktopSession: kiroDesktop.clearSession,
+    clearKiroDesktopReminderCards: kiroDesktop.clearCards,
+    resyncKiroDesktopReminderCards: kiroDesktop.resyncReminderCards,
     getCodexSubagentClassifier: () => codexSubagentClassifier,
     startCodexLogMonitor,
     startMonitorForAgent,
@@ -1259,6 +1383,8 @@ function createAgentRuntimeMain(options = {}) {
     stopCodexArchiveTracker,
     getCodexArchiveTracker: () => codexArchiveTracker,
     getWorkBuddySessionTitleTracker: () => workBuddySessionTitleTracker,
+    getQoderDesktopTitleTracker: () => qoderDesktopTitleTracker,
+    sweepQoderDesktopSessions,
     resetLocalCodexLifecycleTracking,
     getCodexTurnFenceSnapshot: (sessionId) => codexTurnFence.getSnapshot(sessionId),
     getCodexOfficialActivitySnapshot: (sessionId) => codexOfficialActivity.getSnapshot(sessionId),

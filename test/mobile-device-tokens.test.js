@@ -60,8 +60,8 @@ async function fixture(t, options = {}) {
   });
   await server.start();
   t.after(async () => { await server.cleanup(); if (!options.dir) fs.rmSync(dir, { recursive: true, force: true }); });
-  function connect(params, ip = "127.0.0.1", socket = new Socket()) {
-    socketServer.emit("connection", socket, { url: "/ws?" + new URLSearchParams(params), headers: { "user-agent": "iPhone Safari/17" }, socket: { remoteAddress: ip } });
+  function connect(params, ip = "127.0.0.1", socket = new Socket(), headers = { "user-agent": "iPhone Safari/17" }) {
+    socketServer.emit("connection", socket, { url: "/ws?" + new URLSearchParams(params), headers, socket: { remoteAddress: ip } });
     return socket;
   }
   return {
@@ -140,6 +140,96 @@ test("device list exposes only display fields and reads lastSeenAt without persi
   devices[0].name = "changed by caller";
   devices.pop();
   assert.equal(f.server.listDevices()[0].name, pending.name);
+});
+
+test("home-screen PWAs get a distinguishing name suffix via the mode param (#1299)", async (t) => {
+  // Pairing from a home-screen PWA (iOS standalone shares Safari's UA).
+  const f = await fixture(t);
+  f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+
+  // Regular Safari pairing stays unsuffixed.
+  const plain = await fixture(t);
+  plain.connect({ pair: plain.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  assert.equal(plain.server.listDevices()[0].name, "iPhone · Safari");
+
+  // Android installed PWA.
+  const android = await fixture(t);
+  android.connect(
+    { pair: android.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1), mode: "pwa" },
+    "127.0.0.1", new Socket(),
+    { "user-agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36" },
+  );
+  assert.equal(android.server.listDevices()[0].name, "Android · Chrome · PWA");
+
+  // Unknown mode values are ignored, not echoed into the name.
+  const junk = await fixture(t);
+  junk.connect({ pair: junk.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1), mode: "location.href" });
+  assert.equal(junk.server.listDevices()[0].name, "iPhone · Safari");
+
+  // Legacy migration names new devices with the suffix too.
+  const legacyPwa = await fixture(t);
+  legacyPwa.connect({ token: LEGACY, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(legacyPwa.server.listDevices()[0].name, "iPhone · Safari · PWA");
+});
+
+test("a standalone reconnect renames pre-mode devices in place (#1299)", async (t) => {
+  const f = await fixture(t);
+  // Paired before the suffix existed: no mode param, plain name.
+  const socket = f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const token = socket.rotation().newToken;
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  socket.close(1000);
+
+  // First standalone reconnect fixes the name without revoking or re-pairing.
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+
+  // Further standalone reconnects are a no-op: no extra write lands.
+  const before = fs.readFileSync(f.devicesPath, "utf8");
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+  assert.equal(fs.readFileSync(f.devicesPath, "utf8"), before);
+
+  // A regular Safari reconnect never renames.
+  const plain = await fixture(t);
+  const plainSocket = plain.connect({ pair: plain.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const plainToken = plainSocket.rotation().newToken;
+  plainSocket.close(1000);
+  plain.connect({ token: plainToken, proto: "2", cid: cid(1) });
+  assert.equal(plain.server.listDevices()[0].name, "iPhone · Safari");
+});
+
+test("a failed PWA rename is logged and the connection still completes (#1299)", async (t) => {
+  const f = await fixture(t);
+  // Paired before the suffix existed: no mode param, plain name.
+  const paired = f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const token = paired.rotation().newToken;
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  paired.close(1000);
+
+  // Promote the staged token first so the failing write below is only the rename.
+  const promoted = f.connect({ token, proto: "2", cid: cid(1) });
+  assert.equal(promoted.code, undefined);
+  promoted.close(1000);
+
+  // The reconnect still has to serve snapshots even when the rename cannot be written.
+  f.failDevices(true);
+  let socket;
+  assert.doesNotThrow(() => { socket = f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" }); });
+  checkSnapshot(socket);
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (device rename): write-rejected",
+  ]);
+
+  // The next reconnect retries the rename and persists it.
+  f.failDevices(false);
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write recovered")), [
+    "[mobile-preview] device store write recovered after 1 failed writes",
+  ]);
 });
 
 test("legacy activity is false on fresh install, true on upgrade, false after revocation", async (t) => {
@@ -294,6 +384,312 @@ test("pair claims are atomic and repeatable across expiry, display refresh and d
   checkSnapshot(restarted.device(a.newToken));
   assert.equal(restarted.pair(info.pairCode).code, 4004);
 });
+
+test("expired pair codes rotate in memory after write failure and persist on the next timer", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let fail = false, writes = 0;
+  const f = await fixture(t, { ctx: {
+    writeDeviceState(file, state) { writes++; if (fail) return false; return atomicWrite(file, state); },
+  } });
+  const old = f.server.getConnectionInfo();
+  fail = true;
+  f.time(old.pairExpiresAt);
+  let first, second;
+  assert.doesNotThrow(() => { first = f.server.getConnectionInfo(); });
+  assert.doesNotThrow(() => { second = f.server.getConnectionInfo(); });
+  assert.notEqual(first.pairCode, old.pairCode);
+  assert.ok(first.pairExpiresAt > old.pairExpiresAt);
+  assert.deepEqual(second, first);
+  assert.deepEqual(f.read().pairing, { code: old.pairCode, expiresAt: old.pairExpiresAt });
+
+  fail = false;
+  const beforeRetry = writes;
+  t.mock.timers.tick(60000);
+  assert.equal(writes, beforeRetry + 1);
+  assert.deepEqual(f.read().pairing, { code: first.pairCode, expiresAt: first.pairExpiresAt });
+  t.mock.timers.tick(60000);
+  assert.equal(writes, beforeRetry + 1);
+});
+
+test("unpersisted pair codes reject old claims and defer new claims", async (t) => {
+  const f = await fixture(t);
+  const old = f.server.getConnectionInfo();
+  f.failDevices(true);
+  f.time(old.pairExpiresAt);
+  let fresh;
+  assert.doesNotThrow(() => { fresh = f.server.getConnectionInfo(); });
+  const rejected = f.pair(old.pairCode);
+  const deferred = f.pair(fresh.pairCode, 2);
+  assert.equal(rejected.code, 4004);
+  assert.equal(deferred.code, 4003);
+  assert.equal(rejected.rotation(), undefined);
+  assert.equal(deferred.rotation(), undefined);
+  assert.deepEqual(f.server.listDevices(), []);
+  assert.deepEqual(f.read().devices, []);
+});
+
+test("manual pair code refresh preserves live codes and leaves no retry after write failure", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const error = Object.assign(new Error("/Users/secret/x"), { code: "EACCES", syscall: "open" });
+  let fail = false, writes = 0;
+  const f = await fixture(t, { ctx: {
+    writeDeviceState(file, state) { writes++; if (fail) throw error; return atomicWrite(file, state); },
+  } });
+  const old = f.server.getConnectionInfo();
+  const disk = f.read();
+  fail = true;
+  assert.throws(() => f.server.refreshPairCode(), (err) => err === error);
+  assert.deepEqual(f.server.getConnectionInfo(), old);
+  assert.deepEqual(f.read(), disk);
+  const afterFailure = writes;
+  fail = false;
+  t.mock.timers.tick(60000);
+  assert.equal(writes, afterFailure);
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (manual pair code refresh): EACCES/open",
+  ]);
+});
+
+test("a rejected pair code write logs its failure kind", async (t) => {
+  const f = await fixture(t);
+  f.failDevices(true);
+  f.time(f.server.getConnectionInfo().pairExpiresAt);
+  assert.doesNotThrow(() => f.server.getConnectionInfo());
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (pair code rotation): write-rejected",
+  ]);
+});
+
+test("pair code write logs omit private paths and count deduplicated timer failures", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let fail = false;
+  const f = await fixture(t, { ctx: {
+    writeDeviceState(file, state) {
+      if (fail) throw Object.assign(new Error("/Users/secret/x"), { code: "EACCES", syscall: "open" });
+      return atomicWrite(file, state);
+    },
+  } });
+  fail = true;
+  f.time(f.server.getConnectionInfo().pairExpiresAt);
+  assert.doesNotThrow(() => f.server.getConnectionInfo());
+  assert.doesNotThrow(() => t.mock.timers.tick(60000));
+  assert.doesNotThrow(() => t.mock.timers.tick(60000));
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (pair code rotation): EACCES/open",
+  ]);
+  assert.equal(f.logs.join("\n").includes("/Users/secret"), false);
+  fail = false;
+  t.mock.timers.tick(60000);
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write recovered")), [
+    "[mobile-preview] device store write recovered after 3 failed writes",
+  ]);
+});
+
+test("write failure deduplication spans contexts, reports changed kinds and resets on recovery", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let error = null;
+  const f = await fixture(t, { ctx: {
+    writeDeviceState(file, state) { if (error) throw error; return atomicWrite(file, state); },
+  } });
+  error = Object.assign(new Error("/Users/secret/x"), { code: "EACCES", syscall: "open" });
+  assert.throws(() => f.server.refreshPairCode(), (err) => err === error);
+  f.time(f.server.getConnectionInfo().pairExpiresAt);
+  assert.doesNotThrow(() => f.server.getConnectionInfo());
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (manual pair code refresh): EACCES/open",
+  ]);
+  error = Object.assign(new Error("/Users/secret/x"), { code: "ENOSPC", syscall: "write" });
+  t.mock.timers.tick(60000);
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (manual pair code refresh): EACCES/open",
+    "[mobile-preview] device store write failed (retry): ENOSPC/write",
+  ]);
+  error = null;
+  t.mock.timers.tick(60000);
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write recovered")), [
+    "[mobile-preview] device store write recovered after 3 failed writes",
+  ]);
+  error = Object.assign(new Error("/Users/secret/x"), { code: "ENOSPC", syscall: "write" });
+  assert.throws(() => f.server.refreshPairCode(), (err) => err === error);
+  assert.equal(f.logs.filter((line) => line.includes("device store write failed")).length, 3);
+  assert.equal(f.logs.at(-1), "[mobile-preview] device store write failed (manual pair code refresh): ENOSPC/write");
+});
+
+test("a successful revoke persists a dirty pair code and recovers exactly one failed write", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let fail = false, writes = 0;
+  const f = await fixture(t, { ctx: {
+    writeDeviceState(file, state) { writes++; if (fail) return false; return atomicWrite(file, state); },
+  } });
+  const pair = f.pair();
+  const rotation = pair.rotation();
+  const active = f.device(rotation.newToken);
+  fail = true;
+  f.time(f.server.getConnectionInfo().pairExpiresAt);
+  let fresh;
+  assert.doesNotThrow(() => { fresh = f.server.getConnectionInfo(); });
+  fail = false;
+  assert.deepEqual(f.server.revokeDevice(rotation.deviceId), { mayHoldLegacy: false });
+  assert.equal(pair.code, 1008);
+  assert.equal(active.code, 1008);
+  assert.deepEqual(f.read().pairing, { code: fresh.pairCode, expiresAt: fresh.pairExpiresAt });
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write recovered")), [
+    "[mobile-preview] device store write recovered after 1 failed writes",
+  ]);
+  const afterCommit = writes;
+  t.mock.timers.tick(60000);
+  assert.equal(writes, afterCommit);
+});
+
+test("restarting with a dirty pair code never revives either previous display code", async (t) => {
+  const f = await fixture(t);
+  const old = f.server.getConnectionInfo();
+  f.failDevices(true);
+  f.time(old.pairExpiresAt);
+  let fresh;
+  assert.doesNotThrow(() => { fresh = f.server.getConnectionInfo(); });
+  await f.server.cleanup();
+  const again = await fixture(t, { dir: f.dir, time: old.pairExpiresAt, failDevices: true });
+  const restarted = again.server.getConnectionInfo();
+  assert.notEqual(restarted.pairCode, old.pairCode);
+  assert.notEqual(restarted.pairCode, fresh.pairCode);
+  assert.ok(restarted.pairExpiresAt > old.pairExpiresAt);
+  assert.equal(again.pair(old.pairCode).code, 4004);
+  assert.equal(again.pair(fresh.pairCode, 2).code, 4004);
+  assert.equal(again.read().pairing.code, old.pairCode);
+});
+
+test("repeated expiry while dirty persists only the latest pair code", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const f = await fixture(t);
+  const old = f.server.getConnectionInfo();
+  f.failDevices(true);
+  f.time(old.pairExpiresAt);
+  let first, latest;
+  assert.doesNotThrow(() => { first = f.server.getConnectionInfo(); });
+  f.time(first.pairExpiresAt);
+  assert.doesNotThrow(() => { latest = f.server.getConnectionInfo(); });
+  assert.notEqual(latest.pairCode, first.pairCode);
+  assert.notEqual(latest.pairCode, old.pairCode);
+  assert.ok(latest.pairExpiresAt > first.pairExpiresAt);
+  assert.equal(f.read().pairing.code, old.pairCode);
+  f.failDevices(false);
+  t.mock.timers.tick(60000);
+  assert.deepEqual(f.read().pairing, { code: latest.pairCode, expiresAt: latest.pairExpiresAt });
+});
+
+test("paused stores rotate expired display codes without writing or accepting claims", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const f = await fixture(t);
+  await f.server.cleanup();
+  fs.writeFileSync(f.devicesPath, "broken");
+  const io = Object.create(fs);
+  io.renameSync = (from, to) => { if (from === f.devicesPath) throw new Error("denied"); fs.renameSync(from, to); };
+  let writes = 0;
+  const again = await fixture(t, { dir: f.dir, ctx: {
+    fs: io,
+    writeDeviceState() { writes++; return false; },
+  } });
+  const old = again.server.getConnectionInfo();
+  again.time(old.pairExpiresAt);
+  let fresh;
+  assert.doesNotThrow(() => { fresh = again.server.getConnectionInfo(); });
+  assert.notEqual(fresh.pairCode, old.pairCode);
+  assert.ok(fresh.pairExpiresAt > old.pairExpiresAt);
+  assert.deepEqual(again.server.getConnectionInfo(), fresh);
+  t.mock.timers.tick(60000);
+  assert.equal(writes, 0);
+  const pair = again.pair(fresh.pairCode);
+  assert.equal(pair.code, 4003);
+  assert.equal(pair.rotation(), undefined);
+  assert.equal(fs.readFileSync(f.devicesPath, "utf8"), "broken");
+  assert.deepEqual(again.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (pair code rotation): paused",
+  ]);
+  assert.equal(again.logs.join("\n").includes("write-rejected"), false);
+});
+
+test("startup write failure safely initializes logging before retries and recovery", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const f = await fixture(t);
+  const old = f.server.getConnectionInfo();
+  await f.server.cleanup();
+  let fail = true;
+  const again = await fixture(t, { dir: f.dir, time: old.pairExpiresAt, ctx: {
+    writeDeviceState(file, state) {
+      if (fail) throw Object.assign(new Error("/Users/secret/x"), { code: "EACCES", syscall: "open" });
+      return atomicWrite(file, state);
+    },
+  } });
+  let fresh;
+  assert.doesNotThrow(() => { fresh = again.server.getConnectionInfo(); });
+  const failed = "[mobile-preview] device store write failed (retry): EACCES/open";
+  assert.deepEqual(again.logs.filter((line) => line.includes("device store write failed")), [failed]);
+  t.mock.timers.tick(60000);
+  t.mock.timers.tick(60000);
+  assert.deepEqual(again.logs.filter((line) => line.includes("device store write failed")), [failed]);
+  assert.equal(again.read().pairing.code, old.pairCode);
+  fail = false;
+  t.mock.timers.tick(60000);
+  assert.deepEqual(again.read().pairing, { code: fresh.pairCode, expiresAt: fresh.pairExpiresAt });
+  assert.deepEqual(again.logs.filter((line) => line.includes("device store write recovered")), [
+    "[mobile-preview] device store write recovered after 3 failed writes",
+  ]);
+});
+
+test("throwing failure and recovery logs preserve rotation, revoke results and disconnections", async (t) => {
+  let fail = false, logThrows = false, failedLogs = 0, recoveredLogs = 0;
+  const f = await fixture(t, { ctx: {
+    log(line) {
+      if (line.includes("device store write failed")) failedLogs++;
+      if (line.includes("device store write recovered")) recoveredLogs++;
+      if (logThrows) throw new Error("log unavailable");
+    },
+    writeDeviceState(file, state) { if (fail) return false; return atomicWrite(file, state); },
+  } });
+  const pair = f.pair();
+  const rotation = pair.rotation();
+  const active = f.device(rotation.newToken);
+  logThrows = true;
+  fail = true;
+  f.time(f.server.getConnectionInfo().pairExpiresAt);
+  let fresh, result;
+  assert.doesNotThrow(() => { fresh = f.server.getConnectionInfo(); });
+  assert.equal(failedLogs, 1);
+  fail = false;
+  assert.doesNotThrow(() => { result = f.server.revokeDevice(rotation.deviceId); });
+  assert.deepEqual(result, { mayHoldLegacy: false });
+  assert.equal(recoveredLogs, 1);
+  assert.equal(pair.code, 1008);
+  assert.equal(active.code, 1008);
+  assert.deepEqual(f.server.listDevices(), []);
+  assert.deepEqual(f.read().pairing, { code: fresh.pairCode, expiresAt: fresh.pairExpiresAt });
+});
+
+for (const failure of ["token", "devices"]) {
+  test(`reset while pairing is dirty preserves both pair codes on ${failure} write failure`, async (t) => {
+    const f = await fixture(t);
+    const legacy = f.legacy();
+    const rotation = legacy.rotation();
+    const active = f.device(rotation.newToken);
+    f.failDevices(true);
+    f.time(f.server.getConnectionInfo().pairExpiresAt);
+    let memory;
+    assert.doesNotThrow(() => { memory = f.server.getConnectionInfo(); });
+    const disk = f.read();
+    const token = fs.readFileSync(f.tokenPath, "utf8");
+    f.failToken(failure === "token");
+    assert.throws(() => f.server.resetMobileAccess(), (err) => err.legacyRevoked === (failure === "devices"));
+    assert.deepEqual(f.server.getConnectionInfo(), memory);
+    assert.deepEqual(f.read(), disk);
+    assert.equal(fs.readFileSync(f.tokenPath, "utf8") === token, failure === "token");
+    assert.equal(f.server.isLegacyActive(), failure === "token");
+    assert.equal(legacy.code, failure === "token" ? undefined : 1008);
+    assert.equal(active.code, undefined);
+    assert.equal(f.device(LEGACY, "").code, failure === "token" ? undefined : 1008);
+    assert.equal(f.device(rotation.newToken).code, undefined);
+  });
+}
 
 test("pending devices never expire and same cid active pairing creates another device", async (t) => {
   const f = await fixture(t);

@@ -2923,14 +2923,74 @@ function createPetRenderWindowForTest(harness, BrowserWindow, extraOptions = {})
   });
 }
 
-function createPetHitWindowForTest(harness, BrowserWindow) {
+function createPetHitWindowForTest(harness, BrowserWindow, extraOptions = {}) {
   return harness.runtime.createHitWindow({
     BrowserWindow,
     preloadPath: "preload-hit.js",
     loadFilePath: "hit.html",
     hitThemeConfig: { ok: true },
+    ...extraOptions,
   });
 }
+
+describe("pet window close requests", () => {
+  for (const [windowName, createWindow] of [
+    ["render", createPetRenderWindowForTest],
+    ["hit", createPetHitWindowForTest],
+  ]) {
+    it(`issue #1335: Windows ${windowName} window ignores close without changing visibility`, () => {
+      const harness = createRuntime({ isWin: true, isMac: false, isLinux: false });
+      const win = createWindow(harness, makePatchedBrowserWindow(), {
+        isQuitting: () => false,
+      });
+
+      for (const visible of [true, false]) {
+        win.visible = visible;
+        win.calls.length = 0;
+        harness.calls.length = 0;
+        harness.renderWin.calls.length = 0;
+        harness.hitWin.calls.length = 0;
+        let prevented = 0;
+
+        win.emit("close", { preventDefault: () => { prevented += 1; } });
+
+        assert.equal(prevented, 1);
+        assert.equal(win.visible, visible);
+        assert.equal(harness.runtime.isPetEffectivelyHidden(), false);
+        assert.deepStrictEqual(win.calls, []);
+        assert.deepStrictEqual(harness.calls, []);
+        assert.deepStrictEqual(harness.renderWin.calls, []);
+        assert.deepStrictEqual(harness.hitWin.calls, []);
+      }
+    });
+
+    it(`issue #1335: Windows ${windowName} window allows close while quitting`, () => {
+      const harness = createRuntime({ isWin: true, isMac: false, isLinux: false });
+      let quitting = false;
+      const win = createWindow(harness, makePatchedBrowserWindow(), {
+        isQuitting: () => quitting,
+      });
+      quitting = true;
+      let prevented = 0;
+
+      win.emit("close", { preventDefault: () => { prevented += 1; } });
+
+      assert.equal(prevented, 0);
+    });
+
+    it(`issue #1335: macOS ${windowName} window allows close before quit`, () => {
+      const harness = createRuntime({ isWin: false, isMac: true, isLinux: false });
+      const win = createWindow(harness, makePatchedBrowserWindow(), {
+        isQuitting: () => false,
+      });
+      let prevented = 0;
+
+      win.emit("close", { preventDefault: () => { prevented += 1; } });
+
+      assert.equal(prevented, 0);
+    });
+  }
+});
 
 describe("pet-window-runtime", () => {
   it("keeps context menu owner creation outside the pet runtime and preserves parent ownership", () => {
@@ -4256,6 +4316,39 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
 // restore, and a manual show (setPetHidden(false)) clears the auto flag so
 // "show" always means show NOW.
 describe("fullscreen auto-hide visibility layer (#935)", () => {
+  it("T9: meeting restore clears only manual hide and preserves fullscreen suppression without show intent", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(true, { keepFullscreenAutoHide: true });
+    assert.equal(h.runtime.isPetHidden(), true, "the option does not inhibit hiding");
+    h.renderWin.calls.length = 0;
+    h.calls.length = 0;
+    const result = h.runtime.setPetHidden(false, { keepFullscreenAutoHide: true });
+    assert.deepStrictEqual(result, { applied: true, deferred: false, changed: false });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    assert.deepStrictEqual(notes, []);
+    assert.ok(!h.renderWin.calls.some(([name]) => name === "showInactive"));
+    assert.ok(!h.calls.some(([name, value]) => name === "setFloatingSurfacesFullscreenSuppressed" && value === false));
+  });
+
+  it("R3: meeting restore shows the pet when fullscreen auto-hide is off", () => {
+    const h = createRuntime();
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    h.runtime.setPetHidden(true);
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    h.renderWin.calls.length = 0;
+    const result = h.runtime.setPetHidden(false, { keepFullscreenAutoHide: true });
+    assert.deepStrictEqual(result, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some(([name]) => name === "showInactive"));
+  });
+
   it("setFullscreenAutoHidden hides the pet without touching the manual state", () => {
     const h = createRuntime();
     const r = h.runtime.setFullscreenAutoHidden(true);

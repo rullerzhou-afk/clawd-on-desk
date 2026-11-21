@@ -287,6 +287,9 @@ headless 压缩不占全局动画；DND、禁用清扫、确认审批锁与更�
 它不结束回合、不产生控制决定。已有安装在下次集成同步时
 增量注册 `PostCompact` 和 `Interrupt`，保留用户 hook；新增命令仍须遵守 Codex 原生 hook review。
 `Interrupt` 超时遵循上游的 3 秒上限，不发审批决定或完成声音。
+本机 official `Interrupt` 到达时，若该会话没有记录则不新建会话行，但回合围栏照常落闩，
+精确匹配的子回合照常收尾，启动等待也照常结束。已有记录仍照常置为 idle；
+远程、WSL、非 official 来源和 JSONL fallback 不适用这条不建行规则。
 Codex 压缩完成同时兼容旧 `event_msg:context_compacted` 与新版
 `event_msg:item_completed`（`payload.item.type === "ContextCompaction"`）。本地与
 Remote SSH monitor 共用 `hooks/codex-log-event.js`，把后者归一化到旧事件键，沿用
@@ -369,7 +372,7 @@ Kiro CLI 状态同步（per-agent hook，stdin JSON）：
   Kiro CLI 触发事件
     → hooks/kiro-hook.js（camelCase 事件 → agents/kiro-cli.js 映射 → HTTP POST）
     → 同上状态机（agent_id: kiro-cli）
-  注意：Kiro 无 global hooks，hooks/kiro-install.js 把 hook 注入到 ~/.kiro/agents/ 下每个
+  注意：Kiro CLI 无 global hooks，hooks/kiro-install.js 把 hook 注入到 ~/.kiro/agents/ 下每个
   custom agent 配置里，并额外维护一个 "clawd" agent（继承 kiro_default，启动时从 kiro_default
   重新同步以避免行为漂移）。内置 kiro_default 没有可编辑 JSON，用户需 `kiro-cli --agent clawd`
   或 `/agent swap clawd` 才能启用 hooks。
@@ -425,14 +428,16 @@ Qoder / Qoder CN hooks（同一个 `qoder` agent、state-only）：
 Qoder 会话标题（本机、state-only）：
   Hook 转发显式标题与 transcript 路径，保持 stdout 为 `{}` 和原生权限流程不变。
   `agent-runtime-main` 先接受生命周期，再让 `qoder-session-title` 对 SessionStart /
-  UserPromptSubmit / Stop 异步增量读取；工具、权限、通知事件不触发扫描，显式标题也不触发 I/O。
+  UserPromptSubmit / Stop 异步增量读取 JSONL；工具、权限、通知事件不触发 JSONL 扫描，显式标题也不触发 JSONL I/O。
   仅处理 enabled、本机且非 WSL 的 Qoder 会话，远端 profile / host 的路径不在本机读取。
   标题读取保持完整的顺序解析与 custom-title 优先级，不采用会遗漏中段改名的头尾采样。
   结果通过既有 `updateSessionMetadata` 扇出到共享 snapshot，不改活动时间、状态、recentEvents 或 recap。
   显式生命周期标题和 metadata-only 标题均同步记入 tracker；未读取/轮转的基线或已排队的旧扫描
   不覆盖显式标题，之后观察到的新原生标题记录才可替代它（两个来源没有可比较的原生时间戳）。
-  同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
-  每个会话串行读取；完成时还需核对存活会话、
+  对 JSONL tracker，同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
+  新版桌面端通过 `qoder-desktop-sessions` 只读查询两版 `main.sqlite` 中的标题、用量、委派与归档/删除状态。本机首个事件和 SessionStart 查库，未确认委派时在 Stop / Notification 前复查，轮询仅为到期条目开库。确认的委派子行会隐藏并把活动投到父行，父行的完成提示照常。
+  SQLite 在 hook 或轮询中确认委派、归档或删除并撤行时，会作废该会话未完成的 JSONL 标题扫描。
+  JSONL 按会话串行读取；完成时还需核对存活会话、
   本机身份、当前路径及标题，防止旧异步结果污染重开的会话。读取中断时逐 chunk 保持 offset 与 partial
   一致，重试可继续完整解析；FileHandle 始终在 finally 中关闭。
 
@@ -696,9 +701,20 @@ WSL 状态同步（本机 loopback，但 PID 属于 Linux VM）：
     → hooks/codex-hook.js POST /permission { tool_name, tool_input, tool_input_description, session_id, turn_id }
     → 默认 auto 模式：准确的本机 session / turn 记录确认 user reviewer 时才由 Clawd 展示 Allow / Deny；自动 reviewer、MCP / app 覆盖、远程 / WSL、无法确认或过期记录立即 no-decision，Codex 继续处理
     → 显式 intercept 模式：main.js 创建普通 Allow / Deny bubble，用户点击后 codex-hook.js stdout 输出官方 JSON decision
-    → 旧 native 偏好规范化为 auto；升级时旧 intercept / native 统一迁到 Auto 一次，之后重新选择的 Intercept 会保留。Permissions & approval → On this machine → per tool 提供 Agents → Codex 路由设置入口
+    → 旧 native 偏好规范化为 auto；升级时旧 intercept / native 统一迁到 Auto 一次，之后重新选择的 Intercept 会保留。Settings → AI Coding Tools → Codex 的「审批方式」行说明当前路由；「高级 → 所有审批都交给桌宠」开关打开对应 intercept、关闭对应 auto，底层值和命令不变。Permissions & approval → On this machine → per tool 的摘要行可跳转并聚焦该高级开关
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
+
+
+### Kiro IDE
+
+Kiro IDE（`kiro-desktop`）通过受信任工作区的全局 hooks 上报 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop。安装器管理 `~/.kiro/hooks/clawd-on-desk.json`，仅精确两 token 的 Node + `kiro-desktop-hook.js` basename 证明条目所有权。Windows 使用 `windowsWrapper:"none"` 供宿主 shell 执行，hook stdout 始终零字节。与 Kiro CLI 和 KiroCrew 各自独立。
+
+`agents/kiro-desktop-log-monitor.js` 每 5 秒发现最近 24 小时内变动的会话文件，最多跟踪 64 个，每秒增量读完整 JSONL 行。每文件每轮读取上限 1 MiB、单行上限 256 KiB，身份变化、缩短或已消费换行边界被改写时重设基线。首次发现只记历史基线，退役偏移用最多 500 条的 LRU 保留。只提取确认关联字段和清洗过的 200 字问题，并读取 `session.json.workspacePaths[0]` 作为聚焦后备。
+
+`src/kiro-desktop-runtime.js` 将监视器的 raw session ID 在入口规范化一次，再交给独立的 `kiro-desktop-interactions.js` 账本。账本按 executionId、toolCallId、consentRound 精确解决，每会话最多 20 条、总会话最多 200。每条 pendingSince 取加入时的注入时钟，超过 24 小时后失效，以兜住漏读的解决或进程退出信号。getPendingSessionIds／getLatest 读取时移除过期条目并触发 onChange，复用 state 每 10 秒的既有清理节奏收卡、撤等待投影，并恢复普通会话过期规则。状态呈现将已有本机会话投影成 pendingAttention，canonical state 与 PID 保留，未决确认保护会话免于纯年龄过期，未出现 hook 的会话只弹卡。Stop／UserPromptSubmit、会话删除、监视器退役或重置都会清对应账本。observed／recovered 的 turn_end 都仅清对应 execution 的账本。取消一轮后若未触发 Stop，由正常工作超时回到待机。小结仅计 PreToolUse 工具数，开始与完成能力保持 null。
+
+`kiro-desktop-reminder.js` 单独管理每会话一张只读卡。关闭卡面保留未决事实，后续新键允许再提醒。勿扰、通知策略、全局权限气泡、agent 启用状态及提醒开关控制卡面，卡片无自动过期。设置关闭通知／全局权限气泡／全部气泡时立即清卡，账本仍驱动等确认呈现。相关策略、提醒开关或勿扰恢复后重新同步未决卡片，用户主动关闭过的键继续保持关闭。停用或卸载停止监视器并清账本，代次栅栏丢弃旧回调。应用启动要求已提交的 enabled 和 integrationInstalled，Settings 在安装成功或重新启用时显式传安装意图。
 
 ## Local Claude Session History
 
@@ -870,6 +886,18 @@ Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=
 
 CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL，或版本化 marker `clawd-on-desk.permission.v1`。旧 `name:"clawd"` 只有在 URL 同时属于 managed local endpoint 时才会迁移；同名第三方/custom URL 注册和卸载均不触碰。进程内 startup、Settings install/clear/repair 显式传 `{mode:"local"}` 或 `{mode:"custom",url}`；裸 CLI 与 WSL deploy 用 `{mode:"preserve"}`，防止把 marker-owned custom URL 意外改回 localhost。
 
+### Claude 多配置目录（#1250）
+
+Claude Code 用 `CLAUDE_CONFIG_DIR` 选择配置目录（settings、会话、登录），很多人同时用 `~/.claude` 和 `~/.claude-work`。Clawd 仍是**单进程单桌宠**：
+
+- **主目录**：Clawd 自身解析到的目录（`CLAUDE_CONFIG_DIR`，否则 `~/.claude`），行为与以前完全一致，包括 statusline。
+- **额外目录**：`prefs.agents["claude-code"].configDirs = [{ dir, label }]`（`hooks/claude-config-dirs.js` 负责规范化、标签推导和有效列表）。dir 等于主目录的条目只携带主目录标签，不会额外安装。
+- `src/server.js` 的 Claude 队列任务在主目录成功后对每个额外目录调用 `registerHooksAsync({ claudeHome })` 并逐目录 verify；额外目录失败只记入 `configDirs` 结果，不让主目录安装失败。**statusline 只装在主目录**：它上报账户额度，两个 profile 通常是两个账户，会互相覆盖。卸载、auto-start 开关同样覆盖所有目录。Settings 的增删（`addClaudeConfigDir` / `removeClaudeConfigDir`）先经队列写入/移除该目录的 hooks，成功后才提交 prefs。
+- watcher：主 watcher 现在盯安装器实际写入的目录；每个额外目录各有一个 watcher（独立 snapshot / shrink guard / 修复只作用于本目录），`getClaudeHookHealthStatus()` 取最严重的状态并在 `configDirs` 中列出各目录。
+- Doctor：仍是一行 Claude Code，额外目录在同一行里逐个 `checkFileMode`，第一个异常目录决定状态，Fix 走原有修复路径（会同步所有目录）。
+- 清理：应用内清理经队列覆盖所有目录；独立卸载器（`hooks/cleanup-integrations.js`）从 userData 的 `clawd-prefs.json` 读取额外目录，读不到就跳过。
+- 标签：Claude hook 把 `CLAUDE_CONFIG_DIR`（未设置则不发送）作为 `claude_config_dir` 上报；server 只对 claude-code 接受并存入 `session.claudeConfigDir`（也写入恢复 lease）。快照里的 `claudeProfileLabel` 只在管理多于一个目录时、且仅本地会话才非空，dashboard、HUD 和权限气泡显示该标签。远程/WSL 会话的目录属于另一台机器，不显示标签。
+
 ### Claude hook 健康巡检与自愈（#657）
 
 `src/claude-settings-watcher.js` 除了原有的目录 watcher（盯 `~/.claude/` 目录、debounce 1 秒）外，还跑一个自调度的低频只读健康巡检：
@@ -889,6 +917,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - 历史 key `claudeQuotaCollectionEnabled` 现在是本机 Claude statusline metadata（context window + 可用 quota）的唯一用户授权。关闭或卸载时，server 先用进程内 suppression 挡住未结尾包，再 ownership-safe 卸载并清除 `profileId="local"`（含 WSL）会话的 statusline 分母所有权，同时从 account-quota store 定向删除所有非 `remote:` 来源的 `claudeQuota` 并立即广播、持久化；同源 Codex / Antigravity provider 与 Remote SSH quota 保留。关闭态启动也会执行同一缓存迁移。statusline 上报拥有 limit，普通 transcript hook 仍可更新 used，并按保留的权威 limit 重算 percent。
 - 本机第三方 statusline 共存由显式 Settings 开启动作触发：`claude-statusline-consent.js` 在 server mutation 队列外询问用户，确认后携带原槽 SHA-256 重入同一队列；原槽变化则拒绝。安装器把完整原对象存入配置目录的 `hooks/clawd-statusline-local-chain.json`（owner/version/随机 id/精确 wrapper command），只替换 command，保留 padding/refreshInterval 等字段。`--local-chain <id>` 将同一 JSON 交给原命令，stdout 仍由原命令独占，Clawd telemetry 并行发送。关闭/卸载仅在 wrapper 与恢复记录匹配时恢复原对象；第三方接管后不反抢、不删恢复记录。缺失/损坏的恢复记录不降级覆盖。启动同步只续用已确认链，不会弹框或自动接管。远程 `--chain` 与旧 sidecar 合约保持独立。
 - Kimi Code quota 是独立的 main-process、manual-only transport：只有 Settings 中显式 Connect/Replace/Reconnect/Refresh 才会请求固定的 `https://api.kimi.com/coding/v1/usages`，app ready、hook、resume、Dashboard show 都不联网。Kimi Code API Key 以 Electron `safeStorage` 密文保存在 `~/.clawd/kimi-code-quota-credential.json`，不进入 prefs、settings snapshot、日志或 `account-quota.json`；Linux `basic_text` backend fail closed。每次保存生成与 Key 无关的随机 `credentialId`，`~/.clawd/kimi-quota-runtime.json` 在 quota store 同步 flush 后才记录该 id；启动发现 id 缺失/不一致会先清理本机 Kimi cache，避免 Replace Key 的 crash 窗口把旧账户额度标成新连接。`kimiQuotaCollectionEnabled` 是 command-only durable gate，runtime 在请求 admission 和 response commit 两端都重读该 gate 与 `kimi-cli.enabled`；hook payload 永远不是 Kimi quota 来源。Disconnect 后的重连走专用 trusted IPC `settings:kimi-quota-reconnect` → `runtime.reconnect()`：只读校验本地密文可用后 re-enable 并立即走与 Refresh 完全相同的 admission/commit 路径，属于用户显式手动动作，Key 始终不离开 main process。
+- DeepSeek 预付余额由 `deepseek-balance-runtime.js` 独立持有，默认关闭。`deepseekBalanceCollectionEnabled`、`deepseek-harness.enabled` 与已存 key 同时满足才立即查询官方 `https://api.deepseek.com/user/balance`，之后每 5 分钟查询；suspend 暂停、resume 重读 gates、before-quit dispose。generation + AbortController 丢弃旧结果，取消中的请求仍占据单一在飞槽。401 拒绝标记与 credentialId 同步保存在 runtime journal，重启后同一 key 仍停表；显式重连、更换或忘记 key 才清除，其他错误保留旧值并在下个周期重试。凭据通过共享 `quota-credential-store.js` 使用 safeStorage 加密存于 `~/.clawd/deepseek-balance-credential.json`，Linux basic_text fail closed；key 不进入 prefs、快照或日志。同步 flush 本机额度后才原子写 `deepseek-balance-runtime.json` 的 credentialId / currency / baseline / lastAmount / capturedAt（可另带 rejected 标记，首次 401 允许只有身份与拒绝标记），写失败清掉额度，启动先核对 credentialId。充值增加至少 0.01 或换账户/币种时重设油表基准。HTTP `/state` 永不接收 DeepSeek 额度；只有本机 owner 的 `commitLocalDeepseekQuota` 能提交。硬币为单环，永远显示剩余，12 分钟变灰；Dashboard 复用 quota bar，首版无余额提醒。
 - `server.getClaudeHookHealthStatus()` 暴露供 Doctor 使用的只读状态（`healthy` / `repairing` / `degraded` / `manual-fix-required` / `guarded` / `stopped`），与既有的 `getClaudeHookGuardStatus()`（仅覆盖 suspicious-shrink 一种通知）并存，互不替代。
 - settings.json 读取契约（#657）：installer 的四个读取入口（同步/异步 `registerHooks`、`unregisterAutoStart`、`isAutoStartRegistered`）与 health inspector、watcher 的 resync / snapshot 都只忽略文件绝对开头单个 UTF-8 BOM（`hooks/json-utils.js` 的 `stripUtf8Bom`）；字符串值中间的 U+FEFF 原样保留。BOM-only、BOM + 损坏 JSON 和普通坏 JSON 仍按不可读/读取失败处理，不自动覆盖，`unregisterAutoStart` 失败继续返回 false。配置已是 canonical（即使带 BOM）的重复注册为 no-op，不因去 BOM 重写文件或产生新备份；需要迁移时沿用原子写入与备份，备份保留原 BOM 字节，写回采用既有 BOM-free JSON 格式。installer 的两个注册读取入口对合法 JSON 但非对象（数组/标量）的顶层 fail closed，避免在 mutation 前把错误 schema 当空配置覆盖。此契约只覆盖 Clawd 自身读取；上游 Claude Code 自身能否读取带 BOM 的 canonical 配置并未由本补丁证明。
 

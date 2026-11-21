@@ -4,6 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
 const path = require("node:path");
+const fs = require("node:fs");
+const vm = require("node:vm");
 
 const {
   focusCodexThreadTarget,
@@ -13,6 +15,9 @@ const {
   stripElectronLaunchEnv,
 } = require("../src/session-focus-handoff");
 const { discoverDshDesktopSync } = require("../hooks/dsh-install");
+const { makeSessionKey } = require("../src/session-key");
+const { getSessionFocusTarget, mergeSessionFocusEntry } = require("../src/session-focus");
+const { buildPermissionFocusEntry } = require("../src/permission").__test;
 
 const DSH_PLIST = [
   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
@@ -193,6 +198,95 @@ describe("session focus handoff", () => {
     assert.deepStrictEqual(opened, ["dsh://open"]);
     assert.ok(logs.some((line) => line.includes("target=dsh-desktop")));
     assert.ok(logs.some((line) => line.includes("reason=opened")));
+  });
+
+  it("publishes the raw DSH session before raising its desktop window", async () => {
+    const rawSessionId = "deepseek-harness:session-clicked";
+    const id = makeSessionKey({ profileId: "local", rawSessionId });
+    assert.match(id, /^s1\./);
+    const calls = [];
+    await focusDshDesktopTarget({
+      shell: { openExternal: async (url) => calls.push(["open", url]) },
+      focusEntry: { id, rawSessionId, agentId: "deepseek-harness", dshCarrier: "desktop" },
+      url: "dsh://open",
+      publishDshFocus: (target) => calls.push(["publish", target]),
+    });
+    assert.deepStrictEqual(calls, [["publish", "session-clicked"], ["open", "dsh://open"]]);
+  });
+
+  it("still opens the desktop URL when publishing throws synchronously", async () => {
+    const calls = [];
+    const logs = [];
+    await focusDshDesktopTarget({
+      shell: { openExternal: async (url) => calls.push(["open", url]) },
+      focusEntry: { rawSessionId: "deepseek-harness:session-clicked", agentId: "deepseek-harness" },
+      url: "dsh://open",
+      publishDshFocus: (target) => {
+        calls.push(["publish", target]);
+        throw new Error("stream unavailable");
+      },
+      focusLog: (line) => logs.push(line),
+    });
+    assert.deepStrictEqual(calls, [["publish", "session-clicked"], ["open", "dsh://open"]]);
+    assert.ok(logs.some((line) => line.includes("reason=opened")));
+    assert.ok(!logs.some((line) => line.includes("reason=open-failed")));
+  });
+
+  for (const rawSessionId of [undefined, "deepseek-harness:default"]) {
+    it(`raises the desktop window without publishing ${rawSessionId === undefined ? "a missing id" : "the placeholder id"}`, async () => {
+      const calls = [];
+      await focusDshDesktopTarget({
+        shell: { openExternal: async (url) => calls.push(["open", url]) },
+        focusEntry: {
+          id: makeSessionKey({ profileId: "local", rawSessionId: rawSessionId || "deepseek-harness:session-old" }),
+          agentId: "deepseek-harness", rawSessionId,
+        },
+        url: "dsh://open",
+        publishDshFocus: (target) => calls.push(["publish", target]),
+      });
+      assert.deepStrictEqual(calls, [["open", "dsh://open"]]);
+    });
+  }
+
+  it("wires the main dispatcher publisher through a permission-only fallback", async () => {
+    // Execute main.js from function focusDashboardSession( up to, but excluding,
+    // function hideDashboardSession(. The VM only receives sessions, process,
+    // shell, mergeSessionFocusEntry, getSessionFocusTarget, focusLog,
+    // publishDshFocus and focusDshDesktopTarget. The publisher is injected here;
+    // main.js's real require wiring is outside this test's scope.
+    const rawSessionId = "deepseek-harness:session-approval";
+    const sessionId = makeSessionKey({ profileId: "local", rawSessionId });
+    const fallbackEntry = buildPermissionFocusEntry({
+      sessionId, rawSessionId, agentId: "deepseek-harness", dshCarrier: "desktop",
+    });
+    const main = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+    const begin = main.indexOf("function focusDashboardSession(");
+    const end = main.indexOf("function hideDashboardSession(", begin);
+    assert.ok(begin >= 0 && end > begin,
+      "focusDashboardSession or hideDashboardSession moved or was renamed; update this test's source boundaries");
+    const calls = [];
+    const pending = [];
+    const publishDshFocus = (id) => calls.push(["publish", id]);
+    const context = {
+      sessions: new Map(),
+      process: { platform: "darwin" },
+      shell: { openExternal: async (url) => calls.push(["open", url]) },
+      mergeSessionFocusEntry,
+      getSessionFocusTarget,
+      focusLog: () => {},
+      publishDshFocus,
+      focusDshDesktopTarget(request) {
+        assert.strictEqual(request.publishDshFocus, publishDshFocus);
+        pending.push(focusDshDesktopTarget(request));
+      },
+    };
+    vm.createContext(context);
+    vm.runInContext(main.slice(begin, end), context);
+    assert.strictEqual(context.focusDashboardSession(sessionId, { fallbackEntry }), true);
+    assert.strictEqual(context.sessions.size, 0);
+    assert.strictEqual(pending.length, 1);
+    await Promise.all(pending);
+    assert.deepStrictEqual(calls, [["publish", "session-approval"], ["open", "dsh://open"]]);
   });
 
   it("does not launch the desktop app when the URL handler succeeds", async () => {

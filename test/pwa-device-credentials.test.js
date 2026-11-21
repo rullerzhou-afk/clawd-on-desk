@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 const { webcrypto } = require("node:crypto");
+const { resolveStrings } = require(path.join(__dirname, "../src/network/mobile-pwa-i18n"));
 const source = fs.readFileSync(path.join(__dirname, "../pwa/app.js"), "utf8");
 const CRED = "clawd-cred-v2";
 const CID = "clawd-cid-v2";
@@ -30,6 +31,8 @@ function harness(options = {}) {
     addEventListener(type, fn) { events[type] = fn; } };
   const testApi = {};
   const window = { __CLAWD_MOBILE_TEST__: testApi, crypto: webcrypto, btoa,
+    // Server-injected zh pack keeps the historical Chinese hint assertions valid.
+    __CLAWD_I18N__: resolveStrings("zh"),
     location: { hostname: "desktop", port: "23334", protocol: "http:", pathname: "/mobile/", search: options.search || "" },
     addEventListener(type, fn) { listeners[type] = fn; } };
   class Socket {

@@ -431,3 +431,53 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     assert.strictEqual(result.status, 0, result.stderr || result.stdout);
   });
 });
+
+describe("issue #1323: dark appearance validation", () => {
+  function copyCalicoWithDark() {
+    const dir = mkTempThemeDir();
+    const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+    raw.appearance = { dark: { assetsDir: "assets-dark" } };
+    fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+    fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+    fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets-dark"), { recursive: true });
+    return dir;
+  }
+
+  it("issue #1323: accepts a complete dark mirror", () => {
+    const result = runValidateTheme([copyCalicoWithDark()]);
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /dark assets: complete mirror/);
+  });
+
+  it("issue #1323: rejects a dark directory missing a mirrored file", () => {
+    const dir = copyCalicoWithDark();
+    fs.rmSync(path.join(dir, "assets-dark", "calico-idle.apng"), { force: true });
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+    assert.match(result.stdout, /dark assets: assets-dark\/ is missing calico-idle\.apng/);
+  });
+
+  it("issue #1323: rejects a dark SVG that references a missing raster", () => {
+    const dir = copyCalicoWithDark();
+    fs.writeFileSync(
+      path.join(dir, "assets-dark", "calico-idle-follow.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg"><image href="missing.png"/></svg>',
+      "utf8"
+    );
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+    assert.match(result.stdout, /dark assets: missing raster dependency missing\.png/);
+  });
+
+  it("issue #1323: ignores raster references inside content that sanitization removes", () => {
+    const dir = copyCalicoWithDark();
+    fs.writeFileSync(
+      path.join(dir, "assets-dark", "calico-idle-follow.svg"),
+      '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><image href="missing.png"/></foreignObject></svg>',
+      "utf8"
+    );
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.doesNotMatch(result.stdout, /missing raster dependency/);
+  });
+});

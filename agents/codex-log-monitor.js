@@ -17,6 +17,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { readStats, fileIdentity } = require("../hooks/file-identity");
 const CodexSubagentClassifier = require("./codex-subagent-classifier");
 const { normalizeDelegatedThread, readDelegatedParent, observeDelegatedChild, CHILD_ACTIVITY_TTL_MS } = require("./codex-delegated-child");
 const { bareCodexSessionId, readCodexThreadName, readCodexThreadNames } = require("../hooks/codex-session-index");
@@ -407,7 +408,7 @@ class CodexLogMonitor {
     if (!observedByStartup) {
       context.remainingAttempts -= 1;
       try {
-        stat = fs.statSync(candidate.filePath);
+        stat = readStats(fs.statSync, candidate.filePath);
       } catch (error) {
         statError = error;
         stat = null;
@@ -502,7 +503,7 @@ class CodexLogMonitor {
     const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.fileName, stat,
       { deferSideEffects: true, requireDelegatedChild: true, recoveryEvidence });
     let postStat = null;
-    try { postStat = fs.statSync(candidate.filePath); } catch (error) {
+    try { postStat = readStats(fs.statSync, candidate.filePath); } catch (error) {
       if (["ENOENT", "ENOTDIR"].includes(error?.code)) this._observedFileGrowth.delete(candidate.filePath);
       else this._backoffFileGrowthRecovery(growth);
       return;
@@ -611,7 +612,7 @@ class CodexLogMonitor {
       const filePath = path.join(dir, file);
       let stat = null;
       try {
-        stat = fs.statSync(filePath);
+        stat = readStats(fs.statSync, filePath);
       } catch {}
       observed.set(filePath, stat);
       const deferred = this._deferredRecent.get(filePath)
@@ -652,7 +653,7 @@ class CodexLogMonitor {
         || this._deferredBackground.get(candidate.filePath);
       let stat = null;
       try {
-        stat = fs.statSync(candidate.filePath);
+        stat = readStats(fs.statSync, candidate.filePath);
       } catch {}
       // Discovery and recovery can span polls. The normal poller may have
       // attached this path (or deferred it) in between; consuming the cached
@@ -683,7 +684,7 @@ class CodexLogMonitor {
       );
       let postStat = null;
       try {
-        postStat = fs.statSync(candidate.filePath);
+        postStat = readStats(fs.statSync, candidate.filePath);
       } catch {}
       const snapshotStatus = this._recoverySnapshotStatus(stat, postStat);
       if (snapshotStatus === "missing") {
@@ -760,7 +761,7 @@ class CodexLogMonitor {
       if (filesScanned >= RECOVERY_SWEEP_MAX_FILES) break;
       let stat;
       try {
-        stat = fs.statSync(candidate.filePath);
+        stat = readStats(fs.statSync, candidate.filePath);
       } catch {
         continue;
       }
@@ -779,7 +780,7 @@ class CodexLogMonitor {
       );
       let postStat = null;
       try {
-        postStat = fs.statSync(candidate.filePath);
+        postStat = readStats(fs.statSync, candidate.filePath);
       } catch {}
       const snapshotStatus = this._recoverySnapshotStatus(stat, postStat);
       if (snapshotStatus === "missing" || snapshotStatus === "changed") continue;
@@ -909,7 +910,7 @@ class CodexLogMonitor {
     let stat = recoveryStat;
     if (!stat) {
       try {
-        stat = fs.statSync(filePath);
+        stat = readStats(fs.statSync, filePath);
       } catch {
         return null;
       }
@@ -965,7 +966,7 @@ class CodexLogMonitor {
     if (!tailRead.complete) return null;
     let readPostStat = null;
     try {
-      readPostStat = fs.statSync(filePath);
+      readPostStat = readStats(fs.statSync, filePath);
     } catch {}
     const readSnapshotStatus = this._recoverySnapshotStatus(stat, readPostStat);
     if (readSnapshotStatus === "missing" || readSnapshotStatus === "changed") return null;
@@ -1381,7 +1382,7 @@ class CodexLogMonitor {
     }
     let stat;
     try {
-      stat = pollContext && pollContext.preStat ? pollContext.preStat : fs.statSync(filePath);
+      stat = pollContext && pollContext.preStat ? pollContext.preStat : readStats(fs.statSync, filePath);
     } catch {
       this._markReplayNoProgress(filePath, tracked);
       return { kind: "error", requestedBytes: 0, bytesRead: 0 };
@@ -1514,7 +1515,7 @@ class CodexLogMonitor {
     const readStartOffset = tracked.offset;
     try {
       fd = fs.openSync(filePath, "r");
-      openedStat = fs.fstatSync(fd);
+      openedStat = readStats(fs.fstatSync, fd);
       openedIdentity = this._getFileIdentity(openedStat);
       const openedIdentityChanged = openedIdentity !== fileIdentity
         && (openedIdentity !== null || fileIdentity !== null);
@@ -1806,17 +1807,7 @@ class CodexLogMonitor {
   }
 
   _getFileIdentity(stat) {
-    if (!stat) return null;
-    const dev = Number(stat.dev);
-    const ino = Number(stat.ino);
-    if (Number.isFinite(dev) && Number.isFinite(ino) && (dev !== 0 || ino !== 0)) {
-      return `inode:${dev}:${ino}`;
-    }
-    const birthtimeMs = Number(stat.birthtimeMs);
-    if (Number.isFinite(birthtimeMs) && birthtimeMs > 0) {
-      return `birth:${birthtimeMs}`;
-    }
-    return null;
+    return fileIdentity(stat);
   }
 
   _processLine(line, tracked) {

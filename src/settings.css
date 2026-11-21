@@ -1753,6 +1753,30 @@ html, body {
 .custom-tool-result-detail {
   overflow-wrap: anywhere;
 }
+/* Claude config folders: path on the left like custom-tool paths, label
+   field and Remove on the right. */
+.claude-config-dir-row .row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.claude-config-dir-row .claude-config-dir-path {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-config-dir-control {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.claude-config-dir-control .settings-text-input {
+  width: 9em;
+}
 .custom-tool-result-status {
   flex: 0 0 auto;
   align-self: center;
@@ -1844,6 +1868,29 @@ html, body {
 }
 .agent-text-input-control input {
   width: 100%;
+}
+.agent-install-skipped-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.agent-install-skipped-notices:empty,
+.agent-install-skipped-notices[hidden] {
+  display: none;
+}
+.agent-dsh-notice[data-kind="skipped-install"] {
+  color: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  .agent-dsh-notice[data-kind="skipped-install"] {
+    color: #f6c343;
+  }
+}
+.agent-install-skipped-detail {
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 720px) {
   .agent-text-input-row {
@@ -2503,15 +2550,6 @@ html, body {
     margin-left: 0;
   }
 }
-.codex-permission-mode-segmented {
-  --codex-permission-mode-active-index: 0;
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
-  overflow: hidden;
-}
-
 .permission-automation-row {
   flex-direction: column;
   align-items: stretch;
@@ -2547,44 +2585,6 @@ html, body {
 .permission-automation-segmented button:focus-visible {
   outline-offset: 1px;
 }
-.codex-permission-mode-segmented::before {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  top: 2px;
-  bottom: 2px;
-  left: 2px;
-  width: calc((100% - 4px) / 2);
-  border-radius: 5px;
-  background: var(--panel-bg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-  transform: translateX(calc(var(--codex-permission-mode-active-index) * 100%));
-  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.codex-permission-mode-segmented button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  background: transparent;
-  white-space: nowrap;
-}
-.codex-permission-mode-segmented .settings-segmented-radio-label {
-  text-align: center;
-}
-.codex-permission-mode-segmented button.active {
-  background: transparent;
-  box-shadow: none;
-}
-.codex-permission-mode-segmented button:focus-visible {
-  outline-offset: -2px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .codex-permission-mode-segmented::before {
-    transition: none;
-  }
-}
-
 /* ── Coming soon placeholder ── */
 .placeholder {
   display: flex;

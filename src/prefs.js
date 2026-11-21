@@ -58,6 +58,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 const { normalizeQuotaAlertThresholds } = require("./quota-alerts");
+const { normalizeClaudeConfigDirEntries } = require("../hooks/claude-config-dirs");
 const {
   TEXT_SCALE_MIN,
   TEXT_SCALE_MAX,
@@ -211,11 +212,15 @@ const SCHEMA = {
   quotaAlertsEnabled: { type: "boolean", default: false },
   quotaAlertThresholds: { type: "array", defaultFactory: () => [20, 10], normalize: normalizeQuotaAlertThresholds },
   quotaRecoveryAlertsEnabled: { type: "boolean", default: true },
-  // Empty by default, i.e. every connected provider draws — matching the
-  // behaviour before this preference existed. Storing what is HIDDEN rather
-  // than what is shown is the reason a newly connected provider appears on its
-  // own: an allow-list would leave it silently absent after the user pasted a
-  // key, which reads as a broken integration rather than a default.
+  // Once the user chooses, only those providers appear: a newly connected
+  // provider must not silently replace a vacancy in their explicit selection.
+  quotaRingShownProviders: {
+    type: "array",
+    default: null,
+    normalize: normalizeQuotaRingShownProviders,
+  },
+  // Legacy exclusions still apply in automatic mode, so existing users keep
+  // their hidden choices without a migration. Manual selections ignore these.
   quotaRingHiddenProviders: {
     type: "array",
     defaultFactory: () => [],
@@ -231,6 +236,7 @@ const SCHEMA = {
   // This boolean is only the durable collection opt-in; the secret is never a
   // preference and never enters a settings snapshot.
   kimiQuotaCollectionEnabled: { type: "boolean", default: false },
+  deepseekBalanceCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },
@@ -340,6 +346,14 @@ const SCHEMA = {
     default: 5000,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
+  // #1326 follow-up: opt-in reminder for a Claude Desktop end-of-turn question
+  // (mcp__ccd_turn__wrap_up) still unanswered after the configured minutes.
+  claudeTurnAskReminder: { type: "boolean", default: false },
+  claudeTurnAskReminderMinutes: {
+    type: "number",
+    default: 5,
+    validate: (v) => Number.isInteger(v) && v >= 1 && v <= 120,
+  },
   // Opt-in decorative feedback for recognized Claude Code Bash test runs.
   // The hook sends only pass/fail, never the command or full test output.
   testReactionsEnabled: { type: "boolean", default: false },
@@ -441,6 +455,14 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizePetTint,
   },
+  // Per-theme appearance choice: "light" or "dark". A missing entry means
+  // "follow the system", which is why the default map is empty rather than
+  // seeded with a value.
+  themeAppearance: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeThemeAppearance,
+  },
   // Per-theme wardrobe choice. Missing entries mean no accessory. The
   // discarded PR #529 global scalar was never shipped, so it is deliberately
   // not treated as a migration source.
@@ -533,6 +555,8 @@ const SCHEMA = {
       // default MUST exist or startup sync would write the hooks for any user
       // who merely has a ~/.kiro/crew directory.
       "kirocrew": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      // permissionsEnabled intentionally defaults on for read-only reminder cards.
+      "kiro-desktop": { integrationInstalled: false, enabled: false, permissionsEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -1073,9 +1097,8 @@ const MAX_CUSTOM_DISCOVERY_PATHS = 64;
 const MAX_CUSTOM_DISCOVERY_PATH_LENGTH = 2048;
 
 // Provider keys the user hid from the pet-side quota cluster. Display-only:
-// collection keeps running and the Dashboard keeps every provider, because the
-// cluster caps at four coins with no say over which ones survive while the
-// Dashboard has room for all of them.
+// collection keeps running and the Dashboard keeps every provider. These
+// exclusions are only consulted while the shown-provider selection is null.
 //
 // Unknown keys are kept, not dropped. The authoritative provider list lives in
 // quota-ring-geometry.js, and validating against it here would mean prefs.js
@@ -1097,6 +1120,14 @@ function normalizeQuotaRingHiddenProviders(value) {
     if (out.length >= MAX_HIDDEN_QUOTA_PROVIDERS) break;
   }
   return out;
+}
+
+function normalizeQuotaRingShownProviders(value) {
+  if (!Array.isArray(value)) return null;
+  // Reuse the key cleanup (including unknown-key preservation) without making
+  // storage depend on geometry. Keep 3 in sync with geometry.RING_MAX_COINS and
+  // the provider selection validation in settings-actions.js.
+  return normalizeQuotaRingHiddenProviders(value).slice(0, 3);
 }
 
 function normalizePathList(value, options = {}) {
@@ -1255,6 +1286,12 @@ function normalizeAgents(value, defaultsValue) {
         merged.customDiscoveryPaths = customDiscoveryPaths;
         touched = true;
       }
+    }
+    if (id === "claude-code" && Object.prototype.hasOwnProperty.call(entry, "configDirs")) {
+      // Extra Claude config folders (CLAUDE_CONFIG_DIR profiles) whose
+      // settings.json also gets Clawd's hooks; see claude-config-dirs.js.
+      merged.configDirs = normalizeClaudeConfigDirEntries(entry.configDirs);
+      touched = true;
     }
     if (touched) out[id] = merged;
   }
@@ -1499,6 +1536,17 @@ function normalizePetTint(value, defaultsValue) {
   return out;
 }
 
+function normalizeThemeAppearance(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, appearance] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (appearance !== "light" && appearance !== "dark") continue;
+    out[themeId] = appearance;
+  }
+  return out;
+}
+
 function normalizePetAccessory(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1724,6 +1772,7 @@ module.exports = {
   mapLocaleToLang,
   normalizeThemeOverrides,
   normalizePetTint,
+  normalizeThemeAppearance,
   normalizePetMouthAccessory,
   normalizeShortcuts,
   normalizeOptionalHttpUrl,

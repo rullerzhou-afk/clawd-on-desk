@@ -99,6 +99,117 @@ function makeRealStateHarness({ preserveThemeTimings = false, ctxOverrides = {} 
 }
 
 describe("agent-runtime-main", () => {
+  it("keeps a local official Interrupt silent when no session was displayed", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = { agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId };
+    try {
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", { ...official, turnId: "canceled" });
+      assert.equal(harness.state.sessions.has(sessionId), false);
+      assert.deepEqual(harness.sounds, []);
+      assert.deepEqual(harness.stateChanges, []);
+
+      runtime.updateSessionFromServer(sessionId, "working", "PreToolUse", { ...official, turnId: "canceled" });
+      assert.equal(harness.state.sessions.has(sessionId), false, "the terminal fence rejects late work");
+
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...official, turnId: "next" });
+      assert.equal(harness.state.sessions.get(sessionId).state, "thinking");
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", { ...official, turnId: "next" });
+      assert.equal(harness.state.sessions.get(sessionId).state, "idle", "an existing row still receives cancellation");
+
+      const completedId = "codex:bbbbbbbb-1111-4111-8111-111111111111";
+      runtime.updateSessionFromServer(localSessionKey(completedId), "attention", "Stop", {
+        ...official, rawSessionId: completedId, turnId: "completed",
+      });
+      assert.equal(harness.state.sessions.has(localSessionKey(completedId)), true,
+        "a completion received after Clawd starts still creates its row");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("keeps creating Interrupt rows for remote, WSL, non-official and other-agent events", () => {
+    for (const source of [
+      { profileId: "remote", host: "remote" },
+      { wslDistro: "test", platform: "wsl" },
+      { hookSource: "other-hook" },
+      { agentId: "kimi-cli" },
+    ]) {
+      const harness = makeRealStateHarness();
+      const runtime = createAgentRuntimeMain({
+        getStateRuntime: () => harness.state,
+        updateSession: (...args) => harness.state.updateSession(...args),
+      });
+      const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+      const sessionId = localSessionKey(rawSessionId);
+      try {
+        runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", {
+          agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId,
+          turnId: "canceled", ...source,
+        });
+        assert.equal(harness.state.sessions.has(sessionId), true, JSON.stringify(source));
+      } finally {
+        runtime.cleanup();
+        harness.state.cleanup();
+      }
+    }
+  });
+
+  it("ends startup recovery on a local official orphan Interrupt without creating a row", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    try {
+      harness.state.startStartupRecovery();
+      assert.equal(harness.state.getStartupRecoveryActive(), true);
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", {
+        agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId,
+        turnId: "canceled",
+      });
+      assert.equal(harness.state.getStartupRecoveryActive(), false);
+      assert.equal(harness.state.sessions.has(sessionId), false);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("releases a matching compaction hold on a local official orphan Interrupt", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = { agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId,
+      turnId: "compacting" };
+    try {
+      runtime.updateSessionFromServer(sessionId, "sweeping", "PreCompact", official);
+      assert.equal(harness.state.hasCodexCompactionHold(sessionId), true);
+      // Normal removal also releases the hold; delete only the row to exercise
+      // the defensive path where presentation ownership outlives its session.
+      harness.state.sessions.delete(sessionId);
+      assert.equal(harness.state.hasCodexCompactionHold(sessionId), true);
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", official);
+      assert.equal(harness.state.hasCodexCompactionHold(sessionId), false);
+      assert.equal(harness.state.sessions.has(sessionId), false);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
   it("presents manual compaction after Stop while continuing to reject late work", ({ mock }) => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     const harness = makeRealStateHarness();
@@ -1049,7 +1160,7 @@ describe("agent-runtime-main", () => {
     );
   });
 
-  it("does not apply the JSONL completion fallback to remote or headless Codex sessions", () => {
+  it("limits the JSONL completion fallback to idle for local headless Codex sessions", () => {
     const sessions = new Map();
     const runtime = createAgentRuntimeMain({
       codexSubagentClassifier: {},
@@ -1067,6 +1178,16 @@ describe("agent-runtime-main", () => {
     );
     assert.equal(
       runtime.shouldSuppressCodexLogEvent("codex:headless", "attention", "event_msg:task_complete"),
+      true
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:headless", "idle", "event_msg:task_complete"),
+      false
+    );
+
+    sessions.get("codex:headless").state = "idle";
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:headless", "idle", "event_msg:task_complete"),
       true
     );
   });

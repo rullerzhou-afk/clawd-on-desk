@@ -160,3 +160,50 @@ test("settings preload forwards Telegram status revisions and unsubscribe is exa
   forward({}, { channel: "telegram", revision: 8 });
   assert.equal(received.length, 1, "unsubscribe must remove only the registered callback");
 });
+
+
+test("settings preload forwards quota provider changes and uses the existing command channel", async () => {
+  const { exposed, ipcHandlers, invokes } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  const received = [];
+  const unsubscribe = api.onQuotaRingProvidersChanged(providers => received.push(providers));
+  const providers = [{ key: "kimiQuota", shown: false, coinCount: 1, shownCoinCount: 0 }];
+  ipcHandlers.get("settings:quota-ring-providers-changed")({}, providers);
+  assert.deepEqual(received, [providers]);
+  unsubscribe();
+  ipcHandlers.get("settings:quota-ring-providers-changed")({}, []);
+  assert.deepEqual(received, [providers]);
+  const payload = { key: "kimiQuota", shown: true, currentShownProviders: [] };
+  await api.command("setQuotaRingProviderShown", payload);
+  assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [["settings:command", { action: "setQuotaRingProviderShown", payload }]]);
+});
+
+
+test("DeepSeek key actions use dedicated IPC without reading credentials back", async () => {
+  const { exposed, invokes } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  await api.connectDeepseekBalance("sk-private");
+  await api.getDeepseekBalanceStatus();
+  await api.reconnectDeepseekBalance();
+  await api.disconnectDeepseekBalance();
+  await api.forgetDeepseekBalanceCredential();
+  assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [
+    ["settings:deepseek-balance-connect", { apiKey: "sk-private" }],
+    ["settings:deepseek-balance-status"], ["settings:deepseek-balance-reconnect"],
+    ["settings:deepseek-balance-disconnect"], ["settings:deepseek-balance-forget"],
+  ]);
+});
+
+
+test("settings preload forwards sanitized DeepSeek status until unsubscribed", () => {
+  const { exposed, ipcHandlers } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  const received = [];
+  const unsubscribe = api.onDeepseekBalanceStatusChanged((status) => received.push(status));
+  const status = { status: "ok", state: "credential-rejected", configured: true };
+  ipcHandlers.get("settings:deepseek-balance-status-changed")({}, status);
+  assert.deepEqual(received, [status]);
+  unsubscribe();
+  ipcHandlers.get("settings:deepseek-balance-status-changed")({}, { ...status, state: "fresh" });
+  assert.deepEqual(received, [status]);
+});

@@ -2104,6 +2104,97 @@ test("a failed recovery cannot leak forward-conflict retry eligibility into manu
   rt.cleanup();
 });
 
+test("PR #1366 follow-up: a reverse profile never switches to stdio on forward failure", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    platform: "linux", setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    spawn: (_tool, args) => { const child = makeMockChild(); child._args = args; children.push(child); return child; },
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 45001,
+    createStdioTransport: () => assert.fail("reverse must not create a stdio transport"),
+  });
+  const modes = [];
+  rt.on("tunnel-mode-detected", (event) => modes.push(event));
+  const profile = makeSecureProfile({ detectedRemoteNodeBin: "/usr/bin/node" });
+  rt.connect(profile);
+  await flushAsyncEvents();
+  await exitSsh(children[0], "remote port forwarding failed for listen port 23333");
+  assert.equal(children.length, 1);
+  assert.equal(rt.getProfileStatus(profile.id).status, "failed");
+  assert.equal(rt.getProfileStatus(profile.id).tunnelMode, "reverse");
+  assert.equal(modes.length, 0);
+  rt.cleanup();
+});
+
+test("a persisted SSH stdio mode starts directly without requesting -R", async () => {
+  const children = [];
+  let stdioOptions = null;
+  const spawn = (_command, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const profile = makeSecureProfile({
+    tunnelMode: "stdio",
+    detectedRemoteNodeBin: "/usr/bin/node",
+  });
+  const rt = createRemoteSshRuntime({
+    spawn,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    createStdioTransport: (options) => {
+      stdioOptions = options;
+      return { close() {}, isReady: () => false, getStatus: () => ({ mode: "stdio" }) };
+    },
+  });
+
+  rt.connect(profile);
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+  assert.equal(children[0]._args.includes("-R"), false);
+  assert.match(children[0]._args.at(-1), /remote-ssh-stdio-bridge\.js/);
+  assert.equal(rt.getProfileStatus(profile.id).tunnelMode, "stdio");
+  assert.equal(typeof stdioOptions.onReady, "function");
+  rt.cleanup();
+});
+
+test("SSH stdio bridge reports a remote port conflict instead of retrying blindly", async () => {
+  const children = [];
+  const spawn = (_command, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const profile = makeSecureProfile({
+    tunnelMode: "stdio",
+    detectedRemoteNodeBin: "/usr/bin/node",
+  });
+  const rt = createRemoteSshRuntime({
+    spawn,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    createStdioTransport: () => ({
+      close() {},
+      isReady: () => false,
+      getStatus: () => ({ mode: "stdio" }),
+    }),
+  });
+
+  rt.connect(profile);
+  await flushAsyncEvents();
+  children[0]._fakeExit(98);
+  await flushAsyncEvents();
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.lastErrorReason, "stdio_port_conflict");
+  assert.equal(status.hint, "remoteSshErrStdioPortInUse");
+  assert.match(status.message, /23333/);
+  rt.cleanup();
+});
+
 test("a queued reconnect rechecks deployment readiness after the profile target changes", async () => {
   const children = [];
   const timers = makeFakeTimers();
@@ -2609,4 +2700,430 @@ test("an existing idle runtime state presents coordinator quarantine as failed",
   assert.equal(status.lastErrorReason, "manual_lock_inspection_required");
   assert.equal(events.at(-1).status, "failed");
   rt.cleanup();
+});
+
+function windowsRuntimeProfile() {
+  return makeSecureProfile({ remotePlatform: "win32", remoteHome: "C:\\Users\\remote",
+    detectedRemoteNodeBin: "C:\\Node\\node.exe", detectedRemoteNodeVersion: "v22.0.0" });
+}
+
+test("issue #1316: Windows one-shot runtime ends stdin with its probe frame", async (t) => {
+  const children = [], timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({ getHookServerPort: () => 23333,
+    createProfileIngress: () => makeSecureIngress(), setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    resolveRemoteNodeBin: () => ({ ok: true, nodeBin: "C:\\Node\\node.exe" }),
+    spawn: (_tool, args, opts) => {
+      const child = makeMockChild(); child._args = args; child._opts = opts;
+      child.stdin.end = (input) => { child.stdin.input = input; child.stdin.endCalls++; };
+      children.push(child); return child;
+    } });
+  t.after(() => rt.cleanup());
+  rt.connect(windowsRuntimeProfile()); await flushAsyncEvents();
+  timers.flushWhere((timer) => timer.ms === 0);
+  const probe = children.at(-1);
+  assert.equal(probe._opts.stdio[0], "pipe");
+  assert.equal(probe._args.at(-1), require("../src/remote-ssh-node-launch").REMOTE_NODE_LAUNCH_COMMAND);
+  assert.equal(probe.stdin.endCalls, 1);
+  assert.equal(JSON.parse(probe.stdin.input).args.layout.remoteHome, "C:\\Users\\remote");
+  probe._fakeExit(0); await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus("p1").status, "connected");
+});
+
+test("issue #1316: Windows serialized runtime writes a persistent frame and closes with EOF", async (t) => {
+  const children = [];
+  const spawn = (_tool, args, opts) => {
+    const child = makeMockChild(); child._args = args; child._opts = opts;
+    child.stdin.writes = []; child.stdin.write = (input) => child.stdin.writes.push(input);
+    children.push(child); return child;
+  };
+  const coordinator = createRemoteSshTransportCoordinator({ spawn, inspectEffectiveTransport: async () => ({
+    mode: "serialized", kind: "codespaces-stdio", key: "windows-serialized", fingerprint: "windows-fp",
+  }), drainTimeoutMs: 100 });
+  const profile = windowsRuntimeProfile();
+  const admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({ spawn, transportCoordinator: coordinator,
+    resolveRemoteNodeBin: () => ({ ok: true, nodeBin: profile.detectedRemoteNodeBin }),
+    createProfileIngress: () => makeSecureIngress(), getHookServerPort: () => 23333 });
+  t.after(() => rt.cleanup());
+  rt.connect(profile, { serialized: true, transportInspection: admitted.inspection, transportContext: admitted.context });
+  await flushAsyncEvents();
+  const tunnel = children[0];
+  assert.equal(children.length, 1);
+  assert.equal(tunnel._opts.stdio[0], "pipe");
+  assert.equal(tunnel._args.at(-1), require("../src/remote-ssh-node-launch").REMOTE_NODE_LAUNCH_COMMAND);
+  assert.equal(tunnel.stdin.writes.length, 1);
+  assert.equal(tunnel.stdin.endCalls, 0);
+  const marker = /__CLAWD_REMOTE_READY__:[a-f0-9]{32}/.exec(JSON.parse(tunnel.stdin.writes[0]).code)[0];
+  tunnel._fakeStdout(marker + "\n"); await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+  rt.disconnect(profile.id);
+  assert.equal(tunnel.stdin.endCalls, 1);
+  tunnel._fakeClose(0); await flushAsyncEvents();
+});
+
+for (const throws of [false, true]) {
+  test(`issue #1316: Windows cmd stderr never caches resolver failure (${throws ? "throw" : "return"})`, async (t) => {
+    clearRemoteNodeCache();
+    const children = [], timers = makeFakeTimers(), logs = []; let calls = 0;
+    const profile = { ...windowsRuntimeProfile(), detectedRemoteNodeVersion: undefined };
+    const rt = createRemoteSshRuntime({ getHookServerPort: () => 23333, createProfileIngress: () => makeSecureIngress(),
+      setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn, log: (...args) => logs.push(args.join(" ")),
+      resolveRemoteNodeBin: () => {
+        calls++;
+        const failure = { ok: false, stderr: "'sh' is not recognized as an internal or external command" };
+        if (throws) throw failure;
+        return failure;
+      }, spawn: () => {
+        const child = makeMockChild(); child.stdin.end = () => {}; children.push(child); return child;
+      } });
+    t.after(() => rt.cleanup());
+    const first = await connectSecureProfile(rt, timers, children, profile);
+    assert.equal(calls, 1);
+    assert.equal(logs.filter((line) => /resolver (failed|threw) after probe success/.test(line)).length, 1);
+    await exitSsh(first, "Connection timed out", 255);
+    timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]);
+    await flushAsyncEvents(); timers.flushWhere((timer) => timer.ms === 0);
+    children.at(-1)._fakeExit(0); await flushAsyncEvents();
+    assert.equal(calls, 2);
+  });
+}
+
+test("issue #1316: a host cached as cmd can resolve after its profile becomes Windows", async (t) => {
+  clearRemoteNodeCache();
+  const children = [], timers = makeFakeTimers(); let calls = 0;
+  const original = makeSecureProfile({ host: "user@old-win" });
+  const rt = createRemoteSshRuntime({ getHookServerPort: () => 23333, createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    resolveRemoteNodeBin: () => { calls++; return calls === 1
+      ? { ok: false, stderr: "'sh' is not recognized as an internal or external command" }
+      : { ok: true, nodeBin: "C:\\Node\\node.exe" }; },
+    spawn: () => { const child = makeMockChild(); children.push(child); return child; } });
+  t.after(() => rt.cleanup());
+  const first = await connectSecureProfile(rt, timers, children, original);
+  // update the existing runtime state without a manual reconnect clearing cache.
+  rt.refreshProfile({ ...windowsRuntimeProfile(), host: original.host, detectedRemoteNodeVersion: undefined });
+  await exitSsh(first, "Connection timed out", 255);
+  timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[0]); await flushAsyncEvents();
+  timers.flushWhere((timer) => timer.ms === 0); children.at(-1)._fakeExit(0); await flushAsyncEvents();
+  assert.equal(calls, 2);
+});
+
+for (const mode of ["error event", "synchronous throw"]) {
+  test(`issue #1316: one-shot frame stdin ${mode} fails and cleans both children`, async (t) => {
+    const { Writable } = require("node:stream");
+    const children = [], timers = makeFakeTimers(); let ingressCloses = 0;
+    const rt = createRemoteSshRuntime({ getHookServerPort: () => 23333,
+      createProfileIngress: () => ({ ...makeSecureIngress(), close: async () => { ingressCloses++; } }),
+      setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+      spawn: () => {
+        const child = makeMockChild();
+        if (children.length === 1) {
+          child.stdin = new Writable({ write(_data, _encoding, callback) {
+            callback(Object.assign(new Error("SSH closed stdin"), { code: "EPIPE" }));
+          } });
+          if (mode === "synchronous throw") child.stdin.end = () => { throw Object.assign(new Error("stdin destroyed"), { code: "ERR_STREAM_DESTROYED" }); };
+        }
+        children.push(child); return child;
+      } });
+    t.after(() => rt.cleanup());
+    rt.connect(windowsRuntimeProfile()); await flushAsyncEvents();
+    timers.flushWhere((timer) => timer.ms === 0); await flushAsyncEvents();
+    const status = rt.getProfileStatus("p1");
+    assert.equal(status.status, "failed");
+    assert.equal(status.lastErrorReason, "probe_frame_write_failed");
+    assert.equal(status.hint, "remoteSshProbeUnresponsive");
+    assert.match(status.message, /EPIPE|ERR_STREAM_DESTROYED/);
+    assert.equal(children[0]._killed, true);
+    assert.equal(children[1]._killed, true);
+    assert.equal(ingressCloses, 1);
+    assert.equal(timers.size(), 0);
+  });
+
+  test(`issue #1316: readiness frame stdin ${mode} fails and waits for close before release`, async (t) => {
+    const { Writable } = require("node:stream");
+    const children = [], timers = makeFakeTimers();
+    const spawn = () => {
+      const child = makeMockChild();
+      child.stdin = new Writable({ write(_data, _encoding, callback) {
+        callback(Object.assign(new Error("SSH closed stdin"), { code: "EPIPE" }));
+      } });
+      if (mode === "synchronous throw") child.stdin.write = () => { throw Object.assign(new Error("stdin destroyed"), { code: "ERR_STREAM_DESTROYED" }); };
+      children.push(child); return child;
+    };
+    const coordinator = createRemoteSshTransportCoordinator({ spawn, inspectEffectiveTransport: async () => ({
+      mode: "serialized", kind: "codespaces-stdio", key: "frame-stdin-error", fingerprint: "stdin-error-fp",
+    }), drainTimeoutMs: 100 });
+    const profile = windowsRuntimeProfile(), admitted = await coordinator.acquireConnection(profile);
+    const rt = createRemoteSshRuntime({ spawn, transportCoordinator: coordinator,
+      resolveRemoteNodeBin: () => ({ ok: true, nodeBin: profile.detectedRemoteNodeBin }),
+      createProfileIngress: () => makeSecureIngress(), getHookServerPort: () => 23333,
+      setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn });
+    t.after(() => rt.cleanup());
+    rt.connect(profile, { serialized: true, transportInspection: admitted.inspection, transportContext: admitted.context });
+    await flushAsyncEvents();
+    const child = children[0];
+    const failed = rt.getProfileStatus(profile.id);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.lastErrorReason, "probe_frame_write_failed");
+    assert.equal(failed.hint, "remoteSshProbeUnresponsive");
+    assert.notEqual(failed.transportPhase, "idle");
+    assert.equal(child._killed, undefined, "outer SSH termination is not verified drain");
+    child._fakeExit(255); await flushAsyncEvents();
+    assert.notEqual(rt.getProfileStatus(profile.id).transportPhase, "idle");
+    child._fakeClose(255); await flushAsyncEvents();
+    const closed = rt.getProfileStatus(profile.id);
+    assert.equal(closed.transportPhase, "idle");
+    assert.equal(closed.status, "failed");
+    assert.equal(closed.lastErrorReason, "probe_frame_write_failed");
+    assert.equal(closed.hint, "remoteSshProbeUnresponsive");
+    assert.equal(timers.size(), 0);
+  });
+}
+
+for (const serialized of [false, true]) {
+  test(`issue #1316: Windows resolver reason and hint survive ${serialized ? "serialized" : "ordinary"} connection failure`, async (t) => {
+    clearRemoteNodeCache();
+    const children = [], timers = makeFakeTimers();
+    const spawn = () => { const child = makeMockChild(); children.push(child); return child; };
+    const coordinator = createRemoteSshTransportCoordinator({ spawn, inspectEffectiveTransport: async () => ({
+      mode: "serialized", kind: "codespaces-stdio", key: "resolver-failure", fingerprint: "resolver-fp",
+    }) });
+    const profile = windowsRuntimeProfile();
+    const rt = createRemoteSshRuntime({ spawn, transportCoordinator: serialized ? coordinator : null,
+      resolveRemoteNodeBin: () => ({ ok: false, reason: "windows_node_changed", hint: "remoteSshErrWindowsNodeChanged", message: "Node moved" }),
+      createProfileIngress: () => makeSecureIngress(), getHookServerPort: () => 23333,
+      setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn });
+    t.after(() => rt.cleanup());
+    if (serialized) {
+      const admitted = await coordinator.acquireConnection(profile);
+      rt.connect(profile, { serialized: true, transportInspection: admitted.inspection, transportContext: admitted.context });
+    } else {
+      rt.connect(profile); await flushAsyncEvents();
+      timers.flushWhere((timer) => timer.ms === 0);
+      children.at(-1)._fakeExit(127);
+    }
+    await flushAsyncEvents();
+    const status = rt.getProfileStatus(profile.id);
+    assert.equal(status.status, "failed");
+    assert.equal(status.lastErrorReason, "windows_node_changed");
+    assert.equal(status.hint, "remoteSshErrWindowsNodeChanged");
+  });
+}
+
+test("issue #1316: an unverified Windows probe includes its bounded stderr path in the failure message", async (t) => {
+  const children = [], timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({ getHookServerPort: () => 23333, createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    spawn: () => { const child = makeMockChild(); children.push(child); return child; } });
+  t.after(() => rt.cleanup());
+  rt.connect(windowsRuntimeProfile()); await flushAsyncEvents(); timers.flushWhere((timer) => timer.ms === 0);
+  const probe = children.at(-1);
+  probe._fakeStderr("unverified: C:\\Users\\remote\\.claude\\settings.json\n");
+  probe._fakeExit(8); await flushAsyncEvents();
+  timers.flushWhere((timer) => timer.ms === require("../src/remote-ssh-runtime").PROBE_WINDOW_MS);
+  const status = rt.getProfileStatus("p1");
+  assert.equal(status.status, "failed");
+  assert.equal(status.lastErrorReason, "probe_remote_hooks_unverified");
+  assert.equal(status.hint, "remoteSshErrRemoteHooksUnverified");
+  assert.match(status.message, /unverified: C:\\Users\\remote\\.claude\\settings.json/);
+});
+
+test("issue #1316: unverified Windows readiness carries the config path through its stderr summary", async (t) => {
+  const children = [];
+  const spawn = () => { const child = makeMockChild(); child.stdin.write = () => {}; children.push(child); return child; };
+  const coordinator = createRemoteSshTransportCoordinator({ spawn, inspectEffectiveTransport: async () => ({
+    mode: "serialized", kind: "codespaces-stdio", key: "unverified-readiness", fingerprint: "unverified-fp",
+  }) });
+  const profile = windowsRuntimeProfile(), admitted = await coordinator.acquireConnection(profile);
+  const rt = createRemoteSshRuntime({ spawn, transportCoordinator: coordinator,
+    resolveRemoteNodeBin: () => ({ ok: true, nodeBin: profile.detectedRemoteNodeBin }),
+    createProfileIngress: () => makeSecureIngress(), getHookServerPort: () => 23333 });
+  t.after(() => rt.cleanup());
+  rt.connect(profile, { serialized: true, transportInspection: admitted.inspection, transportContext: admitted.context });
+  await flushAsyncEvents();
+  children[0]._fakeStderr("unverified: C:\\Users\\remote\\.copilot\\hooks\\hooks.json\n");
+  children[0]._fakeExit(8); children[0]._fakeClose(8); await flushAsyncEvents();
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.lastErrorReason, "probe_remote_hooks_unverified");
+  assert.equal(status.hint, "remoteSshErrRemoteHooksUnverified");
+  assert.match(status.message, /unverified: C:\\Users\\remote\\.copilot\\hooks\\hooks.json/);
+});
+
+test("PR #1366 follow-up: Connect can switch from stdio back to reverse", async () => {
+  const timers = makeFakeTimers();
+  const children = [];
+  const rt = createRemoteSshRuntime({
+    platform: "linux", setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    getHookServerPort: () => 45001, createProfileIngress: () => makeSecureIngress(),
+    spawn: (_tool, args) => { const child = makeMockChild(); child._args = args; children.push(child); return child; },
+    createStdioTransport: () => ({ close() {} }),
+  });
+  const profile = makeSecureProfile({ tunnelMode: "stdio", detectedRemoteNodeBin: "/usr/bin/node" });
+  rt.connect(profile);
+  await flushAsyncEvents();
+  assert.match(children.at(-1)._args.at(-1), /remote-ssh-stdio-bridge/);
+  rt.disconnect(profile.id);
+  await flushAsyncEvents();
+  rt.connect({ ...profile, tunnelMode: "reverse" });
+  await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).tunnelMode, "reverse");
+  assert.ok(children.at(-1)._args.includes("-R"));
+  rt.cleanup();
+});
+
+test("PR #1366 follow-up: a healthy stdio connection retries exit 98 with bounded backoff", async () => {
+  for (const recover of [true, false]) {
+    const timers = makeFakeTimers();
+    const children = [];
+    let ready;
+    const rt = createRemoteSshRuntime({
+      platform: "linux", setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+      getHookServerPort: () => 45001, createProfileIngress: () => makeSecureIngress(),
+      spawn: (_tool, args) => { const child = makeMockChild(); child._args = args; children.push(child); return child; },
+      createStdioTransport: (options) => { ready = options.onReady; return { close() {} }; },
+    });
+    const profile = makeSecureProfile({ tunnelMode: "stdio", detectedRemoteNodeBin: "/usr/bin/node" });
+    rt.connect(profile);
+    await flushAsyncEvents();
+    const tunnel = children.at(-1);
+    ready();
+    timers.flushWhere((timer) => timer.ms === 0);
+    await exitSsh(children.at(-1), "", 0);
+    assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+    await exitSsh(tunnel, "Connection reset by peer");
+    for (let attempt = 0; attempt < (recover ? 3 : 4); attempt += 1) {
+      timers.flushWhere((timer) => timer.ms === BACKOFF_SCHEDULE_MS[attempt]);
+      await flushAsyncEvents();
+      if (recover && attempt === 2) {
+        ready();
+        timers.flushWhere((timer) => timer.ms === 0);
+        await exitSsh(children.at(-1), "", 0);
+        assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+      } else {
+        await exitSsh(children.at(-1), "EADDRINUSE", 98);
+        assert.equal(rt.getProfileStatus(profile.id).status, attempt === 3 ? "failed" : "reconnecting");
+      }
+    }
+    rt.cleanup();
+  }
+});
+
+test("PR #1366 follow-up: reverse startup does not load multiplex", () => {
+  const childProcess = require("node:child_process");
+  const result = childProcess.spawnSync(process.execPath, ["-e", `
+    const Module = require("module");
+    const load = Module._load;
+    Module._load = function(name, ...args) {
+      if (name === "multiplex") throw new Error("reverse loaded multiplex");
+      return load.call(this, name, ...args);
+    };
+    const { createRemoteSshRuntime } = require(${JSON.stringify(require.resolve("../src/remote-ssh-runtime"))});
+    const assert = require("node:assert/strict");
+    const { EventEmitter } = require("node:events");
+    ${makeMockChild.toString()}
+    ${makeFakeTimers.toString()}
+    ${makeSecureProfile.toString()}
+    ${makeSecureIngress.toString()}
+    ${flushAsyncEvents.toString()}
+    ${connectSecureProfile.toString()}
+    (async () => {
+      const timers = makeFakeTimers();
+      const children = [];
+      const rt = createRemoteSshRuntime({
+        platform: "linux", getHookServerPort: () => 45001,
+        detectSsh: () => ({ available: true, version: "OpenSSH_9.5p2" }),
+        resolveRemoteNodeBin: () => ({ ok: true, nodeBin: "/usr/bin/node", version: "v20.0.0" }),
+        setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+        createProfileIngress: () => makeSecureIngress(),
+        spawn: (_tool, args) => { const child = makeMockChild(); child.args = args; children.push(child); return child; },
+      });
+      try {
+        await connectSecureProfile(rt, timers, children, makeSecureProfile({ tunnelMode: "reverse" }));
+        assert.ok(children[0].args.includes("-R"));
+        assert.equal(children.length, 2, "reverse tunnel and health probe must both run");
+        assert.equal(require.cache[require.resolve("multiplex")], undefined);
+      } finally {
+        rt.cleanup();
+      }
+    })().catch((error) => { console.error(error); process.exitCode = 1; });
+  `], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("PR #1366 follow-up: Node stamps include the mode and every deployment field", async () => {
+  const { deployTargetFingerprint } = require("../src/remote-ssh-profile");
+  const { commandRegistry } = require("../src/settings-actions");
+  const timers = makeFakeTimers();
+  const profile = makeSecureProfile({ tunnelMode: "stdio", chainStatusline: true, detectedRemoteNodeBin: "/usr/bin/node", host: "user@node-stamp-test" });
+  const children = [];
+  let ready;
+  const stamps = [];
+  const rt = createRemoteSshRuntime({
+    platform: "linux", setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    getHookServerPort: () => 45001, createProfileIngress: () => makeSecureIngress(),
+    spawn: () => { const child = makeMockChild(); children.push(child); return child; },
+    createStdioTransport: (options) => { ready = options.onReady; return { close() {} }; },
+    resolveRemoteNodeBin: async () => ({ ok: true, nodeBin: "/usr/bin/node", version: "v22.1.0", source: "path" }),
+  });
+  rt.on("remote-node-detected", (stamp) => stamps.push(stamp));
+  rt.connect(profile);
+  await flushAsyncEvents();
+  ready();
+  timers.flushWhere((timer) => timer.ms === 0);
+  await exitSsh(children.at(-1), "", 0);
+  assert.equal(stamps.length, 1);
+  assert.deepEqual(stamps[0].expectedTarget, deployTargetFingerprint(profile));
+  const result = commandRegistry["remoteSsh.markRemoteNode"](stamps[0], { snapshot: { remoteSsh: { profiles: [profile] } } });
+  assert.equal(result.status, "ok");
+  assert.notEqual(result.reason, "target_drift");
+  assert.equal(result.commit.remoteSsh.profiles[0].detectedRemoteNodeBin, "/usr/bin/node");
+  rt.cleanup();
+});
+
+test("PR #1366 follow-up: final forward failure retains port advice before gateway guidance", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const vm = require("node:vm");
+  const context = {};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../src/settings-i18n.js"), "utf8"), context);
+  const children = [];
+  const timers = makeFakeTimers();
+  const rt = createRemoteSshRuntime({
+    platform: "linux", getHookServerPort: () => 45001,
+    createProfileIngress: () => makeSecureIngress(),
+    setTimeout: timers.setTimeoutFn, clearTimeout: timers.clearTimeoutFn,
+    spawn: () => { const child = makeMockChild(); children.push(child); return child; },
+  });
+  try {
+    const profile = makeSecureProfile({ tunnelMode: "reverse" });
+    rt.connect(profile);
+    await flushAsyncEvents();
+    await exitSsh(children[0], "remote port forwarding failed for listen port 23333");
+    const failure = rt.getProfileStatus(profile.id);
+    assert.equal(failure.status, "failed");
+    assert.equal(failure.hint, "remoteSshErrForwardFailed");
+    const visibleHint = context.ClawdSettingsI18n.STRINGS.en[failure.hint];
+    assert.match(visibleHint, /^Remote port unavailable\. Try again later\./);
+    assert.match(visibleHint, /run Deploy \/ Repair Hooks before connecting\./);
+    assert.ok(visibleHint.endsWith(context.ClawdSettingsI18n.STRINGS.en.remoteSshGatewayHelp));
+  } finally {
+    rt.cleanup();
+  }
+});
+
+test("PR #1366 follow-up: gateway guidance excludes authentication and network failures in both discovery stages", () => {
+  const { shouldSuggestGatewayMode } = require("../src/remote-ssh-runtime");
+  const excluded = [
+    "Permission denied (publickey)", "Host key verification failed", "Identity file /missing not accessible",
+    "Could not resolve hostname", "Connection timed out", "Network is unreachable", "Broken pipe", "Operation timed out",
+  ];
+  for (const step of ["check-node", "remote-shell"]) {
+    assert.equal(shouldSuggestGatewayMode({ tunnelMode: "reverse" }, step, "gateway rejects multiline commands"), true, step);
+    assert.equal(shouldSuggestGatewayMode({ tunnelMode: "stdio" }, step, "gateway rejects multiline commands"), false, step);
+    for (const stderr of excluded) {
+      assert.equal(shouldSuggestGatewayMode({ tunnelMode: "reverse" }, step, stderr), false, `${step}: ${stderr}`);
+    }
+  }
+  assert.equal(shouldSuggestGatewayMode({}, "layout", "gateway rejects multiline commands"), false);
 });

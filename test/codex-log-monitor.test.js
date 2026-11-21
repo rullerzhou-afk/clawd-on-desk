@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const CodexLogMonitor = require("../agents/codex-log-monitor");
+const { readStats, toNumberStats } = require("../hooks/file-identity");
 const codexConfig = require("../agents/codex");
 
 // Helper: create a temp session dir with today's date structure
@@ -863,7 +864,7 @@ describe("CodexLogMonitor", () => {
     fs.utimesSync(testFile, oldTime, oldTime);
 
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {}, {});
-    const expectedIdentity = monitor._getFileIdentity(fs.statSync(testFile));
+    const expectedIdentity = monitor._getFileIdentity(readStats(fs.statSync, testFile));
     assert.notStrictEqual(expectedIdentity, null, "sanity: this file must have a real dev/ino identity");
 
     monitor._runRecoverySweep([{
@@ -1634,7 +1635,7 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(monitor._tracked.get(testFile).isSubagent, false);
     assert.strictEqual(
       monitor._tracked.get(testFile).fileIdentity,
-      monitor._getFileIdentity(fs.statSync(testFile))
+      monitor._getFileIdentity(readStats(fs.statSync, testFile))
     );
   });
 
@@ -2843,7 +2844,7 @@ describe("CodexLogMonitor", () => {
     monitor._poll();
     const blocked = new Set(fs.readdirSync(dateDir).slice(0, 80).map((file) => path.join(dateDir, file)));
     for (const filePath of blocked) {
-      monitor._enqueueDeferred(filePath, path.basename(filePath), fs.statSync(filePath), "recent",
+      monitor._enqueueDeferred(filePath, path.basename(filePath), readStats(fs.statSync, filePath), "recent",
         { notBefore: Date.now() + 60_000 });
     }
     monitor._pollCursor = 0;
@@ -3035,7 +3036,7 @@ describe("CodexLogMonitor", () => {
     monitor._poll();
     const added = path.join(dateDir, uniqueRolloutName(9000));
     fs.writeFileSync(added, delegatedRolloutText());
-    monitor._enqueueDeferred(added, path.basename(added), fs.statSync(added), "recent",
+    monitor._enqueueDeferred(added, path.basename(added), readStats(fs.statSync, added), "recent",
       { notBefore: Date.now() + 60_000 });
     for (let round = 0; round < 2; round++) {
       assert.ok(!pollRolloutStats().includes(added));
@@ -3117,7 +3118,7 @@ describe("CodexLogMonitor", () => {
     fs.utimesSync(replay, old, old);
     fs.utimesSync(deferred, old, old);
     monitor._pollFile(replay, path.basename(replay));
-    monitor._enqueueDeferred(deferred, path.basename(deferred), fs.statSync(deferred), "background",
+    monitor._enqueueDeferred(deferred, path.basename(deferred), readStats(fs.statSync, deferred), "background",
       { notBefore: Date.now() + 60_000 });
     const offset = monitor._tracked.get(replay).offset;
 
@@ -3369,7 +3370,8 @@ describe("CodexLogMonitor", () => {
     const actualSize = originalStatSync(testFile).size;
     fs.statSync = (candidate, ...args) => {
       const stat = originalStatSync(candidate, ...args);
-      return candidate === testFile ? { ...stat, size: actualSize + 1234 } : stat;
+      const size = typeof stat.size === "bigint" ? BigInt(actualSize + 1234) : actualSize + 1234;
+      return candidate === testFile ? { ...stat, size } : stat;
     };
     fs.readSync = () => 0;
     try {
@@ -3396,7 +3398,7 @@ describe("CodexLogMonitor", () => {
     monitor = new CodexLogMonitor(makeConfig(tmpDir), (sid, state, event) => {
       events.push({ sid, state, event });
     });
-    const stat = fs.statSync(testFile);
+    const stat = readStats(fs.statSync, testFile);
     const tracker = {
       offset: stat.size,
       sessionId: EXPECTED_SID,
@@ -3419,7 +3421,8 @@ describe("CodexLogMonitor", () => {
     const originalStatSync = fs.statSync;
     fs.statSync = (candidate, ...args) => {
       const current = originalStatSync(candidate, ...args);
-      return candidate === testFile ? { ...current, size: current.size + 1 } : current;
+      const size = current.size + (typeof current.size === "bigint" ? 1n : 1);
+      return candidate === testFile ? { ...current, size } : current;
     };
     try {
       assert.strictEqual(monitor._pollFile(testFile, TEST_FILENAME).kind, "eof");
@@ -3436,7 +3439,7 @@ describe("CodexLogMonitor", () => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, "x\n");
     monitor = new CodexLogMonitor(makeConfig(tmpDir), () => {});
-    const stat = fs.statSync(testFile);
+    const stat = readStats(fs.statSync, testFile);
     const identity = monitor._getFileIdentity(stat);
     const tracker = {
       offset: 0,
@@ -3590,13 +3593,13 @@ describe("CodexLogMonitor", () => {
     const originalStatSync = fs.statSync;
     const originalFstatSync = fs.fstatSync;
     let simulatedBirthtime = 1000;
-    fs.statSync = (candidate) => {
-      const stat = originalStatSync(candidate);
+    fs.statSync = (candidate, ...args) => {
+      const stat = toNumberStats(originalStatSync(candidate, ...args));
       if (candidate !== testFile) return stat;
       return { ...stat, dev: 0, ino: 0, birthtimeMs: simulatedBirthtime };
     };
-    fs.fstatSync = (fd) => {
-      const stat = originalFstatSync(fd);
+    fs.fstatSync = (fd, ...args) => {
+      const stat = toNumberStats(originalFstatSync(fd, ...args));
       return { ...stat, dev: 0, ino: 0, birthtimeMs: simulatedBirthtime };
     };
     try {
@@ -3735,9 +3738,9 @@ describe("CodexLogMonitor", () => {
       if (candidate === testFile) rolloutFd = fd;
       return fd;
     };
-    fs.fstatSync = (fd) => {
+    fs.fstatSync = (fd, ...args) => {
       if (fd === rolloutFd) throw new Error("simulated fstat failure");
-      return originalFstatSync(fd);
+      return originalFstatSync(fd, ...args);
     };
     fs.closeSync = (fd) => {
       if (fd === rolloutFd) {

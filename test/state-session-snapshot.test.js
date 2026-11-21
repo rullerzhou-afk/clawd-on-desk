@@ -111,6 +111,42 @@ function session(state, overrides = {}) {
   };
 }
 
+describe("Claude profile labels in session snapshots (#1250)", () => {
+  const os = require("os");
+  const path = require("path");
+  const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
+  const defaultDir = path.join(os.homedir(), ".claude");
+  const workDir = path.join(os.homedir(), ".claude-work");
+  const twoFolders = effectiveClaudeConfigDirs([{ dir: workDir, label: "Job" }], { primaryDir: defaultDir });
+
+  function snapshotWith(sessions, claudeConfigDirs) {
+    return buildSessionSnapshot(new Map(sessions), { statePriority: STATE_PRIORITY, claudeConfigDirs });
+  }
+
+  it("labels local Claude sessions by folder once two folders are managed", () => {
+    const snap = snapshotWith([
+      ["work", session("working", { claudeConfigDir: workDir })],
+      ["home", session("working")],
+      ["codex", session("working", { agentId: "codex", claudeConfigDir: workDir })],
+      ["remote", session("working", { claudeConfigDir: workDir, host: "devbox" })],
+    ], twoFolders);
+    const byId = Object.fromEntries(snap.sessions.map((entry) => [entry.id, entry]));
+    assert.strictEqual(byId.work.claudeProfileLabel, "Job");
+    assert.strictEqual(byId.work.claudeConfigDir, workDir);
+    assert.strictEqual(byId.home.claudeProfileLabel, "default");
+    assert.strictEqual(byId.codex.claudeProfileLabel, "");
+    assert.strictEqual(byId.remote.claudeProfileLabel, "");
+  });
+
+  it("shows no label with a single folder, and relabels through the signature", () => {
+    const single = snapshotWith([["work", session("working", { claudeConfigDir: workDir })]],
+      effectiveClaudeConfigDirs([], { primaryDir: defaultDir }));
+    assert.strictEqual(single.sessions[0].claudeProfileLabel, "");
+    const labelled = snapshotWith([["work", session("working", { claudeConfigDir: workDir })]], twoFolders);
+    assert.notStrictEqual(sessionSnapshotSignature(single), sessionSnapshotSignature(labelled));
+  });
+});
+
 describe("startup-recovered session snapshots", () => {
   it("exposes the marker, disables focus, and includes marker changes in the signature", () => {
     const recovered = buildSessionSnapshot(new Map([
@@ -1557,20 +1593,86 @@ describe("awaiting-activity rows", () => {
         awaitingActivity: true,
         sourcePid: 996,
       })],
+      ["copilot-active", session("working", {
+        agentId: "copilot-cli",
+        awaitingActivity: false,
+        sourcePid: 995,
+      })],
+      // Copilot sends a sessionStart when a conversation is opened or restored.
+      // A PID can own more than one row; only the touched one may reach the HUD.
+      ["copilot-fresh", session("idle", {
+        agentId: "copilot-cli",
+        awaitingActivity: true,
+        sourcePid: 995,
+      })],
     ]), { statePriority: STATE_PRIORITY, focusHostPlatform: "darwin" });
 
     assert.deepStrictEqual(
       snapshot.sessions.map((entry) => entry.id).sort(),
-      ["dsh-active", "dsh-fresh", "kimi-active", "kimi-fresh"],
+      ["copilot-active", "copilot-fresh", "dsh-active", "dsh-fresh", "kimi-active", "kimi-fresh"],
       "the Dashboard still lists both conversations"
     );
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "dsh-fresh").hiddenFromHud, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "dsh-fresh").canFocus, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "kimi-fresh").hiddenFromHud, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "kimi-fresh").canFocus, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "copilot-fresh").hiddenFromHud, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "copilot-fresh").canFocus, true);
     assert.deepStrictEqual(
       getFocusableLocalHudSessionIds(snapshot, { osPlatform: "darwin" }),
-      ["dsh-active", "kimi-active"]
+      ["dsh-active", "kimi-active", "copilot-active"]
     );
+  });
+
+  it("keeps a conversation with a pending question in the HUD", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["copilot-pending", session("idle", {
+        agentId: "copilot-cli",
+        awaitingActivity: true,
+        sourcePid: 994,
+      })],
+    ]), {
+      statePriority: STATE_PRIORITY,
+      focusHostPlatform: "darwin",
+      getSessionPresentation: () => ({ pendingAttention: true }),
+    });
+
+    assert.strictEqual(
+      snapshot.sessions.find((entry) => entry.id === "copilot-pending").hiddenFromHud,
+      false,
+      "a pending question outranks the awaiting-activity marker"
+    );
+  });
+
+  it("hides an awaiting-activity conversation only while it stays idle", () => {
+    for (const stateName of ["working", "juggling"]) {
+      const id = `copilot-${stateName}`;
+      const snapshot = buildSessionSnapshot(new Map([
+        [id, session(stateName, {
+          agentId: "copilot-cli",
+          awaitingActivity: true,
+          sourcePid: 993,
+        })],
+      ]), { statePriority: STATE_PRIORITY, focusHostPlatform: "darwin" });
+
+      assert.strictEqual(
+        snapshot.sessions.find((entry) => entry.id === id).hiddenFromHud,
+        false,
+        `a ${stateName} row must stay in the HUD`
+      );
+    }
+  });
+});
+
+
+describe("DeepSeek balance snapshots", () => {
+  it("changes the signature when only the amount changes and resolves the existing agent icon", () => {
+    const make = (amount) => buildSessionSnapshot(new Map(), {
+      accountQuota: [{ host: null, deepseekQuota: { lastSeenAt: 1000,
+        group: { deepseekBalance: { amount, baseline: 100, currency: "CNY", usedPercent: 55 } } } }],
+      getAgentIconUrl: (id) => `icon:${id}`,
+    });
+    assert.notStrictEqual(sessionSnapshotSignature(make(45.20)), sessionSnapshotSignature(make(45.21)));
+    assert.strictEqual(make(45).quotaAgentIcons.deepseekQuota, "icon:deepseek-harness");
   });
 });

@@ -194,6 +194,67 @@ describe("internally derived execution hint", () => {
   });
 });
 
+describe("Claude desktop entrypoint (issue #1365)", () => {
+  it("issue #1365: forwards a valid claude_entrypoint only for claude-code", async () => {
+    const valid = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: "entrypoint-forward",
+      claude_entrypoint: "claude-desktop",
+    }));
+    assert.strictEqual(valid.calls.updateSession[0][3].claudeEntrypoint, "claude-desktop");
+
+    const invalid = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: "entrypoint-forward",
+      claude_entrypoint: "not a token",
+    }));
+    assert.strictEqual(invalid.calls.updateSession[0][3].claudeEntrypoint, undefined);
+
+    const foreign = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "codex", session_id: "entrypoint-forward",
+      claude_entrypoint: "claude-desktop",
+    }));
+    assert.strictEqual(foreign.calls.updateSession[0][3].claudeEntrypoint, undefined);
+  });
+
+  it("issue #1365: keeps the stored marker when a later event omits it, and lets a valid value replace it", async () => {
+    const api = makeMetadataStateRuntime({ processKill: () => true });
+    const rawId = "claude-entrypoint-persist";
+    const sid = localSessionKey(rawId);
+    const post = (extra) => callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: rawId, ...extra,
+    }), { ctx: { sessions: api.sessions, updateSession: api.updateSession } });
+    try {
+      await post({ claude_entrypoint: "claude-desktop" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "claude-desktop");
+
+      await post({});
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "claude-desktop");
+
+      await post({ claude_entrypoint: "cli" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "cli");
+
+      await post({ claude_entrypoint: "still not a token" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "cli");
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("issue #1365: does not record the marker on a non-Claude agent even when it is sent", async () => {
+    const api = makeMetadataStateRuntime({ processKill: () => true });
+    const rawId = "claude-entrypoint-foreign";
+    const sid = localSessionKey(rawId);
+    try {
+      await callStatePost(JSON.stringify({
+        state: "idle", event: "Stop", agent_id: "codex", session_id: rawId,
+        claude_entrypoint: "claude-desktop",
+      }), { ctx: { sessions: api.sessions, updateSession: api.updateSession } });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, null);
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
 describe("Codex official plan progress", () => {
   const raw = "codex:official-plan";
   const body = (extra = {}) => JSON.stringify({
@@ -3223,7 +3284,7 @@ describe("server-route-state POST", () => {
     }));
 
     assert.strictEqual(res.statusCode, 200);
-    assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg"]]);
+    assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg", { notificationCue: false }]]);
   });
 
   it("drops disabled agents with a 204 and records the disabled outcome", async () => {
@@ -4073,6 +4134,154 @@ describe("issue #1125 AI session title end to end", () => {
       assert.strictEqual(api.sessions.get(canonical).sessionTitle, "Metadata Title");
     } finally {
       api.cleanup();
+    }
+  });
+});
+
+describe("Codex remote MCP: fallback notice state events", () => {
+  const remoteOptions = { remoteProfile: { profileId: "remote-1", displayHost: "workbox" } };
+
+  it("reports a remote Codex event before a state-machine drop", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "Stop",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-stop",
+      turn_id: "turn-1",
+      stop_hook_active: true,
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 204);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].sessionId, makeSessionKey({
+      profileId: "remote-1",
+      rawSessionId: "codex:remote-stop",
+    }));
+    assert.equal(seen[0].rawSessionId, "codex:remote-stop");
+    assert.equal(seen[0].profileId, "remote-1");
+    assert.equal(seen[0].event, "Stop");
+    assert.equal(seen[0].turnId, "turn-1");
+  });
+
+  it("does not report state events from other agents", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "claude-code",
+      session_id: "claude-remote-session",
+      tool_name: "Bash",
+      tool_use_id: "call-1",
+      tool_input_fingerprint: "fp-1",
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(seen.length, 0);
+  });
+
+  it("forwards tool identity and skips metadata-only and local events", async () => {
+    const seen = [];
+    const ctx = { onCodexRemoteStateEvent: (payload) => seen.push(payload) };
+    const body = (extra = {}) => JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-tool",
+      turn_id: "turn-2",
+      tool_name: "mcp__playwright__browser_navigate",
+      tool_use_id: "call-9",
+      tool_input_fingerprint: "fp-9",
+      ...extra,
+    });
+
+    await callStatePost(body(), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].toolName, "mcp__playwright__browser_navigate");
+    assert.equal(seen[0].toolUseId, "call-9");
+    assert.equal(seen[0].toolInputFingerprint, "fp-9");
+
+    seen.length = 0;
+    await callStatePost(body({ metadata_only: true }), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 0);
+
+    seen.length = 0;
+    await callStatePost(body(), { ctx });
+    assert.equal(seen.length, 0);
+  });
+});
+
+
+describe("Copilot terminal wait fields", () => {
+  const key = "a".repeat(32);
+  const fields = { copilot_wait_key: key, copilot_tool_keys: [key, "b".repeat(32)], copilot_event_ts: 1234 };
+  const body = { agent_id: "copilot-cli", session_id: "wait", event: "Notification", state: "notification" };
+
+  it("forwards validated fields using the trusted canonical session identity", async () => {
+    const result = await callStatePost(JSON.stringify({ ...body, ...fields }), {
+      options: { remoteProfile: { profileId: "ssh-box", displayHost: "box" } },
+    });
+    assert.equal(result.statusCode, 200);
+    const [id, , , opts] = result.calls.updateSession[0];
+    assert.equal(id, makeSessionKey({ profileId: "ssh-box", rawSessionId: "wait" }));
+    assert.equal(opts.copilotWaitKey, key);
+    assert.deepEqual(opts.copilotToolKeys, fields.copilot_tool_keys);
+    assert.equal(opts.copilotEventTs, 1234);
+  });
+
+  it("ignores invalid fields without dropping the state event", async () => {
+    for (const invalid of [
+      { copilot_wait_key: "unmatched" }, { copilot_wait_key: "A".repeat(32) }, { copilot_wait_key: 42 },
+      { copilot_wait_key: "a".repeat(33) }, { copilot_wait_key: "a".repeat(31) },
+      { copilot_tool_keys: [key, "bad"] }, { copilot_tool_keys: Array(5).fill(key) },
+      { copilot_tool_keys: key }, { copilot_tool_keys: [null] },
+      { copilot_event_ts: "1234" }, { copilot_event_ts: 0 }, { copilot_event_ts: -1 },
+      { copilot_event_ts: null }, { copilot_event_ts: Infinity },
+    ]) {
+      const result = await callStatePost(JSON.stringify({ ...body, ...invalid }));
+      assert.equal(result.statusCode, 200);
+      const opts = result.calls.updateSession[0][3];
+      assert.equal("copilotWaitKey" in opts, false);
+      assert.equal("copilotToolKeys" in opts, false);
+      assert.equal("copilotEventTs" in opts, false);
+    }
+  });
+
+  it("ignores Copilot fields for other agents and deduplicates tool keys", async () => {
+    for (const agent_id of ["claude-code", "kiro-desktop", "codex"]) {
+      const result = await callStatePost(JSON.stringify({ ...body, ...fields, agent_id }));
+      const opts = result.calls.updateSession[0][3];
+      assert.equal("copilotWaitKey" in opts, false);
+      assert.equal("copilotToolKeys" in opts, false);
+      assert.equal("copilotEventTs" in opts, false);
+    }
+    const result = await callStatePost(JSON.stringify({ ...body, copilot_tool_keys: [key, key] }));
+    assert.deepEqual(result.calls.updateSession[0][3].copilotToolKeys, [key]);
+  });
+});
+
+
+describe("DeepSeek balance ingress", () => {
+  it("ignores balance forged by local hooks, WSL or SSH while preserving ordinary quota", async () => {
+    for (const host of [undefined, "wsl:Ubuntu", "remote-machine"]) {
+      const res = await callStatePost(JSON.stringify({
+        state: "idle", metadata_only: true, session_id: "balance-forgery", agent_id: "codex", host,
+        codex_quota: { codexWeekly: { usedPercent: 10 } },
+        deepseek_quota: { deepseekBalance: { usedPercent: 0, amount: 999, baseline: 999, currency: "USD" } },
+        deepseekQuota: { deepseekBalance: { usedPercent: 0, amount: 999, baseline: 999, currency: "USD" } },
+      }));
+      assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+      const quota = res.calls.updateAccountQuota[0][1];
+      assert.strictEqual(quota.deepseekQuota, undefined);
+      assert.strictEqual(quota.codexQuota.codexWeekly.usedPercent, 10);
     }
   });
 });

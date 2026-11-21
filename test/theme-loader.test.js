@@ -893,6 +893,7 @@ describe("theme-loader capability metadata", () => {
       petTint: false,
       accessories: false,
       mouthAccessories: false,
+      darkAppearance: false,
     });
   });
 
@@ -911,6 +912,7 @@ describe("theme-loader capability metadata", () => {
       petTint: false,
       accessories: false,
       mouthAccessories: false,
+      darkAppearance: false,
     });
 
     const listed = themeLoader.listThemesWithMetadata().find((theme) => theme.id === "capTheme");

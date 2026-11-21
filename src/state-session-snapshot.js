@@ -1,7 +1,9 @@
 "use strict";
+const { isLocalApprovalReminderSession, isTerminalWaitSession } = require("./approval-reminder-session");
 const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
+const { claudeProfileLabelFor } = require("../hooks/claude-config-dirs");
 const path = require("path");
 const { i18n } = require("./i18n");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
@@ -359,7 +361,10 @@ function sessionUpdatedAtComparator(a, b) {
 //   - Kimi Code desktop restores the last viewed conversation on launch, and
 //     opening an old conversation from the sidebar does the same; both only
 //     send a SessionStart.
-const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli"]);
+//   - Copilot (the CLI, or the runtime inside VS Code) sends a sessionStart
+//     when a conversation is opened or restored; the row stays out of the HUD
+//     until the user acts.
+const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli", "copilot-cli"]);
 
 function isSessionAwaitingActivity(session) {
   return !!session
@@ -408,6 +413,14 @@ function shouldHideActiveCodexEphemeral(id, session, options = {}) {
   });
 }
 
+// "work" / "personal" chip for local Claude sessions when Clawd manages more
+// than one Claude config folder. Remote and WSL sessions report folders on
+// another machine, which the local list cannot name.
+function deriveSessionClaudeProfileLabel(session, claudeConfigDirs) {
+  if (!session || session.agentId !== "claude-code" || session.host || session.wslDistro) return "";
+  return claudeProfileLabelFor(session.claudeConfigDir || null, claudeConfigDirs);
+}
+
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, session, sessionAliases);
   const recentEvents = Array.isArray(session && session.recentEvents)
@@ -426,11 +439,27 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const agentId = (session && session.agentId) || null;
   const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
-  const presentation = agentId === "codex" && !session.headless && !session.host && !session.wslDistro
+  const isLocalSession = !session.headless && !session.host && !session.wslDistro
     && session.platform !== "wsl"
-    && (session.profileId || "local") === "local" && typeof options.getSessionPresentation === "function"
+    && (session.profileId || "local") === "local";
+  const localPresentation = isLocalSession
+    && (agentId === "codex" || agentId === "qoder" || isLocalApprovalReminderSession(session));
+  const canPresent = isLocalSession && typeof options.getSessionPresentation === "function";
+  let presentation = (localPresentation || isTerminalWaitSession(session))
+    && typeof options.getSessionPresentation === "function"
     ? options.getSessionPresentation(id) : null;
-  const activeSubagentCount = Number.isSafeInteger(presentation?.activeSubagentCount)
+  if (agentId === "claude-code" && canPresent) {
+    // #1326: a Claude session only takes the pending-attention part (Claude
+    // Desktop's wrap_up question card), so its row shows the same "needs input"
+    // state as a Codex question. Without a card the snapshot shape is unchanged.
+    // Note that pendingAttention overrides hiddenByExistingReason below, so a
+    // detached Claude row with a card becomes visible again while the
+    // "clean up detached sessions" option is on (same as a Codex question card).
+    const candidate = options.getSessionPresentation(id);
+    if (candidate && candidate.pendingAttention === true) presentation = { pendingAttention: true };
+  }
+  const activeSubagentCount = (agentId === "codex" || agentId === "qoder")
+    && Number.isSafeInteger(presentation?.activeSubagentCount)
     && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
     ? presentation.activeSubagentCount : 0;
   const pendingAttention = presentation?.pendingAttention === true;
@@ -443,8 +472,11 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
   // Positive delegated-work / pending-attention facts keep the parent visible,
   // but do not prove a focus target or change the shared process dedupe policy.
+  // An untouched conversation is idle by definition; once it shows activity or a
+  // pending question (whose effective state is "notification"), keep it in the HUD.
+  const hideAwaitingActivity = isSessionAwaitingActivity(session) && effectiveState === "idle";
   const hiddenFromHud = (hiddenByExistingReason && activeSubagentCount === 0 && !pendingAttention)
-    || isSessionAwaitingActivity(session);
+    || hideAwaitingActivity;
   const hudHiddenByPreference = shouldHideCodexEphemeralFromHud(id, session, badge, options);
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
@@ -505,6 +537,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     wslDistro: (session && session.wslDistro) || null,
+    claudeConfigDir: (session && session.claudeConfigDir) || null,
+    claudeProfileLabel: deriveSessionClaudeProfileLabel(session, options.claudeConfigDirs),
     sourceType: source.sourceType,
     sourceLabel: source.sourceLabel,
     sourceDisplayLabel: source.displayLabel,
@@ -554,13 +588,16 @@ function snapshotContextUsage(session) {
   const usage = session && session.contextUsage;
   if (!usage || typeof usage !== "object") return null;
   const used = Number(usage.used);
-  if (!Number.isFinite(used) || used < 0) return null;
-  const out = { used };
+  const usedKnown = Number.isFinite(used) && used >= 0;
+  const percent = Number(usage.percent);
+  const percentKnown = Number.isFinite(percent);
+  if (!usedKnown && !percentKnown) return null;
+  const out = {};
+  if (usedKnown) out.used = used;
   const limit = Number(usage.limit);
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
-  const percent = Number(usage.percent);
-  if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode" || usage.source === "workbuddy") out.source = usage.source;
+  if (percentKnown) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
+  if (usage.source === "claude" || usage.source === "codex" || usage.source === "antigravity" || usage.source === "opencode" || usage.source === "workbuddy" || usage.source === "qoder") out.source = usage.source;
   return out;
 }
 
@@ -667,6 +704,7 @@ function buildSessionSnapshot(sessions, options = {}) {
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
         kimiQuota: iconFor("kimi-cli"),
+        deepseekQuota: iconFor("deepseek-harness"),
       };
     })(),
     sessionAutomationOrphans: automationRecords
@@ -728,6 +766,9 @@ function sessionSnapshotSignature(snapshot) {
       codexSparkQuota: entry.codexSparkQuota
         ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
         : null,
+      deepseekQuota: entry.deepseekQuota
+        ? { group: entry.deepseekQuota.group, lastSeenAt: entry.deepseekQuota.lastSeenAt }
+        : null,
       kimiQuota: entry.kimiQuota
         ? { group: entry.kimiQuota.group, lastSeenAt: entry.kimiQuota.lastSeenAt }
         : null,
@@ -760,6 +801,8 @@ function sessionSnapshotSignature(snapshot) {
       hudHiddenByPreference: !!entry.hudHiddenByPreference,
       host: entry.host,
       wslDistro: entry.wslDistro,
+      claudeConfigDir: entry.claudeConfigDir,
+      claudeProfileLabel: entry.claudeProfileLabel,
       platform: entry.platform,
       model: entry.model,
       provider: entry.provider,

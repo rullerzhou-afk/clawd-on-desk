@@ -190,6 +190,16 @@ function isNamespacedMcpTool(toolName) {
     && parts.slice(1).every((part) => part.length > 0);
 }
 
+// Codex's own connector requests also arrive as `mcp__<server>__<tool>`; they
+// are not ordinary third-party MCP tools and stay in Codex's native flow.
+const CODEX_APPS_MCP_SERVER_NAME = "codex_apps";
+
+function isCodexClaimableMcpTool(toolName) {
+  if (typeof toolName !== "string" || !isNamespacedMcpTool(toolName)) return false;
+  const serverName = toolName.split("__")[1];
+  return serverName.toLowerCase() !== CODEX_APPS_MCP_SERVER_NAME;
+}
+
 function isTrustedClaudeCompatibleToolApproval(agentId, toolName) {
   if (agentId !== "claude-code" && agentId !== "qwen-code") return true;
   return CLAUDE_COMPATIBLE_TOOL_APPROVAL_NAMES.has(toolName.toLowerCase())
@@ -445,6 +455,7 @@ module.exports = {
   INTERACTION_INTENT,
   AUTOMATION_ACTION,
   classifyPermissionInteraction,
+  isCodexClaimableMcpTool,
   evaluatePermissionAutomation,
   isValidInteraction,
   isDecisionInteraction,

@@ -145,3 +145,9 @@ test("keeps the remote source host on inferred window labels", () => {
     "Antigravity Gemini (remote-host) · 5-hour window: 15% remaining.",
   );
 });
+
+
+test("quota formatter tolerates a balance provider without window metadata", () => {
+  assert.doesNotThrow(() => formatQuotaAlert({ ...EVENT, providerKey: "deepseekQuota",
+    windowKey: "deepseekBalance", windowMinutes: null }, "zh"));
+});

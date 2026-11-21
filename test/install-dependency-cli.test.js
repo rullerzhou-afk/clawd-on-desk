@@ -25,6 +25,11 @@ const CURRENT_BOOTSTRAP_FILES = [
   "hook-dependency-preflight.js",
 ];
 const OLD_FILES = [...HISTORICAL_PAYLOAD_FILES, ...CURRENT_BOOTSTRAP_FILES];
+// Plain --remote (without the SSH-secure environment) is the POSIX remote
+// install. On Windows only the SSH-secure deploy may register remote hooks, and
+// that mode never installs the statusLine (issue #1316).
+const PLAIN_REMOTE_REFUSED = process.platform === "win32";
+const PLAIN_REMOTE_REFUSAL = /Windows remote hooks require an SSH secure installation/;
 
 function fixture(t, files = ALL_FILES) {
   // Space also exercises source-path handling; this does not execute the
@@ -134,7 +139,8 @@ describe("Claude installer CLI dependency preflight", () => {
       const f = fixture(t, OLD_FILES);
       const result = refused(f, args, /state-payload-size\.js/);
       assert.equal(fs.existsSync(f.settings), false);
-      if (args.length) assert.match(result.stderr, /claude-statusline\.js/);
+      if (args.length && PLAIN_REMOTE_REFUSED) assert.doesNotMatch(result.stderr, /claude-statusline\.js/);
+      else if (args.length) assert.match(result.stderr, /claude-statusline\.js/);
     });
   }
   it("leaves pre-existing user config and a chain sidecar byte-for-byte unchanged", (t) => {
@@ -146,6 +152,7 @@ describe("Claude installer CLI dependency preflight", () => {
   for (const args of [[], ["--remote"], ["--statusline"]]) {
     it(`installs the full payload with ${args.join(" ") || "no flags"}`, (t) => {
       const f = fixture(t);
+      if (args[0] === "--remote" && PLAIN_REMOTE_REFUSED) return refused(f, args, PLAIN_REMOTE_REFUSAL);
       const result = f.run(args);
       assert.equal(result.status, 0, result.stderr);
       const settings = f.read();
@@ -160,7 +167,8 @@ describe("Claude installer CLI dependency preflight", () => {
   it("checks statusline only when requested, before writing any state hooks", (t) => {
     for (const args of [["--remote"], ["--statusline"], []]) {
       const f = fixture(t, ALL_FILES.filter((n) => n !== "claude-statusline.js"));
-      if (args.length) refused(f, args, /claude-statusline\.js/);
+      if (args[0] === "--remote" && PLAIN_REMOTE_REFUSED) refused(f, args, PLAIN_REMOTE_REFUSAL);
+      else if (args.length) refused(f, args, /claude-statusline\.js/);
       else assert.equal(f.run().status, 0);
     }
   });
@@ -170,7 +178,9 @@ describe("Claude installer CLI dependency preflight", () => {
   });
   it("does not require the opt-in auto-start entry", (t) => {
     const f = fixture(t, ALL_FILES.filter((n) => n !== "auto-start.js"));
-    assert.equal(f.run(["--remote"]).status, 0);
+    // The CLI never adds auto-start.js to its entry points, with or without
+    // --remote; Windows checks the local install since plain --remote is refused.
+    assert.equal(f.run(PLAIN_REMOTE_REFUSED ? [] : ["--remote"]).status, 0);
   });
   it("rejects a directory in place of a script on every platform", (t) => {
     const f = fixture(t, ALL_FILES.filter((n) => n !== "clawd-hook.js"));

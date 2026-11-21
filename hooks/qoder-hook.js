@@ -26,7 +26,11 @@ const HOOK_MAP = {
   UserPromptSubmit:   { state: "thinking",     event: "UserPromptSubmit" },
   PreToolUse:         { state: "working",      event: "PreToolUse" },
   PostToolUse:        { state: "working",      event: "PostToolUse" },
-  PostToolUseFailure: { state: "error",        event: "PostToolUseFailure" },
+  // A failed call is per-tool progress, so working avoids flashing the pet's
+  // error animation and briefly marking the row as error. A subsequent Stop
+  // marks the turn done. Without another event, the working timeout can leave
+  // it interrupted.
+  PostToolUseFailure: { state: "working",      event: "PostToolUseFailure" },
   Stop:               { state: "attention",    event: "Stop" },
   Notification:       { state: "notification", event: "Notification" },
   // State-only: Qoder's permission events are surfaced as a passive Clawd
