@@ -3,6 +3,7 @@
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { discoverDshDesktopSync } = require("../hooks/dsh-install");
+const { CODEBUDDY_URL_SCHEME_RE } = require("./process-app-focus");
 
 const DSH_DESKTOP_EXE_NAME = "DeepSeek Harness.exe";
 // A GUI launch cannot be proven, but the promise must not hang: a child that
@@ -253,7 +254,116 @@ function focusCodexThreadTarget({
     });
 }
 
+// Priority order for locating the CodeBuddy app: the hook's own process chain
+// first (walking outward, the first CodeBuddy is the session's distribution),
+// then the resolved source and agent PIDs. Deduplicated positive integers only.
+function collectCodeBuddyPids(focusEntry) {
+  const values = [];
+  if (focusEntry && Array.isArray(focusEntry.pidChain)) values.push(...focusEntry.pidChain);
+  if (focusEntry) values.push(focusEntry.sourcePid, focusEntry.agentPid);
+  const seen = new Set();
+  const pids = [];
+  for (const value of values) {
+    const numeric = Number(value);
+    if (!Number.isSafeInteger(numeric) || numeric <= 0 || seen.has(numeric)) continue;
+    seen.add(numeric);
+    pids.push(numeric);
+  }
+  return pids;
+}
+
+const CODEBUDDY_CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+// The hook only says "this is an IDE session". The app, its distribution and
+// its route support are verified here, at click time, from the live process.
+// A verified build asks CodeBuddy to open that conversation; otherwise activate
+// that same app; if neither works, fall back to the pre-existing terminal path.
+function focusCodeBuddyIdeTarget({
+  shell,
+  focusEntry,
+  sessionId,
+  requestSource = "dashboard",
+  focusLog = () => {},
+  focusTerminalSession = () => false,
+  findApp = () => Promise.resolve(null),
+  openApp = () => Promise.resolve({ submitted: false }),
+} = {}) {
+  const id = String(sessionId || (focusEntry && focusEntry.id) || "");
+  const context = `source=${requestSource} sid=${id}`;
+  // Focus logging writes to a file in production. A diagnostic write failure
+  // must never throw out of the click path or change which branch runs.
+  const log = (line) => {
+    try {
+      focusLog(line);
+    } catch {
+      // Diagnostics only.
+    }
+  };
+  log(`focus request ${context} agent=${(focusEntry && focusEntry.agentId) || "-"} target=codebuddy-ide`);
+
+  const runTerminalFallback = () => Promise.resolve()
+    .then(() => focusTerminalSession(focusEntry, id, requestSource))
+    .then((focused) => {
+      if (!focused) {
+        log(`focus result branch=none reason=codebuddy-terminal-fallback-no-source-pid ${context}`);
+      }
+    })
+    .catch((err) => {
+      log(`focus result branch=none reason=codebuddy-terminal-fallback-failed ${context} error=${sanitizeFocusError(err)}`);
+    });
+
+  const fallBackToTerminal = (reason, err) => {
+    const detail = err ? ` error=${sanitizeFocusError(err)}` : "";
+    log(`focus result branch=codebuddy-terminal-fallback reason=${reason} ${context}${detail}`);
+    return runTerminalFallback();
+  };
+
+  const activateApp = (bundlePath) => Promise.resolve()
+    .then(() => openApp(bundlePath))
+    .then((result) => {
+      if (result && result.submitted === true) {
+        log(`focus result branch=codebuddy-app reason=${result.reason || "unknown"} ${context}`);
+        return undefined;
+      }
+      return fallBackToTerminal("codebuddy-app-activation-failed");
+    })
+    .catch((err) => fallBackToTerminal("codebuddy-app-activation-failed", err));
+
+  return Promise.resolve()
+    .then(() => findApp(collectCodeBuddyPids(focusEntry)))
+    .then((app) => {
+      const bundlePath = app && typeof app.bundlePath === "string" ? app.bundlePath : "";
+      if (!bundlePath) return fallBackToTerminal("codebuddy-app-not-found");
+
+      const scheme = app && typeof app.urlScheme === "string" ? app.urlScheme.trim() : "";
+      const rawSessionId = focusEntry && typeof focusEntry.rawSessionId === "string"
+        ? focusEntry.rawSessionId.trim()
+        : "";
+      const canOpenConversation = scheme
+        && CODEBUDDY_URL_SCHEME_RE.test(scheme)
+        && rawSessionId
+        && rawSessionId !== "default"
+        && CODEBUDDY_CONVERSATION_ID_RE.test(rawSessionId)
+        && shell
+        && typeof shell.openExternal === "function";
+      if (!canOpenConversation) return activateApp(bundlePath);
+
+      const url = `${scheme}://codebuddy-ide/conversation/open?id=${rawSessionId}`;
+      return Promise.resolve()
+        .then(() => shell.openExternal(url))
+        .then(() => {
+          log(`focus result branch=codebuddy-conversation reason=opened ${context}`);
+        })
+        .catch((err) => {
+          log(`focus result branch=codebuddy-conversation reason=open-failed ${context} error=${sanitizeFocusError(err)}`);
+          return activateApp(bundlePath);
+        });
+    })
+    .catch((err) => fallBackToTerminal("codebuddy-app-not-found", err));
+}
+
 module.exports = {
+  focusCodeBuddyIdeTarget,
   focusCodexThreadTarget,
   focusDshDesktopTarget,
   launchDshDesktopApp,

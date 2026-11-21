@@ -556,6 +556,11 @@ function handleStatePost(req, res, options) {
       const codexClientEphemeral = readCodexClientEphemeral(data,
         agentId === "codex" && hookSource === "codex-official"
         && trustedProfileId === "local" && !host && !wslDistro);
+      // Only distinguishes an IDE conversation from a terminal; app ownership
+      // is verified at click time from the live process.
+      const codebuddyClient = agentId === "codebuddy" && typeof data.codebuddy_client === "string" && data.codebuddy_client.trim()
+        ? data.codebuddy_client.trim().slice(0, 64)
+        : null;
       const attachMetadata = agentId === "opencode" && hookSource === "opencode-plugin"
         && trustedProfileId === "local" && !host && !wslDistro && !headless
         && Object.hasOwn(data, "opencode_attach_url")
@@ -582,9 +587,6 @@ function handleStatePost(req, res, options) {
       // bridge's own local, non-WSL requests may carry it (shared rule below);
       // metadata-only requests never reach the lifecycle update, so they can
       // never change where a session came from.
-      const codebuddyClient = agentId === "codebuddy" && typeof data.codebuddy_client === "string" && data.codebuddy_client.trim() ? data.codebuddy_client.trim().slice(0, 64) : null;
-      const codebuddyUrlScheme = agentId === "codebuddy" && typeof data.codebuddy_url_scheme === "string" && /^[a-z0-9-]{1,64}$/i.test(data.codebuddy_url_scheme.trim()) ? data.codebuddy_url_scheme.trim() : null;
-      const codebuddyAppBundle = agentId === "codebuddy" && typeof data.codebuddy_app_bundle === "string" && data.codebuddy_app_bundle.startsWith("/") && data.codebuddy_app_bundle.endsWith(".app") && data.codebuddy_app_bundle.length <= 512 ? data.codebuddy_app_bundle : null;
       const dshCarrier = resolveDshCarrier({
         agentId,
         hookSource,
@@ -1260,8 +1262,6 @@ function handleStatePost(req, res, options) {
             codexSource,
             dshCarrier,
             ...(codebuddyClient ? { codebuddyClient } : {}),
-            ...(codebuddyUrlScheme ? { codebuddyUrlScheme } : {}),
-            ...(codebuddyAppBundle ? { codebuddyAppBundle } : {}),
             ghosttyTerminalId,
             displayHint: display_svg,
             sessionTitle,

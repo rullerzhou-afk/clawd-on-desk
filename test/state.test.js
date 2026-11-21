@@ -70,22 +70,27 @@ function cloneTheme(theme) {
   return JSON.parse(JSON.stringify(theme));
 }
 
-describe("CodeBuddy IDE session metadata", () => {
+describe("PR #1386 follow-up: CodeBuddy IDE session metadata", () => {
   let api;
   beforeEach(() => { api = require("../src/state")(makeCtx()); });
   afterEach(() => api.cleanup());
 
-  it("keeps the first prompt title and the IDE client across later events", () => {
+  it("PR #1386 follow-up: keeps the first prompt title and the IDE client across later events", () => {
     api.updateSession("codebuddy:s1", "thinking", "UserPromptSubmit", {
       agentId: "codebuddy", sourcePid: 12089, cwd: "/tmp/project",
       codebuddyClient: "CodeBuddyIDE",
       sessionTitle: "分辨率分别是？", sessionTitleFromPrompt: true,
+    });
+    api.updateSession("codebuddy:s1", "thinking", "UserPromptSubmit", {
+      agentId: "codebuddy", sourcePid: 12089, cwd: "/tmp/project",
+      sessionTitle: "第二个标题", sessionTitleFromPrompt: true,
     });
     api.updateSession("codebuddy:s1", "working", "PreToolUse", {
       agentId: "codebuddy", sourcePid: 12089, cwd: "/tmp/project",
     });
     const session = api.sessions.get("codebuddy:s1");
     assert.strictEqual(session.sessionTitle, "分辨率分别是？");
+    assert.strictEqual(session.sessionTitleFromPrompt, true);
     assert.strictEqual(session.codebuddyClient, "CodeBuddyIDE");
   });
 });
