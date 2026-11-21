@@ -716,12 +716,10 @@ test("PR #1366 follow-up: bridge stdout errors shut down with exit code 74", () 
 });
 
 test("PR #1366 follow-up: bundled bridge matches the shared esbuild configuration", async () => {
-  const { build } = require("esbuild");
-  const { getBuildOptions } = require("../scripts/build-remote-ssh-stdio-bridge");
-  const options = getBuildOptions();
-  assert.equal(options.absWorkingDir, path.resolve(__dirname, ".."));
-  const result = await build({ ...options, write: false, logLevel: "silent" });
-  const actual = fs.readFileSync(options.outfile, "utf8").replace(/\r\n/g, "\n");
-  const expected = result.outputFiles[0].text.replace(/\r\n/g, "\n");
+  const { buildRemoteSshBridge } = require("../scripts/build-remote-ssh-stdio-bridge");
+  const output = await buildRemoteSshBridge({ write: false, logLevel: "silent" });
+  const actual = fs.readFileSync(path.join(__dirname, "..", "hooks", "remote-ssh-stdio-bridge.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const expected = output.text.replace(/\r\n/g, "\n");
   assert.equal(actual, expected);
 });
