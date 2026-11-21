@@ -221,6 +221,7 @@ function loadTheme(themeId, opts = {}) {
   const darkAppearance = (isBuiltin || opts._darkAppearanceUnavailable === true)
     ? { ok: false, reason: null, dir: null }
     : _inspectDarkAppearance(themeDir, raw.appearance);
+  if (opts._darkAppearanceUnavailable === true) theme._darkAppearanceUnavailable = true;
   theme._appearance = opts.appearance === "dark" && darkAppearance.ok ? "dark" : "light";
   theme._assetsSourceDir = isBuiltin
     ? null
@@ -275,13 +276,14 @@ function loadTheme(themeId, opts = {}) {
         themeCacheDir,
         sourceAssetsDir: theme._assetsSourceDir,
         cacheSubdir: theme._appearance === "dark" ? path.basename(theme._assetsSourceDir) : "assets",
-        // The dark cache must expose missing rasters even when the caller is
-        // lenient (startup), otherwise it would be used with broken images.
-        requireRasterDependencies: theme._appearance === "dark",
+        requireCompleteAssets: theme._appearance === "dark",
       });
     } catch (err) {
-      if (theme._appearance !== "dark" || err.code !== "MISSING_RASTER_DEPENDENCIES") throw err;
-      console.warn(`[theme-loader] Theme "${themeId}" dark appearance unavailable: ${err.message}`);
+      if (theme._appearance !== "dark") throw err;
+      const code = err?.code ? ` (${err.code})` : "";
+      console.warn(
+        `[theme-loader] Theme "${themeId}" dark appearance unavailable${code}: ${err?.message ?? String(err)}`
+      );
       // Re-run the whole load against the light resources so idle-visual
       // filtering and every derived field match a normal light load.
       return loadTheme(themeId, {

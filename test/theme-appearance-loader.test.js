@@ -207,6 +207,186 @@ describe("issue #1323: loader dark appearance", () => {
     assert.ok(warn.mock.calls.some((call) => call.arguments.join(" ").includes("missing raster")));
   });
 
+  it("falls back to light when a file occupies the dark cache directory", () => {
+    const fixture = makeFixture();
+    const themeDir = writeTheme(fixture.themesDir, "night", {
+      json: darkThemeJson(),
+      assets: mirroredAssets(),
+      darkAssets: mirroredAssets(),
+    });
+    const cacheRoot = path.join(fixture.userData, "theme-cache", "night");
+    const darkCacheDir = path.join(cacheRoot, "assets-dark");
+    fs.mkdirSync(cacheRoot, { recursive: true });
+    fs.writeFileSync(darkCacheDir, "occupied");
+    const warn = mock.method(console, "warn", () => {});
+
+    const theme = themeLoader.loadTheme("night", { appearance: "dark" });
+
+    assert.strictEqual(theme._appearance, "light");
+    assert.strictEqual(theme._darkAppearanceUnavailable, true);
+    assert.strictEqual(theme._capabilities.darkAppearance, false);
+    assert.strictEqual(theme._assetsSourceDir, path.join(themeDir, "assets"));
+    const warnings = warn.mock.calls.map((call) => call.arguments.join(" "));
+    assert.ok(warnings.some((message) => (
+      message.includes("dark appearance unavailable")
+      && /EEXIST|ENOTDIR/.test(message)
+      && message.includes("mkdir")
+      && message.includes(darkCacheDir)
+    )), warnings.join("\n"));
+  });
+
+  it("still throws when a file occupies the light cache directory", () => {
+    const fixture = makeFixture();
+    writeTheme(fixture.themesDir, "night", {
+      json: darkThemeJson(),
+      assets: mirroredAssets(),
+      darkAssets: mirroredAssets(),
+    });
+    const cacheRoot = path.join(fixture.userData, "theme-cache", "night");
+    const lightCacheDir = path.join(cacheRoot, "assets");
+    fs.mkdirSync(cacheRoot, { recursive: true });
+    fs.writeFileSync(lightCacheDir, "occupied");
+
+    assert.throws(
+      () => themeLoader.loadTheme("night", { appearance: "light" }),
+      { syscall: "mkdir", path: lightCacheDir }
+    );
+  });
+
+  for (const { appearance, cacheSubdir } of [
+    { appearance: "dark", cacheSubdir: "assets-dark" },
+    { appearance: "light", cacheSubdir: "assets" },
+  ]) {
+    it(appearance === "dark"
+      ? "falls back to light when a dark raster cannot be copied into the cache"
+      : "keeps loading in strict light mode when a raster cannot be copied into the cache", () => {
+      const fixture = makeFixture();
+      const assets = mirroredAssets({
+        "idle.svg": '<svg xmlns="http://www.w3.org/2000/svg"><image href="sheet.png"/></svg>',
+        "sheet.png": "raster",
+      });
+      writeTheme(fixture.themesDir, "night", { json: darkThemeJson(), assets, darkAssets: assets });
+      const rasterTarget = path.join(fixture.userData, "theme-cache", "night", cacheSubdir, "sheet.png");
+      // A directory at the destination makes the final placement fail on every platform.
+      fs.mkdirSync(rasterTarget, { recursive: true });
+      const error = mock.method(console, "error", () => {});
+      const warn = mock.method(console, "warn", () => {});
+
+      const theme = themeLoader.loadTheme("night", { appearance, strict: appearance === "light" });
+
+      assert.ok(error.mock.calls.some((call) => call.arguments.join(" ").includes("Failed to cache raster sheet.png")));
+      assert.strictEqual(theme._appearance, "light");
+      if (appearance === "dark") {
+        assert.strictEqual(theme._darkAppearanceUnavailable, true);
+        assert.strictEqual(fs.readFileSync(path.join(theme._assetsDir, "sheet.png"), "utf8"), "raster");
+        assert.ok(warn.mock.calls.some((call) => call.arguments.join(" ").includes("MISSING_RASTER_DEPENDENCIES")));
+      }
+    });
+  }
+
+  describe("PR #1361 follow-up: SVG cache failures", () => {
+    it("falls back to light when a directory blocks a required dark SVG", () => {
+      const fixture = makeFixture();
+      writeTheme(fixture.themesDir, "night", {
+        json: darkThemeJson(),
+        assets: mirroredAssets(),
+        darkAssets: mirroredAssets(),
+      });
+      const blockedSvg = path.join(fixture.userData, "theme-cache", "night", "assets-dark", "idle.svg");
+      fs.mkdirSync(blockedSvg, { recursive: true });
+      mock.method(console, "error", () => {});
+      const warn = mock.method(console, "warn", () => {});
+
+      const theme = themeLoader.loadTheme("night", { appearance: "dark" });
+
+      assert.strictEqual(theme._appearance, "light");
+      assert.strictEqual(theme._darkAppearanceUnavailable, true);
+      assert.strictEqual(fs.readFileSync(path.join(theme._assetsDir, "idle.svg"), "utf8"), SVG);
+      const warnings = warn.mock.calls.map((call) => call.arguments.join(" "));
+      assert.ok(warnings.some((message) => (
+        message.includes("dark appearance unavailable")
+        && message.includes(blockedSvg)
+        && /EISDIR|EACCES|EPERM/.test(message)
+      )), warnings.join("\n"));
+    });
+
+    it("names the dark SVG in the warning when parsing fails", () => {
+      const fixture = makeFixture();
+      const themeDir = writeTheme(fixture.themesDir, "night", {
+        json: darkThemeJson(),
+        assets: mirroredAssets(),
+        darkAssets: mirroredAssets(),
+      });
+      const darkSvg = path.join(themeDir, "assets-dark", "idle.svg");
+      const parseError = new Error("fixture parser failure");
+      // Only the dark SVG throws when the parser reads its first character.
+      const svgWithParserFailure = Object.assign(new String(SVG), {
+        charCodeAt() { throw parseError; },
+      });
+      const readFileSync = fs.readFileSync;
+      mock.method(fs, "readFileSync", (file, ...args) => (
+        file === darkSvg ? svgWithParserFailure : readFileSync(file, ...args)
+      ));
+      const warn = mock.method(console, "warn", () => {});
+
+      const theme = themeLoader.loadTheme("night", { appearance: "dark" });
+
+      assert.strictEqual(theme._appearance, "light");
+      assert.strictEqual(theme._darkAppearanceUnavailable, true);
+      const warnings = warn.mock.calls.map((call) => call.arguments.join(" "));
+      const warning = warnings.find((message) => message.includes(parseError.message));
+      assert.ok(warning, warnings.join("\n"));
+      assert.match(warning, /idle\.svg/);
+    });
+
+    it("still loads light when a directory blocks a required light SVG", () => {
+      const fixture = makeFixture();
+      writeTheme(fixture.themesDir, "night", {
+        json: darkThemeJson(),
+        assets: mirroredAssets(),
+        darkAssets: mirroredAssets(),
+      });
+      const cacheDir = path.join(fixture.userData, "theme-cache", "night", "assets");
+      fs.mkdirSync(path.join(cacheDir, "idle.svg"), { recursive: true });
+      const error = mock.method(console, "error", () => {});
+
+      const theme = themeLoader.loadTheme("night", { appearance: "light", strict: true });
+
+      assert.strictEqual(theme._appearance, "light");
+      assert.strictEqual(theme._assetsDir, cacheDir);
+      assert.strictEqual(fs.readFileSync(path.join(cacheDir, "working.svg"), "utf8"), SVG);
+      assert.ok(error.mock.calls.some((call) => call.arguments.join(" ").includes("Failed to sanitize idle.svg")));
+    });
+
+    it("falls back to light when scanning the dark assets fails", () => {
+      const fixture = makeFixture();
+      const themeDir = writeTheme(fixture.themesDir, "night", {
+        json: darkThemeJson(),
+        assets: mirroredAssets(),
+        darkAssets: mirroredAssets(),
+      });
+      const darkDir = path.join(themeDir, "assets-dark");
+      const readdirSync = fs.readdirSync;
+      mock.method(fs, "readdirSync", (directory, ...args) => {
+        if (directory === darkDir) {
+          throw Object.assign(new Error("EACCES: permission denied, scandir '" + darkDir + "'"), { code: "EACCES" });
+        }
+        return readdirSync(directory, ...args);
+      });
+      mock.method(console, "error", () => {});
+      const warn = mock.method(console, "warn", () => {});
+
+      const theme = themeLoader.loadTheme("night", { appearance: "dark" });
+
+      assert.strictEqual(theme._appearance, "light");
+      assert.strictEqual(theme._darkAppearanceUnavailable, true);
+      assert.ok(warn.mock.calls.some((call) => {
+        const message = call.arguments.join(" ");
+        return message.includes("EACCES") && message.includes("scandir") && message.includes(darkDir);
+      }));
+    });
+  });
+
   it("issue #1323: falling back to light re-filters dark-only idle visual options", () => {
     const fixture = makeFixture();
     const json = darkThemeJson();
