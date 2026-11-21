@@ -2599,6 +2599,9 @@ return {
   findCodeBuddyMacApp: pids => require("./process-app-focus").findCodeBuddyMacApp(pids, {
     execFile, fs,
   }),
+  findCodeBuddyWindowsApp: pids => require("./process-app-focus").findCodeBuddyWindowsApp(pids, {
+    execFile, fs,
+  }),
   openCodeBuddyMacApp: bundlePath => require("./process-app-focus").openCodeBuddyMacApp(bundlePath, {
     execFile,
   }),
