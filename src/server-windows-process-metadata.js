@@ -48,7 +48,9 @@ const AGENT_CONFIGS = Object.freeze({
     editorMap: BASE_CONFIG.editorMap,
   }),
   codebuddy: Object.freeze({
-    agentNames: new Set(["codebuddy.exe"]),
+    // agent-harness.exe hosts CodeBuddy 5.x IDE hooks; keep in sync with
+    // CODEBUDDY_AGENT_NAMES in hooks/codebuddy-hook.js.
+    agentNames: new Set(["codebuddy.exe", "agent-harness.exe"]),
     terminalNames: CODEBUDDY_CONFIG.terminalNames,
     systemBoundary: CODEBUDDY_CONFIG.systemBoundary,
     editorMap: CODEBUDDY_CONFIG.editorMap,

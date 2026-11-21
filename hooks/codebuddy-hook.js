@@ -127,12 +127,25 @@ const config = getPlatformConfig({
   },
   extraEditorPathChecks: [["codebuddy", "codebuddy"]],
 });
+// The CodeBuddy 5.x IDE runs its hooks under the bundled agent runtime
+// (`agent-harness.exe`, parent of the hook's shell) on Windows, never under a
+// process called codebuddy.exe; the stand-alone CLI keeps codebuddy.exe. Without
+// a live agent PID the Windows PID cache is never written, so every
+// UserPromptSubmit (cache-only by design) reaches Clawd without a source PID and
+// a freshly started conversation cannot be focused until its first tool event.
+// agent-harness.exe lives for the IDE's chat session, the same lifetime the
+// cache needs; it is not a terminal, so terminal-first anchoring is unchanged.
+const CODEBUDDY_AGENT_NAMES = Object.freeze({
+  win: new Set(["codebuddy.exe", "agent-harness.exe"]),
+  mac: new Set(["codebuddy"]),
+  linux: new Set(["codebuddy"]),
+});
 let runtimeContext = Object.freeze({
   identity: { ok: false, reason: "not-observed", port: null, ownerPid: null },
   observation: null,
 });
 const resolve = createPidResolver({
-  agentNames: { win: new Set(["codebuddy.exe"]), mac: new Set(["codebuddy"]), linux: new Set(["codebuddy"]) },
+  agentNames: CODEBUDDY_AGENT_NAMES,
   platformConfig: config,
   readRuntimeIdentity: () => runtimeContext.identity,
 });
@@ -281,6 +294,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CODEBUDDY_AGENT_NAMES,
   normalizeTitle,
   extractPromptTitle,
   resolveSessionTitle,
