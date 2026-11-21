@@ -16,7 +16,7 @@ const {
 } = require("../src/session-focus-handoff");
 const { discoverDshDesktopSync } = require("../hooks/dsh-install");
 const { makeSessionKey } = require("../src/session-key");
-const { getSessionFocusTarget, mergeSessionFocusEntry } = require("../src/session-focus");
+const { getSessionFocusTarget, getSessionFocusWtHwnd, mergeSessionFocusEntry } = require("../src/session-focus");
 const { buildPermissionFocusEntry } = require("../src/permission").__test;
 
 const DSH_PLIST = [
@@ -287,6 +287,35 @@ describe("session focus handoff", () => {
     assert.strictEqual(pending.length, 1);
     await Promise.all(pending);
     assert.deepStrictEqual(calls, [["publish", "session-approval"], ["open", "dsh://open"]]);
+  });
+
+  it("issue #1392: terminal focus drops a Claude Desktop WT handle but keeps a terminal one", () => {
+    // Same VM technique as the dispatcher test above: execute the real
+    // focusTerminalSession and inject the window layer plus the helper it calls.
+    const main = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+    const begin = main.indexOf("function focusTerminalSession(");
+    const end = main.indexOf("function focusDashboardSession(", begin);
+    assert.ok(begin >= 0 && end > begin,
+      "focusTerminalSession or focusDashboardSession moved or was renamed; update this test's source boundaries");
+    const calls = [];
+    const context = {
+      focusTerminalWindow: (request) => { calls.push(request); return true; },
+      getSessionFocusWtHwnd,
+    };
+    vm.createContext(context);
+    vm.runInContext(main.slice(begin, end), context);
+
+    assert.strictEqual(context.focusTerminalSession({
+      sourcePid: 101, claudeEntrypoint: "claude-desktop", wtHwnd: "81", cwd: "C:/work",
+    }, "desktop-session", "hud"), true);
+    assert.strictEqual(context.focusTerminalSession({
+      sourcePid: 102, wtHwnd: "81", cwd: "C:/work",
+    }, "terminal-session", "dashboard"), true);
+
+    assert.strictEqual(calls[0].wtHwnd, null,
+      "a Claude Desktop row must not raise whatever WT window it stored");
+    assert.strictEqual(calls[0].sourcePid, 101);
+    assert.strictEqual(calls[1].wtHwnd, "81", "ordinary terminal sessions keep their handle");
   });
 
   it("does not launch the desktop app when the URL handler succeeds", async () => {

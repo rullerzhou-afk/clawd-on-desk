@@ -62,6 +62,17 @@ function hasSupportedHerdrPaneTarget(entry, options = {}) {
   return osPlatform === "darwin" || osPlatform === "linux";
 }
 
+// Claude Desktop sessions on Windows are reached through their bundled CLI's
+// parent chain. Any WT handle kept on such a session is just whatever terminal
+// happened to be foreground when an event arrived (for example a turn sent from
+// a phone), and the focus script tries that handle before the ancestry walk.
+// Ignore it at the navigation entry point so the walk raises the Claude window.
+// The hook and server still store the value; only this consumer refuses it.
+function getSessionFocusWtHwnd(session) {
+  if (session && session.claudeEntrypoint === "claude-desktop") return null;
+  return session ? session.wtHwnd : undefined;
+}
+
 function getSessionFocusTarget(entry, options = {}) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
   if (entry.platform === "webui") return { canFocus: false, type: null, url: null };
@@ -181,6 +192,7 @@ module.exports = {
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  getSessionFocusWtHwnd,
   isDshDesktopSession,
   isFocusableLocalHudSession,
 };

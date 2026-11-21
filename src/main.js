@@ -209,6 +209,7 @@ const { createMeetingModeController } = require("./meeting-mode");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  getSessionFocusWtHwnd,
   mergeSessionFocusEntry,
 } = require("./session-focus");
 const { focusCodexThreadTarget, focusDshDesktopTarget } = require("./session-focus-handoff");
@@ -2967,7 +2968,7 @@ function focusTerminalSession(session, sessionId, requestSource) {
   if (!session || (!session.sourcePid && !session.orcaPaneKey)) return false;
   return focusTerminalWindow({
     sourcePid: session.sourcePid,
-    wtHwnd: session.wtHwnd,
+    wtHwnd: getSessionFocusWtHwnd(session),
     cwd: session.cwd,
     editor: session.editor,
     pidChain: session.pidChain,

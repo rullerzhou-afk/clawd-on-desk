@@ -612,6 +612,19 @@ function applyAgentPidFields(body, agentPid, headless) {
   if (headless === true) body.headless = true;
 }
 
+// #1392: the observed Windows Claude Desktop chain is
+// hook -> bundled CLI `claude.exe` -> desktop app `claude.exe` -> sihost -> svchost.
+// The CLI is the agent PID and the desktop window is its parent, but the walk
+// otherwise anchors on a short-lived PowerShell wrapper or on sihost, neither of
+// which leads the focus walk to the window. Prefer the CLI agent PID the same
+// way Codex Desktop prefers its app-server. `body.claude_entrypoint` is set only
+// for the canonical `claude-code` agent, so Cursor's imported hooks never match
+// even when the same environment token is present.
+function shouldPreferClaudeDesktopAgentPid(body, options = {}) {
+  const platform = options.platform || process.platform;
+  return platform === "win32" && body.claude_entrypoint === "claude-desktop";
+}
+
 // Applies the shared resolver's process metadata to the body. Works for all
 // three resolver result shapes (#634):
 //   - fresh          → full fields, including pid_chain and (on SessionStart)
@@ -622,9 +635,15 @@ function applyAgentPidFields(body, agentPid, headless) {
 //   - empty (prompt/end miss) → every pid field is null/[], so source_pid,
 //     agent_pid, pid_chain, etc. are all left off (never a degraded
 //     process.ppid). source_pid is guarded so an empty result ships no null pid.
-function applyResolvedFields(body, resolved, event) {
+function applyResolvedFields(body, resolved, event, { preferAgentPid = false } = {}) {
   const { stablePid, agentPid, headless, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
-  if (stablePid) body.source_pid = stablePid;
+  // #1392: cache hits return the pre-upgrade anchor unchanged and carry no start
+  // identity, so the adapter corrects the reported value just like the resolver
+  // corrects a fresh walk; prompt/end must never spawn. Claude keeps the same
+  // headless guard as the resolver (one more than Codex checks here): a
+  // `claude -p` run must not move onto its agent.
+  const sourcePid = preferAgentPid && agentPid && headless !== true ? agentPid : stablePid;
+  if (sourcePid) body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;
   applyAgentPidFields(body, agentPid, headless);
   if (pidChain && pidChain.length) body.pid_chain = pidChain;
@@ -892,14 +911,16 @@ function buildStateBody(event, payload, resolve, options = {}) {
     // process-metadata fields; the server MERGE (state.js) keeps whatever the
     // session already had — never a degraded process.ppid.
     const cacheCwd = cwd;
+    const preferAgentPid = shouldPreferClaudeDesktopAgentPid(body, options);
     const resolved = resolve({
       namespace: "claude-code",
       sessionId,
       cacheCwd,
       lifecycle: EVENT_TO_LIFECYCLE[event] || "event",
       cacheable: sessionId !== "default" && !!cacheCwd,
+      ...(preferAgentPid ? { preferAgentPid: true } : {}),
     });
-    applyResolvedFields(body, resolved, event);
+    applyResolvedFields(body, resolved, event, { preferAgentPid });
 
     if (wslDistro) {
       body.wsl_distro = wslDistro;

@@ -18,6 +18,7 @@ const {
   loadActiveRecoveryLeases,
 } = require("../hooks/session-recovery-lease");
 const { restoreSessionsFromRecoveryLeases } = require("../src/session-recovery-loader");
+const pidCache = require("../hooks/pid-cache");
 
 describe("durable session recovery leases", () => {
   let recoveryDir;
@@ -76,6 +77,30 @@ describe("durable session recovery leases", () => {
     const filePath = getLeaseFilePath("claude-code", sessionId, { recoveryDir });
     fs.writeFileSync(filePath, JSON.stringify(record));
     return filePath;
+  }
+
+  // The writer reads process.env.CLAWD_REMOTE directly; keep host state out of
+  // every lease case that expects a real write.
+  function withoutRemoteEnv(fn) {
+    const had = process.env.CLAWD_REMOTE;
+    delete process.env.CLAWD_REMOTE;
+    try {
+      return fn();
+    } finally {
+      if (had === undefined) delete process.env.CLAWD_REMOTE;
+      else process.env.CLAWD_REMOTE = had;
+    }
+  }
+
+  function withPidCache(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-lease-pid-cache-"));
+    pidCache.__setCacheDirForTests(dir);
+    try {
+      return fn(dir);
+    } finally {
+      pidCache.__setCacheDirForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   it("uses a hashed per-session filename and writes only the recovery schema", () => {
@@ -682,6 +707,164 @@ describe("durable session recovery leases", () => {
     assert.strictEqual(updated.written, true);
     assert.strictEqual(updated.record.processStartIdentity, "win32:new");
     assert.strictEqual(updated.record.sourceProcessStartIdentity, "win32:new");
+  });
+
+  it("issue #1392: reuses the agent identity when the adapter moves sourcePid onto the agent", () => {
+    withoutRemoteEnv(() => {
+      const sessionId = "win-desktop-reanchor";
+      writeLeaseRecord(sessionId, {
+        pid: process.pid,
+        sourcePid: 8801,
+        processStartIdentity: "win32:agent",
+        sourceProcessStartIdentity: "win32:sihost",
+      });
+      // The adapter overrode a cache hit's source_pid with the agent PID, but a
+      // cache hit carries no start identity of its own.
+      const result = updateRecoveryLeaseFromStateBody(body({ session_id: sessionId, agent_pid: process.pid, source_pid: process.pid }), {
+        recoveryDir,
+        eventAt: 2000,
+        platform: "win32",
+      });
+      assert.strictEqual(result.written, true, result.reason);
+      assert.strictEqual(result.record.sourcePid, process.pid);
+      assert.strictEqual(result.record.sourceProcessStartIdentity, "win32:agent");
+      assert.strictEqual(result.record.processStartIdentity, "win32:agent");
+    });
+  });
+
+  it("issue #1392: keeps the stored source identity when sourcePid is not the agent", () => {
+    withoutRemoteEnv(() => {
+      const sessionId = "win-desktop-distinct-source";
+      writeLeaseRecord(sessionId, {
+        pid: process.pid,
+        sourcePid: 8802,
+        processStartIdentity: "win32:agent",
+        sourceProcessStartIdentity: "win32:sihost",
+      });
+      const result = updateRecoveryLeaseFromStateBody(body({ session_id: sessionId, agent_pid: process.pid, source_pid: 8802 }), {
+        recoveryDir,
+        eventAt: 2000,
+        platform: "win32",
+      });
+      assert.strictEqual(result.written, true, result.reason);
+      assert.strictEqual(result.record.sourcePid, 8802);
+      assert.strictEqual(result.record.sourceProcessStartIdentity, "win32:sihost");
+    });
+  });
+
+  it("issue #1392: falls back to the reported source identity when the same-PID agent identity is absent", () => {
+    withoutRemoteEnv(() => {
+      const sessionId = "win-desktop-source-only-identity";
+      const result = updateRecoveryLeaseFromStateBody(body({
+        session_id: sessionId,
+        event: "Stop",
+        state: "attention",
+        agent_pid: process.pid,
+        source_pid: process.pid,
+        _sourceProcessStartIdentity: "win32:source-only",
+      }), { recoveryDir, eventAt: 2000, platform: "win32" });
+      assert.strictEqual(result.written, true, result.reason);
+      assert.strictEqual(result.record.active, false);
+      assert.strictEqual(result.record.sourceProcessStartIdentity, "win32:source-only");
+    });
+  });
+
+  it("issue #1392: keeps a re-anchored record while the old cache anchor is still serving", () => {
+    withoutRemoteEnv(() => {
+      const agentPid = 9001;
+      const sihostPid = 9002;
+      const sessionId = "win-desktop-cache-transition";
+      const eventAt = 1000;
+      withPidCache(() => {
+        pidCache.writePidCacheV2("claude-code", sessionId, "C:/work/project", {
+          stablePid: sihostPid, agentPid, headless: false, detectedEditor: null,
+        });
+        // The pre-upgrade record had sourcePid=sihost. One cache-hit event moved
+        // it onto the agent while the disk cache kept the old anchor.
+        const filePath = writeLeaseRecord(sessionId, {
+          active: false,
+          state: null,
+          eventAt,
+          pid: agentPid,
+          sourcePid: agentPid,
+          processStartIdentity: "win32:48744",
+          sourceProcessStartIdentity: "win32:48744",
+        });
+
+        pruneRecoveryLeaseFiles(recoveryDir, {
+          now: eventAt + TOMBSTONE_RETENTION_MS + 1,
+          platform: "win32",
+          processKill: () => true,
+        });
+        const kept = readLeaseFile(filePath);
+        assert.ok(kept, "the transition record must survive so its identity stays usable");
+        assert.strictEqual(kept.sourcePid, agentPid);
+
+        // The next zero-snapshot prompt has no identities of its own and must
+        // still be able to write.
+        const result = updateRecoveryLeaseFromStateBody(body({
+          session_id: sessionId,
+          event: "PreToolUse",
+          state: "working",
+          agent_pid: agentPid,
+          source_pid: agentPid,
+        }), { recoveryDir, eventAt: eventAt + TOMBSTONE_RETENTION_MS + 2000, platform: "win32" });
+        assert.strictEqual(result.written, true, result.reason);
+        assert.strictEqual(result.record.active, true);
+        assert.strictEqual(result.record.sourceProcessStartIdentity, "win32:48744");
+      });
+    });
+  });
+
+  it("issue #1392: still prunes when the source is not the agent and does not match the cache anchor", () => {
+    withoutRemoteEnv(() => {
+      const agentPid = 9001;
+      const sessionId = "win-desktop-other-source";
+      withPidCache(() => {
+        pidCache.writePidCacheV2("claude-code", sessionId, "C:/work/project", {
+          stablePid: 9002, agentPid, headless: false, detectedEditor: null,
+        });
+        const filePath = writeLeaseRecord(sessionId, {
+          active: false,
+          state: null,
+          pid: agentPid,
+          sourcePid: 9003,
+          processStartIdentity: "win32:48744",
+          sourceProcessStartIdentity: "win32:48745",
+        });
+        pruneRecoveryLeaseFiles(recoveryDir, {
+          now: 1000 + TOMBSTONE_RETENTION_MS + 1,
+          platform: "win32",
+          processKill: () => true,
+        });
+        assert.strictEqual(fs.existsSync(filePath), false);
+      });
+    });
+  });
+
+  it("issue #1392: still prunes when the record pid does not match the cached agent", () => {
+    withoutRemoteEnv(() => {
+      const sessionId = "win-desktop-other-agent";
+      withPidCache(() => {
+        pidCache.writePidCacheV2("claude-code", sessionId, "C:/work/project", {
+          stablePid: 9002, agentPid: 9001, headless: false, detectedEditor: null,
+        });
+        const filePath = writeLeaseRecord(sessionId, {
+          active: false,
+          state: null,
+          pid: 9004,
+          sourcePid: 9004,
+          processStartIdentity: "win32:48746",
+          sourceProcessStartIdentity: "win32:48746",
+        });
+        pruneRecoveryLeaseFiles(recoveryDir, {
+          now: 1000 + TOMBSTONE_RETENTION_MS + 1,
+          platform: "win32",
+          processKill: () => true,
+        });
+        assert.strictEqual(fs.existsSync(filePath), false);
+      });
+    });
   });
 
   it("matches Windows loader identities at the CIM writer's microsecond precision", () => {
