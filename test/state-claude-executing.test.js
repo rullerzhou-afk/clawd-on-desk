@@ -30,6 +30,7 @@ function runtime(t, overrides = {}) {
 }
 
 test("Claude starts a tool hint, conservatively drops it on the first result, then accepts the batch", t => {
+  t.mock.method(Math, "random", () => 0);
   const h = runtime(t);
   h.send("UserPromptSubmit", "thinking");
   h.send("PreToolUse", "working", { toolUseId: "a" });

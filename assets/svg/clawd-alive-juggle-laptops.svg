@@ -1,0 +1,615 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 2.4s loop (after a 0.3s intro) — Juggle Laptops (3 subagents).
+         The 2+ subagent juggling, escalated: three little open laptops,
+         screens glowing with scrolling code, in a 3-object cascade
+         (a throw every 0.4s, alternating hands, each hand scoops and
+         throws every 0.8s). One laptop does a forward flip on its way
+         right, another a back flip on its way left, the third tilts.
+         Faint cyan streaks trail the laptops. Clawd is locked in:
+         eyes narrowed and up, tracking the pattern, body bobbing on
+         every catch, leaning into each hand. Intro: eases out of the
+         clawd-idle-follow rest pose while the laptops pop in with a poof.
+         Generated keyframes are linear and densely sampled. */
+      .shadow-anim { transform-origin: 7.5px 15.5px; animation: lj-shadow 2.4s linear 0.3s infinite both; }
+      .ghosts-intro { animation: lj-ghosts-intro 0.3s linear both; }
+      .body { transform-origin: 7.5px 15px; animation: lj-body 2.4s linear 0.3s infinite both; }
+      .eyes-intro { animation: lj-eyes-intro 0.3s ease-out both; }
+      .eyes { animation: lj-eyes 2.4s linear 0.3s infinite both; }
+      .lid-intro { transform-origin: 7.5px 10px; animation: lj-lid-intro 0.3s ease-out both; }
+      .lid { transform-origin: 7.5px 10px; animation: lj-lid 2.4s linear 0.3s infinite both; }
+      .arm-l-intro { animation: lj-arm-l-intro 0.3s ease-out both; }
+      .arm-r-intro { animation: lj-arm-r-intro 0.3s ease-out both; }
+      .arm-l { animation: lj-arm-l 2.4s linear 0.3s infinite both; }
+      .arm-r { animation: lj-arm-r 2.4s linear 0.3s infinite both; }
+      .halo { opacity: 0.16; animation: lj-halo 0.8s ease-in-out infinite; }
+      .h1 { animation-delay: -0.27s; }
+      .h2 { animation-delay: -0.53s; }
+      .code { animation: lj-type 1.2s steps(1) infinite; }
+      .c0a { transform-origin: -1.3px 0; }
+      .c0b { transform-origin: -0.9px 0; animation-delay: -0.4s; }
+      .c0c { transform-origin: -0.9px 0; animation-delay: -0.8s; }
+      .c1a { transform-origin: -1.3px 0; animation-delay: -0.2s; animation-duration: 0.8s; }
+      .c1b { transform-origin: -0.9px 0; animation-delay: -0.6s; animation-duration: 0.8s; }
+      .c1c { transform-origin: -0.9px 0; animation-delay: -0.1s; animation-duration: 0.8s; }
+      .c2a { transform-origin: -1.3px 0; animation-delay: -0.9s; }
+      .c2b { transform-origin: -0.9px 0; animation-delay: -0.3s; }
+      .c2c { transform-origin: -0.9px 0; animation-delay: -0.7s; }
+      .cursor { animation: lj-cursor 0.4s steps(1) infinite; }
+      .g0-0 { animation: lj-pos0 2.4s linear 0.35s infinite both; }
+      .gr0-0 { animation: lj-rot0 2.4s linear 0.35s infinite both; }
+      .g0-1 { animation: lj-pos0 2.4s linear 0.4s infinite both; }
+      .gr0-1 { animation: lj-rot0 2.4s linear 0.4s infinite both; }
+      .pos0 { animation: lj-pos0 2.4s linear 0.3s infinite both; }
+      .rot0 { animation: lj-rot0 2.4s linear 0.3s infinite both; }
+      .pop0 { animation: lj-pop 0.24s ease-out 0.00s both; }
+      .poof0 { opacity: 0; animation: lj-poof 0.3s ease-out 0.00s both; }
+      .g1-0 { animation: lj-pos1 2.4s linear 0.35s infinite both; }
+      .gr1-0 { animation: lj-rot1 2.4s linear 0.35s infinite both; }
+      .g1-1 { animation: lj-pos1 2.4s linear 0.4s infinite both; }
+      .gr1-1 { animation: lj-rot1 2.4s linear 0.4s infinite both; }
+      .pos1 { animation: lj-pos1 2.4s linear 0.3s infinite both; }
+      .rot1 { animation: lj-rot1 2.4s linear 0.3s infinite both; }
+      .pop1 { animation: lj-pop 0.24s ease-out 0.03s both; }
+      .poof1 { opacity: 0; animation: lj-poof 0.3s ease-out 0.03s both; }
+      .g2-0 { animation: lj-pos2 2.4s linear 0.35s infinite both; }
+      .gr2-0 { animation: lj-rot2 2.4s linear 0.35s infinite both; }
+      .g2-1 { animation: lj-pos2 2.4s linear 0.4s infinite both; }
+      .gr2-1 { animation: lj-rot2 2.4s linear 0.4s infinite both; }
+      .pos2 { animation: lj-pos2 2.4s linear 0.3s infinite both; }
+      .rot2 { animation: lj-rot2 2.4s linear 0.3s infinite both; }
+      .pop2 { animation: lj-pop 0.24s ease-out 0.06s both; }
+      .poof2 { opacity: 0; animation: lj-poof 0.3s ease-out 0.06s both; }
+
+      /* --- Intro (eases out of the rest pose; compensates the loop's t=0 pose) --- */
+      @keyframes lj-ghosts-intro {
+0%,70%{opacity:0}
+100%{opacity:1}
+}
+      @keyframes lj-eyes-intro {
+0%{transform:translate(0px,0.9px)}
+100%{transform:translate(0,0)}
+}
+      @keyframes lj-lid-intro {
+0%{transform:scale(1,1.43)}
+100%{transform:scale(1,1)}
+}
+      @keyframes lj-arm-l-intro {
+0%{transform:translate(0px,0.6px)}
+100%{transform:translate(0,0)}
+}
+      @keyframes lj-arm-r-intro {
+0%{transform:translate(-0.74px,0.38px)}
+100%{transform:translate(0,0)}
+}
+      @keyframes lj-pop {
+0%{transform:scale(0)}
+60%{transform:scale(1.2)}
+80%{transform:scale(0.94)}
+100%{transform:scale(1)}
+}
+      @keyframes lj-poof {
+0%{transform:scale(0.5);opacity:0.9}
+100%{transform:scale(1.7);opacity:0}
+}
+
+      /* --- Screens --- */
+      @keyframes lj-halo {
+0%,100%{opacity:0.12}
+50%{opacity:0.28}
+}
+      @keyframes lj-type {
+0%{transform:scale(0.25,1)}
+25%{transform:scale(0.5,1)}
+50%{transform:scale(0.75,1)}
+75%{transform:scale(1,1)}
+}
+      @keyframes lj-cursor {
+0%{opacity:1}
+50%{opacity:0}
+}
+
+      /* --- Generated loop keyframes --- */
+      @keyframes lj-body {
+0%,100%{transform:translate(0px,0px) rotate(0deg)}
+2.78%,36.11%,69.44%{transform:translate(0.12px,0.06px) rotate(1deg)}
+4.17%,12.5%,37.5%,45.83%,70.83%,79.17%{transform:translate(0.18px,0.12px) rotate(1.41deg)}
+5.56%,11.11%,38.89%,44.44%,72.22%,77.78%{transform:translate(0.22px,0.18px) rotate(1.73deg)}
+6.94%,9.72%,40.28%,43.06%,73.61%,76.39%{transform:translate(0.24px,0.22px) rotate(1.93deg)}
+8.33%,41.67%,75%{transform:translate(0.25px,0.24px) rotate(2deg)}
+14.58%,47.92%,81.25%{transform:translate(0.1px,0.04px) rotate(0.77deg)}
+17.36%,50.69%,84.03%{transform:translate(-0.03px,0px) rotate(-0.26deg)}
+19.44%,52.78%,86.11%{transform:translate(-0.12px,0.06px) rotate(-1deg)}
+20.83%,29.17%,54.17%,62.5%,87.5%,95.83%{transform:translate(-0.18px,0.12px) rotate(-1.41deg)}
+22.22%,27.78%,55.56%,61.11%,88.89%,94.44%{transform:translate(-0.22px,0.18px) rotate(-1.73deg)}
+23.61%,26.39%,56.94%,59.72%,90.28%,93.06%{transform:translate(-0.24px,0.22px) rotate(-1.93deg)}
+25%,58.33%,91.67%{transform:translate(-0.25px,0.24px) rotate(-2deg)}
+31.25%,64.58%,97.92%{transform:translate(-0.1px,0.04px) rotate(-0.77deg)}
+34.03%,67.36%{transform:translate(0.03px,0px) rotate(0.26deg)}
+}
+      @keyframes lj-shadow {
+0%,100%{transform:translate(0px,0px) scale(1,1);opacity:0.5}
+4.86%,11.81%{transform:translate(0.12px,0px) scale(1.03,1);opacity:0.53}
+8.33%,42.36%,75.69%{transform:translate(0.15px,0px) scale(1.04,1);opacity:0.55}
+17.36%{transform:translate(-0.02px,0px) scale(1,1);opacity:0.5}
+22.22%,55.56%,88.89%{transform:translate(-0.13px,0px) scale(1.03,1);opacity:0.54}
+25.69%,59.03%,92.36%{transform:translate(-0.15px,0px) scale(1.04,1);opacity:0.55}
+29.86%,63.19%,96.53%{transform:translate(-0.09px,0px) scale(1.01,1);opacity:0.52}
+34.72%,68.06%{transform:translate(0.04px,0px) scale(1,1);opacity:0.5}
+38.89%,72.22%{transform:translate(0.13px,0px) scale(1.03,1);opacity:0.54}
+46.53%,79.86%{transform:translate(0.09px,0px) scale(1.01,1);opacity:0.52}
+51.39%,84.72%{transform:translate(-0.04px,0px) scale(1,1);opacity:0.5}
+}
+      @keyframes lj-eyes {
+0%,16.67%,33.33%,50%,66.67%,83.33%,100%{transform:translate(0px,-0.9px)}
+4.17%,37.5%,45.83%,70.83%{transform:translate(-0.35px,-0.83px)}
+6.94%,9.72%,40.28%,43.06%,73.61%,76.39%{transform:translate(-0.48px,-0.76px)}
+12.5%,79.17%{transform:translate(-0.35px,-0.82px)}
+20.83%,54.17%,87.5%{transform:translate(0.35px,-0.83px)}
+23.61%,26.39%,56.94%,59.72%,90.28%,93.06%{transform:translate(0.48px,-0.76px)}
+29.17%,62.5%,95.83%{transform:translate(0.35px,-0.82px)}
+}
+      @keyframes lj-lid {
+0%,57.64%,63.19%,70.14%,100%{transform:scale(1,0.7)}
+58.33%,62.5%{transform:scale(1,0.66)}
+59.72%,61.11%{transform:scale(1,0.21)}
+60.42%,67.36%{transform:scale(1,0.1)}
+65.28%{transform:scale(1,0.68)}
+65.97%{transform:scale(1,0.5)}
+66.67%{transform:scale(1,0.25)}
+68.06%{transform:scale(1,0.17)}
+69.44%{transform:scale(1,0.63)}
+}
+      @keyframes lj-arm-l {
+0%,33.33%,66.67%,100%{transform:translate(0px,-0.6px)}
+2.08%,35.42%,68.75%{transform:translate(0.08px,-0.64px)}
+5.56%,38.89%,72.22%{transform:translate(0.09px,-0.56px)}
+9.03%,42.36%,75.69%{transform:translate(-0.05px,-0.47px)}
+13.19%,46.53%,79.86%{transform:translate(-0.39px,-0.48px)}
+15.97%,49.31%,82.64%{transform:translate(-0.67px,-0.42px)}
+18.75%,52.08%,85.42%{transform:translate(-0.94px,-0.22px)}
+22.22%,55.56%,88.89%{transform:translate(-1.18px,0.14px)}
+25%,58.33%,91.67%{transform:translate(-1.25px,0.34px)}
+25.69%,59.03%,92.36%{transform:translate(-1.13px,0.62px)}
+26.39%,59.72%,93.06%{transform:translate(-1.02px,0.83px)}
+27.08%,60.42%,93.75%{transform:translate(-0.91px,0.97px)}
+27.78%,61.11%,94.44%{transform:translate(-0.79px,1.05px)}
+28.47%,61.81%,95.14%{transform:translate(-0.68px,1.05px)}
+29.17%,95.83%{transform:translate(-0.58px,1px)}
+29.86%,63.19%,96.53%{transform:translate(-0.47px,0.87px)}
+30.56%,63.89%,97.22%{transform:translate(-0.37px,0.69px)}
+31.25%,64.58%,97.92%{transform:translate(-0.27px,0.45px)}
+31.94%,65.28%,98.61%{transform:translate(-0.18px,0.16px)}
+32.64%,65.97%,99.31%{transform:translate(-0.09px,-0.19px)}
+62.5%{transform:translate(-0.58px,0.99px)}
+}
+      @keyframes lj-arm-r {
+0%,100%{transform:translate(0.74px,-0.38px)}
+2.78%{transform:translate(1px,-0.15px)}
+6.25%{transform:translate(1.21px,0.2px)}
+8.33%,41.67%,75%{transform:translate(1.25px,0.34px)}
+9.03%,42.36%,75.69%{transform:translate(1.13px,0.62px)}
+9.72%,43.06%,76.39%{transform:translate(1.02px,0.83px)}
+10.42%,43.75%,77.08%{transform:translate(0.91px,0.97px)}
+11.11%,44.44%,77.78%{transform:translate(0.79px,1.05px)}
+11.81%,45.14%,78.47%{transform:translate(0.68px,1.05px)}
+12.5%,45.83%{transform:translate(0.58px,0.99px)}
+13.19%,46.53%,79.86%{transform:translate(0.47px,0.87px)}
+13.89%,47.22%,80.56%{transform:translate(0.37px,0.69px)}
+14.58%,47.92%,81.25%{transform:translate(0.27px,0.45px)}
+15.28%,48.61%,81.94%{transform:translate(0.18px,0.16px)}
+15.97%,49.31%,82.64%{transform:translate(0.09px,-0.19px)}
+16.67%,50%,83.33%{transform:translate(0px,-0.6px)}
+18.75%,52.08%,85.42%{transform:translate(-0.08px,-0.64px)}
+22.22%,55.56%,88.89%{transform:translate(-0.09px,-0.56px)}
+25.69%,59.03%,92.36%{transform:translate(0.05px,-0.47px)}
+29.86%,63.19%,96.53%{transform:translate(0.39px,-0.48px)}
+32.64%,65.97%,99.31%{transform:translate(0.67px,-0.42px)}
+35.42%,68.75%{transform:translate(0.94px,-0.22px)}
+38.89%,72.22%{transform:translate(1.18px,0.14px)}
+79.17%{transform:translate(0.58px,1px)}
+}
+      @keyframes lj-pos0 {
+0%,100%{transform:translate(1px,6.6px)}
+1.39%{transform:translate(1.79px,4.44px)}
+2.78%{transform:translate(2.57px,2.43px)}
+4.17%{transform:translate(3.35px,0.57px)}
+5.56%{transform:translate(4.12px,-1.13px)}
+6.94%{transform:translate(4.88px,-2.69px)}
+8.33%{transform:translate(5.61px,-4.09px)}
+9.72%{transform:translate(6.33px,-5.35px)}
+11.11%{transform:translate(7.03px,-6.45px)}
+12.5%{transform:translate(7.7px,-7.4px)}
+13.89%{transform:translate(8.35px,-8.2px)}
+15.28%{transform:translate(8.97px,-8.85px)}
+16.67%{transform:translate(9.55px,-9.34px)}
+18.06%{transform:translate(10.11px,-9.69px)}
+19.44%{transform:translate(10.63px,-9.89px)}
+20.83%{transform:translate(11.12px,-9.93px)}
+22.22%{transform:translate(11.58px,-9.82px)}
+23.61%{transform:translate(12.01px,-9.57px)}
+25%{transform:translate(12.4px,-9.16px)}
+26.39%{transform:translate(12.77px,-8.6px)}
+27.78%{transform:translate(13.1px,-7.88px)}
+29.17%{transform:translate(13.4px,-7.02px)}
+30.56%{transform:translate(13.68px,-6.01px)}
+31.94%{transform:translate(13.93px,-4.84px)}
+33.33%{transform:translate(14.16px,-3.53px)}
+34.72%{transform:translate(14.38px,-2.06px)}
+36.11%{transform:translate(14.57px,-0.44px)}
+37.5%{transform:translate(14.75px,1.33px)}
+38.89%{transform:translate(14.92px,3.25px)}
+40.28%{transform:translate(15.09px,5.32px)}
+41.67%{transform:translate(15.25px,7.54px)}
+42.36%{transform:translate(15.13px,7.82px)}
+43.06%{transform:translate(15.02px,8.03px)}
+43.75%{transform:translate(14.91px,8.17px)}
+44.44%{transform:translate(14.79px,8.25px)}
+45.14%{transform:translate(14.68px,8.25px)}
+45.83%{transform:translate(14.58px,8.19px)}
+46.53%{transform:translate(14.47px,8.07px)}
+47.92%{transform:translate(14.27px,7.65px)}
+49.31%{transform:translate(14.09px,7.01px)}
+50%{transform:translate(14px,6.6px)}
+51.39%{transform:translate(13.21px,4.44px)}
+52.78%{transform:translate(12.43px,2.43px)}
+54.17%{transform:translate(11.65px,0.57px)}
+55.56%{transform:translate(10.88px,-1.13px)}
+56.94%{transform:translate(10.13px,-2.69px)}
+58.33%{transform:translate(9.39px,-4.09px)}
+59.72%{transform:translate(8.67px,-5.35px)}
+61.11%{transform:translate(7.97px,-6.45px)}
+62.5%{transform:translate(7.3px,-7.4px)}
+63.89%{transform:translate(6.65px,-8.2px)}
+65.28%{transform:translate(6.03px,-8.85px)}
+66.67%{transform:translate(5.45px,-9.34px)}
+68.06%{transform:translate(4.89px,-9.69px)}
+69.44%{transform:translate(4.37px,-9.89px)}
+70.83%{transform:translate(3.88px,-9.93px)}
+72.22%{transform:translate(3.42px,-9.82px)}
+73.61%{transform:translate(2.99px,-9.57px)}
+75%{transform:translate(2.6px,-9.16px)}
+76.39%{transform:translate(2.23px,-8.6px)}
+77.78%{transform:translate(1.9px,-7.88px)}
+79.17%{transform:translate(1.6px,-7.02px)}
+80.56%{transform:translate(1.32px,-6.01px)}
+81.94%{transform:translate(1.07px,-4.84px)}
+83.33%{transform:translate(0.84px,-3.53px)}
+84.72%{transform:translate(0.63px,-2.06px)}
+86.11%{transform:translate(0.43px,-0.44px)}
+87.5%{transform:translate(0.25px,1.33px)}
+88.89%{transform:translate(0.08px,3.25px)}
+90.28%{transform:translate(-0.09px,5.32px)}
+91.67%{transform:translate(-0.25px,7.54px)}
+92.36%{transform:translate(-0.13px,7.82px)}
+93.06%{transform:translate(-0.02px,8.03px)}
+93.75%{transform:translate(0.09px,8.17px)}
+94.44%{transform:translate(0.21px,8.25px)}
+95.14%{transform:translate(0.32px,8.25px)}
+95.83%{transform:translate(0.42px,8.2px)}
+96.53%{transform:translate(0.53px,8.07px)}
+97.92%{transform:translate(0.73px,7.65px)}
+99.31%{transform:translate(0.91px,7.01px)}
+}
+      @keyframes lj-rot0 {
+0%{transform:rotate(0deg)}
+41.67%,50%,91.67%,100%{transform:rotate(360deg)}
+55.56%{transform:rotate(352.57deg)}
+59.72%{transform:rotate(350.05deg)}
+63.89%{transform:rotate(351.34deg)}
+68.75%{transform:rotate(356.91deg)}
+76.39%{transform:rotate(367.43deg)}
+80.56%{transform:rotate(369.95deg)}
+84.72%{transform:rotate(368.66deg)}
+89.58%{transform:rotate(363.09deg)}
+}
+      @keyframes lj-pos1 {
+0%,100%{transform:translate(5.45px,-9.34px)}
+1.39%{transform:translate(4.89px,-9.69px)}
+2.78%{transform:translate(4.37px,-9.89px)}
+4.17%{transform:translate(3.88px,-9.93px)}
+5.56%{transform:translate(3.42px,-9.82px)}
+6.94%{transform:translate(2.99px,-9.57px)}
+8.33%{transform:translate(2.6px,-9.16px)}
+9.72%{transform:translate(2.23px,-8.6px)}
+11.11%{transform:translate(1.9px,-7.88px)}
+12.5%{transform:translate(1.6px,-7.02px)}
+13.89%{transform:translate(1.32px,-6.01px)}
+15.28%{transform:translate(1.07px,-4.84px)}
+16.67%{transform:translate(0.84px,-3.53px)}
+18.06%{transform:translate(0.63px,-2.06px)}
+19.44%{transform:translate(0.43px,-0.44px)}
+20.83%{transform:translate(0.25px,1.33px)}
+22.22%{transform:translate(0.08px,3.25px)}
+23.61%{transform:translate(-0.09px,5.32px)}
+25%{transform:translate(-0.25px,7.54px)}
+25.69%{transform:translate(-0.13px,7.82px)}
+26.39%{transform:translate(-0.02px,8.03px)}
+27.08%{transform:translate(0.09px,8.17px)}
+27.78%{transform:translate(0.21px,8.25px)}
+28.47%{transform:translate(0.32px,8.25px)}
+29.17%{transform:translate(0.42px,8.2px)}
+29.86%{transform:translate(0.53px,8.07px)}
+31.25%{transform:translate(0.73px,7.65px)}
+32.64%{transform:translate(0.91px,7.01px)}
+33.33%{transform:translate(1px,6.6px)}
+34.72%{transform:translate(1.79px,4.44px)}
+36.11%{transform:translate(2.57px,2.43px)}
+37.5%{transform:translate(3.35px,0.57px)}
+38.89%{transform:translate(4.12px,-1.13px)}
+40.28%{transform:translate(4.87px,-2.69px)}
+41.67%{transform:translate(5.61px,-4.09px)}
+43.06%{transform:translate(6.33px,-5.35px)}
+44.44%{transform:translate(7.03px,-6.45px)}
+45.83%{transform:translate(7.7px,-7.4px)}
+47.22%{transform:translate(8.35px,-8.2px)}
+48.61%{transform:translate(8.97px,-8.85px)}
+50%{transform:translate(9.55px,-9.34px)}
+51.39%{transform:translate(10.11px,-9.69px)}
+52.78%{transform:translate(10.63px,-9.89px)}
+54.17%{transform:translate(11.12px,-9.93px)}
+55.56%{transform:translate(11.58px,-9.82px)}
+56.94%{transform:translate(12.01px,-9.57px)}
+58.33%{transform:translate(12.4px,-9.16px)}
+59.72%{transform:translate(12.77px,-8.6px)}
+61.11%{transform:translate(13.1px,-7.88px)}
+62.5%{transform:translate(13.4px,-7.02px)}
+63.89%{transform:translate(13.68px,-6.01px)}
+65.28%{transform:translate(13.93px,-4.84px)}
+66.67%{transform:translate(14.16px,-3.53px)}
+68.06%{transform:translate(14.38px,-2.06px)}
+69.44%{transform:translate(14.57px,-0.44px)}
+70.83%{transform:translate(14.75px,1.33px)}
+72.22%{transform:translate(14.92px,3.25px)}
+73.61%{transform:translate(15.09px,5.32px)}
+75%{transform:translate(15.25px,7.54px)}
+75.69%{transform:translate(15.13px,7.82px)}
+76.39%{transform:translate(15.02px,8.03px)}
+77.08%{transform:translate(14.91px,8.17px)}
+77.78%{transform:translate(14.79px,8.25px)}
+78.47%{transform:translate(14.68px,8.25px)}
+79.17%{transform:translate(14.58px,8.2px)}
+79.86%{transform:translate(14.47px,8.07px)}
+81.25%{transform:translate(14.27px,7.65px)}
+82.64%{transform:translate(14.09px,7.01px)}
+83.33%{transform:translate(14px,6.6px)}
+84.72%{transform:translate(13.21px,4.44px)}
+86.11%{transform:translate(12.43px,2.43px)}
+87.5%{transform:translate(11.65px,0.57px)}
+88.89%{transform:translate(10.88px,-1.13px)}
+90.28%{transform:translate(10.12px,-2.69px)}
+91.67%{transform:translate(9.39px,-4.09px)}
+93.06%{transform:translate(8.67px,-5.35px)}
+94.44%{transform:translate(7.97px,-6.45px)}
+95.83%{transform:translate(7.3px,-7.4px)}
+97.22%{transform:translate(6.65px,-8.2px)}
+98.61%{transform:translate(6.03px,-8.85px)}
+}
+      @keyframes lj-rot1 {
+0%,100%{transform:rotate(-8.23deg)}
+9.03%,49.31%{transform:rotate(9.37deg)}
+12.5%,45.83%{transform:rotate(13.31deg)}
+15.97%,42.36%{transform:rotate(13.69deg)}
+19.44%,38.89%{transform:rotate(10.4deg)}
+25%,33.33%,75%,83.33%{transform:rotate(0deg)}
+59.03%,99.31%{transform:rotate(-9.37deg)}
+62.5%,95.83%{transform:rotate(-13.31deg)}
+65.97%,92.36%{transform:rotate(-13.69deg)}
+69.44%,88.89%{transform:rotate(-10.4deg)}
+}
+      @keyframes lj-pos2 {
+0%,100%{transform:translate(14.16px,-3.53px)}
+1.39%{transform:translate(14.38px,-2.06px)}
+2.78%{transform:translate(14.57px,-0.44px)}
+4.17%{transform:translate(14.75px,1.33px)}
+5.56%{transform:translate(14.92px,3.25px)}
+6.94%{transform:translate(15.09px,5.32px)}
+8.33%{transform:translate(15.25px,7.54px)}
+9.03%{transform:translate(15.13px,7.82px)}
+9.72%{transform:translate(15.02px,8.03px)}
+10.42%{transform:translate(14.91px,8.17px)}
+11.11%{transform:translate(14.79px,8.25px)}
+11.81%{transform:translate(14.68px,8.25px)}
+12.5%{transform:translate(14.58px,8.19px)}
+13.19%{transform:translate(14.47px,8.07px)}
+14.58%{transform:translate(14.27px,7.65px)}
+15.97%{transform:translate(14.09px,7.01px)}
+16.67%{transform:translate(14px,6.6px)}
+18.06%{transform:translate(13.21px,4.44px)}
+19.44%{transform:translate(12.43px,2.43px)}
+20.83%{transform:translate(11.65px,0.57px)}
+22.22%{transform:translate(10.88px,-1.13px)}
+23.61%{transform:translate(10.12px,-2.69px)}
+25%{transform:translate(9.39px,-4.09px)}
+26.39%{transform:translate(8.67px,-5.35px)}
+27.78%{transform:translate(7.97px,-6.45px)}
+29.17%{transform:translate(7.3px,-7.4px)}
+30.56%{transform:translate(6.65px,-8.2px)}
+31.94%{transform:translate(6.03px,-8.85px)}
+33.33%{transform:translate(5.45px,-9.34px)}
+34.72%{transform:translate(4.89px,-9.69px)}
+36.11%{transform:translate(4.37px,-9.89px)}
+37.5%{transform:translate(3.88px,-9.93px)}
+38.89%{transform:translate(3.42px,-9.82px)}
+40.28%{transform:translate(2.99px,-9.57px)}
+41.67%{transform:translate(2.6px,-9.16px)}
+43.06%{transform:translate(2.23px,-8.6px)}
+44.44%{transform:translate(1.9px,-7.88px)}
+45.83%{transform:translate(1.6px,-7.02px)}
+47.22%{transform:translate(1.32px,-6.01px)}
+48.61%{transform:translate(1.07px,-4.84px)}
+50%{transform:translate(0.84px,-3.53px)}
+51.39%{transform:translate(0.63px,-2.06px)}
+52.78%{transform:translate(0.43px,-0.44px)}
+54.17%{transform:translate(0.25px,1.33px)}
+55.56%{transform:translate(0.08px,3.25px)}
+56.94%{transform:translate(-0.09px,5.32px)}
+58.33%{transform:translate(-0.25px,7.54px)}
+59.03%{transform:translate(-0.13px,7.82px)}
+59.72%{transform:translate(-0.02px,8.03px)}
+60.42%{transform:translate(0.09px,8.17px)}
+61.11%{transform:translate(0.21px,8.25px)}
+61.81%{transform:translate(0.32px,8.25px)}
+62.5%{transform:translate(0.42px,8.19px)}
+63.19%{transform:translate(0.53px,8.07px)}
+64.58%{transform:translate(0.73px,7.65px)}
+65.97%{transform:translate(0.91px,7.01px)}
+66.67%{transform:translate(1px,6.6px)}
+68.06%{transform:translate(1.79px,4.44px)}
+69.44%{transform:translate(2.57px,2.43px)}
+70.83%{transform:translate(3.35px,0.57px)}
+72.22%{transform:translate(4.12px,-1.13px)}
+73.61%{transform:translate(4.88px,-2.69px)}
+75%{transform:translate(5.61px,-4.09px)}
+76.39%{transform:translate(6.33px,-5.35px)}
+77.78%{transform:translate(7.03px,-6.45px)}
+79.17%{transform:translate(7.7px,-7.4px)}
+80.56%{transform:translate(8.35px,-8.2px)}
+81.94%{transform:translate(8.97px,-8.85px)}
+83.33%{transform:translate(9.55px,-9.34px)}
+84.72%{transform:translate(10.11px,-9.69px)}
+86.11%{transform:translate(10.63px,-9.89px)}
+87.5%{transform:translate(11.12px,-9.93px)}
+88.89%{transform:translate(11.58px,-9.82px)}
+90.28%{transform:translate(12.01px,-9.57px)}
+91.67%{transform:translate(12.4px,-9.16px)}
+93.06%{transform:translate(12.77px,-8.6px)}
+94.44%{transform:translate(13.1px,-7.88px)}
+95.83%{transform:translate(13.4px,-7.02px)}
+97.22%{transform:translate(13.68px,-6.01px)}
+98.61%{transform:translate(13.93px,-4.84px)}
+}
+      @keyframes lj-rot2 {
+0%{transform:rotate(348.59deg)}
+4.17%{transform:rotate(352.95deg)}
+8.33%,16.67%{transform:rotate(360deg)}
+58.33%,66.67%{transform:rotate(0deg)}
+72.22%{transform:rotate(8.92deg)}
+75.69%{transform:rotate(11.74deg)}
+79.17%{transform:rotate(11.41deg)}
+83.33%{transform:rotate(7.05deg)}
+92.36%{transform:rotate(-8.03deg)}
+95.83%,100%{transform:rotate(-11.41deg)}
+99.31%{transform:rotate(-11.74deg)}
+}
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Legs (planted) -->
+  <g id="legs" fill="#DE886D">
+    <rect x="3" y="11" width="1" height="4"/>
+    <rect x="5" y="11" width="1" height="4"/>
+    <rect x="9" y="11" width="1" height="4"/>
+    <rect x="11" y="11" width="1" height="4"/>
+  </g>
+
+  <!-- Body: bob on every catch, lean into each hand -->
+  <g class="body">
+    <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+    <!-- Eyes: narrowed, up, tracking the pattern -->
+    <g class="eyes-intro"><g class="eyes">
+      <g class="lid-intro"><g class="lid" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
+      </g></g>
+    </g></g>
+  </g>
+
+  <!-- Motion streaks (lagging copies of the screens) -->
+  <g class="ghosts-intro">
+      <g class="g0-0"><g class="gr0-0">
+        <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#40C4FF" opacity="0.22"/>
+      </g></g>
+      <g class="g0-1"><g class="gr0-1">
+        <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#40C4FF" opacity="0.1"/>
+      </g></g>
+      <g class="g1-0"><g class="gr1-0">
+        <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#40C4FF" opacity="0.22"/>
+      </g></g>
+      <g class="g1-1"><g class="gr1-1">
+        <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#40C4FF" opacity="0.1"/>
+      </g></g>
+      <g class="g2-0"><g class="gr2-0">
+        <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#40C4FF" opacity="0.22"/>
+      </g></g>
+      <g class="g2-1"><g class="gr2-1">
+        <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#40C4FF" opacity="0.1"/>
+      </g></g>
+  </g>
+
+  <!-- Laptops -->
+  <g>
+      <g class="pos0">
+        <g class="pop0"><g class="rot0">
+          <rect class="halo h0" x="-2.6" y="-2.2" width="5.2" height="3.6" fill="#40C4FF"/>
+          <rect x="-2" y="-1.8" width="4" height="2.8" fill="#455A64"/>
+          <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#1E1E2E"/>
+          <rect class="code c0a" x="-1.3" y="-1.1" width="1.6" height="0.4" fill="#4CAF50"/>
+          <rect class="code c0b" x="-0.9" y="-0.5" width="2" height="0.4" fill="#40C4FF"/>
+          <rect class="code c0c" x="-0.9" y="0.1" width="1.1" height="0.4" fill="#E0F7FA"/>
+          <rect class="cursor" x="0.4" y="0.1" width="0.4" height="0.4" fill="#E0F7FA"/>
+          <rect x="-2.3" y="1" width="4.6" height="0.8" fill="#90A4AE"/>
+          <rect x="-1.9" y="1.2" width="3.8" height="0.3" fill="#546E7A"/>
+          <rect x="1.4" y="1.25" width="0.3" height="0.2" fill="#69F0AE"/>
+        </g></g>
+        <g class="poof poof0" fill="#D7D7DC">
+          <rect x="-2.6" y="-2.4" width="0.5" height="0.5"/>
+          <rect x="2.2" y="-2.6" width="0.5" height="0.5"/>
+          <rect x="-2.8" y="1.6" width="0.5" height="0.5"/>
+          <rect x="2.4" y="1.8" width="0.5" height="0.5"/>
+        </g>
+      </g>
+      <g class="pos1">
+        <g class="pop1"><g class="rot1">
+          <rect class="halo h1" x="-2.6" y="-2.2" width="5.2" height="3.6" fill="#40C4FF"/>
+          <rect x="-2" y="-1.8" width="4" height="2.8" fill="#37474F"/>
+          <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#1E1E2E"/>
+          <rect class="code c1a" x="-1.3" y="-1.1" width="1.6" height="0.4" fill="#40C4FF"/>
+          <rect class="code c1b" x="-0.9" y="-0.5" width="2" height="0.4" fill="#4CAF50"/>
+          <rect class="code c1c" x="-0.9" y="0.1" width="1.1" height="0.4" fill="#E0F7FA"/>
+          <rect class="cursor" x="0.4" y="0.1" width="0.4" height="0.4" fill="#E0F7FA"/>
+          <rect x="-2.3" y="1" width="4.6" height="0.8" fill="#90A4AE"/>
+          <rect x="-1.9" y="1.2" width="3.8" height="0.3" fill="#546E7A"/>
+          <rect x="1.4" y="1.25" width="0.3" height="0.2" fill="#69F0AE"/>
+        </g></g>
+        <g class="poof poof1" fill="#D7D7DC">
+          <rect x="-2.6" y="-2.4" width="0.5" height="0.5"/>
+          <rect x="2.2" y="-2.6" width="0.5" height="0.5"/>
+          <rect x="-2.8" y="1.6" width="0.5" height="0.5"/>
+          <rect x="2.4" y="1.8" width="0.5" height="0.5"/>
+        </g>
+      </g>
+      <g class="pos2">
+        <g class="pop2"><g class="rot2">
+          <rect class="halo h2" x="-2.6" y="-2.2" width="5.2" height="3.6" fill="#40C4FF"/>
+          <rect x="-2" y="-1.8" width="4" height="2.8" fill="#607D8B"/>
+          <rect x="-1.6" y="-1.4" width="3.2" height="2" fill="#1E1E2E"/>
+          <rect class="code c2a" x="-1.3" y="-1.1" width="1.6" height="0.4" fill="#E0F7FA"/>
+          <rect class="code c2b" x="-0.9" y="-0.5" width="2" height="0.4" fill="#4CAF50"/>
+          <rect class="code c2c" x="-0.9" y="0.1" width="1.1" height="0.4" fill="#40C4FF"/>
+          <rect class="cursor" x="0.4" y="0.1" width="0.4" height="0.4" fill="#E0F7FA"/>
+          <rect x="-2.3" y="1" width="4.6" height="0.8" fill="#90A4AE"/>
+          <rect x="-1.9" y="1.2" width="3.8" height="0.3" fill="#546E7A"/>
+          <rect x="1.4" y="1.25" width="0.3" height="0.2" fill="#69F0AE"/>
+        </g></g>
+        <g class="poof poof2" fill="#D7D7DC">
+          <rect x="-2.6" y="-2.4" width="0.5" height="0.5"/>
+          <rect x="2.2" y="-2.6" width="0.5" height="0.5"/>
+          <rect x="-2.8" y="1.6" width="0.5" height="0.5"/>
+          <rect x="2.4" y="1.8" width="0.5" height="0.5"/>
+        </g>
+      </g>
+  </g>
+
+  <!-- Arms (follow the hand path; in front so they hold the laptops) -->
+  <g class="arm-l-intro"><g class="arm-l">
+    <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+  </g></g>
+  <g class="arm-r-intro"><g class="arm-r">
+    <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+  </g></g>
+</svg>

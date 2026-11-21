@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 3-Second Loop — Fake Nap: stands upright with his arms tucked
+         behind his back, eyes shut as flat lines, slow theatrical breathing.
+         Once per loop he holds his breath, ONE eye peeks open, glances
+         around, snaps shut, and he resumes "sleeping" with an innocent
+         little settle. Deliberately unlike the real sleep: no "z", not
+         squashed or lying down, arms not drooping. */
+      .action-body {
+        transform-origin: 7.5px 15px;
+        animation: nap-sway 3s infinite ease-in-out;
+      }
+
+      .breathe-anim {
+        transform-origin: 7.5px 13px;
+        animation: nap-breathe 3s infinite ease-in-out;
+      }
+
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: nap-shadow 3s infinite ease-in-out;
+      }
+
+      .arm-l {
+        animation: nap-arm-l 3s infinite ease-in-out;
+      }
+
+      .arm-r {
+        animation: nap-arm-r 3s infinite ease-in-out;
+      }
+
+      .eyes-shut {
+        animation: nap-shut-drift 3s infinite ease-in-out;
+      }
+
+      .lid-r {
+        animation: nap-lid-r 3s infinite step-end;
+      }
+
+      .peek-r {
+        opacity: 0;
+        animation: nap-peek-vis 3s infinite step-end;
+      }
+
+      .peek-open {
+        transform-origin: 10.5px 10px;
+        animation: nap-peek-open 3s infinite ease-in-out;
+      }
+
+      .peek-look {
+        animation: nap-peek-look 3s infinite ease-in-out;
+      }
+
+      /* --- Keyframes --- */
+
+      /* Tiny upright sway with the breath; still while peeking */
+      @keyframes nap-sway {
+        0%, 100% { transform: translate(0, 0) rotate(0deg); }
+        22% { transform: translate(0, 0) rotate(-1deg); }
+        44%, 66% { transform: translate(0, 0) rotate(0deg); }
+        70% { transform: translate(0.3px, 0) rotate(0.8deg); }
+        86% { transform: translate(0, 0) rotate(-0.8deg); }
+      }
+
+      /* Slow, exaggerated breathing; held during the peek; a quick
+         "innocent" settle squash right after the eye snaps shut */
+      @keyframes nap-breathe {
+        0% { transform: scale(1, 1); }
+        22% { transform: scale(0.975, 1.04); }
+        44% { transform: scale(1.025, 0.97); }
+        50%, 64% { transform: scale(1, 1.01); }
+        67% { transform: scale(1.04, 0.95); }
+        71% { transform: scale(0.99, 1.015); }
+        74% { transform: scale(1, 1); }
+        88% { transform: scale(0.975, 1.04); }
+        100% { transform: scale(1, 1); }
+      }
+
+      @keyframes nap-shadow {
+        0%, 50%, 62%, 74%, 100% { transform: scaleX(1); opacity: 0.5; }
+        22%, 88% { transform: scaleX(0.97); opacity: 0.48; }
+        44% { transform: scaleX(1.03); opacity: 0.52; }
+        66% { transform: scaleX(1.05); opacity: 0.53; }
+      }
+
+      /* Arms tucked behind the back (only the tips show); a tiny guilty
+         twitch while peeking */
+      @keyframes nap-arm-l {
+        0%, 100% { transform: translate(1px, 0); }
+        52%, 60% { transform: translate(1px, -0.5px); }
+        64% { transform: translate(1px, 0); }
+      }
+
+      @keyframes nap-arm-r {
+        0%, 100% { transform: translate(-1px, 0); }
+        52%, 60% { transform: translate(-1px, -0.5px); }
+        64% { transform: translate(-1px, 0); }
+      }
+
+      /* Shut eyes ride a little with the breath */
+      @keyframes nap-shut-drift {
+        0%, 100% { transform: translate(0, 0); }
+        22%, 88% { transform: translate(0, -0.3px); }
+        44% { transform: translate(0, 0.2px); }
+      }
+
+      /* Right lid line hides while that eye is open */
+      @keyframes nap-lid-r {
+        0% { opacity: 1; }
+        50% { opacity: 0; }
+        65% { opacity: 1; }
+      }
+
+      @keyframes nap-peek-vis {
+        0% { opacity: 0; }
+        50% { opacity: 1; }
+        65% { opacity: 0; }
+      }
+
+      /* The peeking eye opens slowly (sneaky), snaps shut fast */
+      @keyframes nap-peek-open {
+        0%, 50% { transform: scaleY(0.25); }
+        53.5% { transform: scaleY(0.6); }
+        55%, 63% { transform: scaleY(1); }
+        65%, 100% { transform: scaleY(0.25); }
+      }
+
+      /* ...and glances: towards you, to the side, back */
+      @keyframes nap-peek-look {
+        0%, 54% { transform: translate(0, 0); }
+        56%, 58% { transform: translate(-0.5px, 0); }
+        60%, 63% { transform: translate(0.5px, 0); }
+        65%, 100% { transform: translate(0, 0); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Static Legs (standing upright) -->
+  <g id="legs" fill="#DE886D">
+    <rect x="3" y="12" width="1" height="3"/>
+    <rect x="5" y="12" width="1" height="3"/>
+    <rect x="9" y="12" width="1" height="3"/>
+    <rect x="11" y="12" width="1" height="3"/>
+  </g>
+
+  <!-- Animated Upper Body -->
+  <g class="action-body">
+    <!-- Arms first so the torso covers them (tucked behind the back) -->
+    <g class="arm-l">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <g class="arm-r">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <g class="breathe-anim">
+      <!-- Torso -->
+      <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+      <!-- Eyes shut: flat lines -->
+      <g class="eyes-shut" fill="#000000">
+        <rect x="3.5" y="9" width="2" height="1"/>
+        <g class="lid-r">
+          <rect x="9.5" y="9" width="2" height="1"/>
+        </g>
+      </g>
+      <!-- The sneaky peeking eye -->
+      <g class="peek-r">
+        <g class="peek-look">
+          <g class="peek-open" fill="#000000">
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

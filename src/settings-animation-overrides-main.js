@@ -721,11 +721,16 @@ function createSettingsAnimationOverridesMain(options = {}) {
     themeOverrideMap = null
   ) {
     if (!Array.isArray(resolvedTiers)) return [];
+    const cpuIntensiveFiles = getActiveTheme()?.rendering?.cpuIntensiveFiles;
     return resolvedTiers.map((tier, index) => {
       const baseTier = Array.isArray(baseTiers) ? baseTiers[index] : null;
       // A multi-file tier shows (and overrides) the first file of its pool,
       // the same slot a multi-file state card uses.
       const tierFiles = getTierFiles(tier);
+      // Overrides replace only the first pool slot; any remaining costly file
+      // still needs the hint even when it is not the card's preview image.
+      const cpuIntensive = Array.isArray(cpuIntensiveFiles)
+        && tierFiles.some((file) => cpuIntensiveFiles.includes(file));
       const currentFile = tierFiles[0];
       const originalFile = (baseTier && baseTier.originalFile) || currentFile;
       const higherTier = index === 0 ? null : resolvedTiers[index - 1];
@@ -744,6 +749,7 @@ function createSettingsAnimationOverridesMain(options = {}) {
         minSessions: tier.minSessions,
         maxSessions,
         currentFile,
+        cpuIntensive,
         currentFileUrl: preview.fileUrl,
         currentFilePreviewUrl: preview.previewImageUrl,
         needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,

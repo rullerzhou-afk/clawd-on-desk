@@ -43,7 +43,7 @@ function assertLocaleObjectParity(locales, label) {
 }
 
 function loadSettingsI18nStrings() {
-  const source = fs.readFileSync(path.join(ROOT, "src", "settings-i18n.js"), "utf8");
+  const source = fs.readFileSync(path.join(ROOT, "src", "settings-i18n.js"), "utf8").replace(/\r\n/g, "\n");
   const context = {};
   context.globalThis = context;
   vm.runInNewContext(source, context);
@@ -709,4 +709,14 @@ describe("i18n locales", () => {
     assert.strictEqual(strings.zh.quotaRingProviderNoData, "当前没有额度数据。");
   });
 
+});
+
+it("issue #1351: all seven Settings languages provide the animation CPU hint", () => {
+  const strings = loadSettingsI18nStrings();
+  for (const lang of SUPPORTED_LANGS) {
+    assert.strictEqual(typeof strings[lang].animOverridesCpuIntensiveHint, "string", lang);
+    assert.ok(strings[lang].animOverridesCpuIntensiveHint.trim(), lang);
+  }
+  assert.strictEqual(strings.zh.animOverridesCpuIntensiveHint, "这一档包含更热闹的动画，可能多占一些 CPU。");
+  assert.strictEqual(strings.en.animOverridesCpuIntensiveHint, "This tier includes a busier animation that may use more CPU.");
 });

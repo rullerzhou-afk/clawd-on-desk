@@ -1,0 +1,244 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 3-Second Loop — Coffee: holds a tiny cream mug (a thin steam wisp
+         rising from it), glances at it, lifts it to his face and tilts it
+         for a sip with happily closed eyes (two little gulps), lowers it,
+         lets out a content little exhale with soft eyes and a gentle sway.
+         Starts and ends in the exact rest pose of clawd-idle-follow: the mug
+         pops into the hand with a tiny dust poof over the first ~10% and
+         poofs away the same way over the last ~10%. */
+      .action-body {
+        transform-origin: 7.5px 13px;
+        animation: coffee-body 3s infinite ease-in-out;
+      }
+
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: coffee-shadow 3s infinite ease-in-out;
+      }
+
+      .arm-l {
+        transform-origin: 1px 10px;
+        animation: coffee-arm-l 3s infinite ease-in-out;
+      }
+
+      .arm-r {
+        animation: coffee-arm-r 3s infinite ease-in-out;
+      }
+
+      .mug-tilt {
+        transform-origin: 14.5px 8px;
+        animation: coffee-tilt 3s infinite ease-in-out;
+      }
+
+      .mug-pop {
+        transform-origin: 14.5px 9px;
+        animation: coffee-mug-pop 3s infinite ease-out;
+      }
+
+      .poof {
+        transform-origin: 14.6px 7.8px;
+        opacity: 0;
+        animation: coffee-poof 3s infinite ease-out;
+      }
+
+      .steam-a {
+        opacity: 0;
+        animation: coffee-steam-a 3s infinite ease-out;
+      }
+
+      .steam-b {
+        opacity: 0;
+        animation: coffee-steam-b 3s infinite ease-out;
+      }
+
+      .eyes-look {
+        animation: coffee-look 3s infinite ease-in-out;
+      }
+
+      .eyes-lid {
+        transform-origin: 7.5px 10px;
+        animation: coffee-lid 3s infinite ease-in-out;
+      }
+
+      /* --- Keyframes --- */
+
+      /* Tiny anticipation, lean into the sip (tall), two gulps, then a
+         content exhale (squash) and a slow sway */
+      @keyframes coffee-body {
+        0%, 6% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+        12% { transform: translate(0, 0.2px) rotate(0deg) scale(1.03, 0.96); }
+        24% { transform: translate(0, -0.2px) rotate(0deg) scale(0.98, 1.03); }
+        30% { transform: translate(0, -0.2px) rotate(0deg) scale(0.97, 1.04); }
+        35% { transform: translate(0, 0) rotate(0deg) scale(1.01, 0.99); }
+        39% { transform: translate(0, -0.2px) rotate(0deg) scale(0.97, 1.04); }
+        43% { transform: translate(0, 0) rotate(0deg) scale(1.01, 0.99); }
+        47% { transform: translate(0, -0.2px) rotate(0deg) scale(0.98, 1.03); }
+        58% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+        64% { transform: translate(0, 0.4px) rotate(0deg) scale(1.05, 0.94); }
+        70% { transform: translate(0, 0) rotate(0deg) scale(1.01, 0.99); }
+        78% { transform: translate(0.3px, 0) rotate(1.5deg) scale(1.01, 0.99); }
+        88% { transform: translate(-0.3px, 0) rotate(-1deg) scale(1.01, 0.99); }
+        96%, 100% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+      }
+
+      @keyframes coffee-shadow {
+        0%, 6%, 58%, 96%, 100% { transform: scaleX(1) translate(0, 0); opacity: 0.5; }
+        12% { transform: scaleX(1.03) translate(0, 0); opacity: 0.5; }
+        64% { transform: scaleX(1.06) translate(0, 0); opacity: 0.55; }
+        78% { transform: scaleX(1.01) translate(0.3px, 0); opacity: 0.5; }
+        88% { transform: scaleX(1.01) translate(-0.3px, 0); opacity: 0.5; }
+      }
+
+      /* Free arm: a small relaxed lift while sipping */
+      @keyframes coffee-arm-l {
+        0%, 14%, 56%, 100% { transform: translate(0, 0); }
+        26%, 46% { transform: translate(0.3px, -0.6px); }
+        64% { transform: translate(0, 0.4px); }
+      }
+
+      /* Mug hand: catches the mug as it pops in, lift, carry the mug to the
+         face, hold for the sip, lower back to the side with a small settle,
+         a little bob as the mug poofs away */
+      @keyframes coffee-arm-r {
+        0% { transform: translate(0, 0); }
+        2.5% { transform: translate(0, 0.3px); }
+        5% { transform: translate(0, -0.4px); }
+        8% { transform: translate(0, 0); }
+        13% { transform: translate(0, 0.4px); }
+        18% { transform: translate(-1.5px, -1.2px); }
+        24% { transform: translate(-5.9px, 1.6px); }
+        27% { transform: translate(-6.6px, 2.4px); }
+        30%, 47% { transform: translate(-6.6px, 2.2px); }
+        51% { transform: translate(-5px, 0.6px); }
+        56% { transform: translate(-0.6px, -0.6px); }
+        60% { transform: translate(0, 0.3px); }
+        64%, 92% { transform: translate(0, 0); }
+        94.5% { transform: translate(0, -0.4px); }
+        97% { transform: translate(0, 0.2px); }
+        99%, 100% { transform: translate(0, 0); }
+      }
+
+      /* Mug appears with a springy scale-in on the hand, leaves the same way */
+      @keyframes coffee-mug-pop {
+        0%, 2% { transform: scale(0); opacity: 0; }
+        2.1% { transform: scale(0.2); opacity: 1; }
+        5% { transform: scale(1.25); opacity: 1; }
+        7% { transform: scale(0.92); opacity: 1; }
+        9%, 92% { transform: scale(1); opacity: 1; }
+        94% { transform: scale(1.2); opacity: 1; }
+        96.4% { transform: scale(0.2); opacity: 1; }
+        96.5%, 100% { transform: scale(0); opacity: 0; }
+      }
+
+      /* Tiny dust poof (four soft pixels puffing out and fading) */
+      @keyframes coffee-poof {
+        0%, 2% { transform: scale(0.5); opacity: 0; }
+        3% { transform: scale(0.8); opacity: 0.9; }
+        8%, 93.5% { transform: scale(1.8); opacity: 0; }
+        94.5% { transform: scale(0.8); opacity: 0.9; }
+        99.5%, 100% { transform: scale(1.8); opacity: 0; }
+      }
+
+      /* Mug tilts towards him for the sip (two gulps), back upright */
+      @keyframes coffee-tilt {
+        0%, 22%, 52%, 100% { transform: rotate(0deg); }
+        28% { transform: rotate(-24deg); }
+        33% { transform: rotate(-32deg); }
+        37% { transform: rotate(-26deg); }
+        41% { transform: rotate(-34deg); }
+        46% { transform: rotate(-24deg); }
+      }
+
+      /* Thin steam wisps: rise, drift and fade (paused during the sip) */
+      @keyframes coffee-steam-a {
+        0%, 6% { opacity: 0; transform: translate(0, 0.5px); }
+        9% { opacity: 0.75; transform: translate(0, 0); }
+        20% { opacity: 0; transform: translate(0.5px, -2.5px); }
+        62% { opacity: 0; transform: translate(0, 0.5px); }
+        67% { opacity: 0.75; transform: translate(0, 0); }
+        82% { opacity: 0; transform: translate(-0.5px, -2.5px); }
+        100% { opacity: 0; transform: translate(-0.5px, -2.5px); }
+      }
+
+      @keyframes coffee-steam-b {
+        0%, 9% { opacity: 0; transform: translate(0, 0.5px); }
+        12% { opacity: 0.6; transform: translate(0, 0); }
+        22% { opacity: 0; transform: translate(-0.5px, -2.3px); }
+        74% { opacity: 0; transform: translate(0, 0.5px); }
+        79% { opacity: 0.6; transform: translate(0, 0); }
+        91% { opacity: 0; transform: translate(0.5px, -2.3px); }
+        100% { opacity: 0; transform: translate(0.5px, -2.3px); }
+      }
+
+      /* Glance down at the mug, back to front during the sip, soft look */
+      @keyframes coffee-look {
+        0%, 4% { transform: translate(0, 0); }
+        9%, 15% { transform: translate(1px, 0.5px); }
+        22%, 100% { transform: translate(0, 0); }
+      }
+
+      /* Eyes close happily for the sip, reopen soft (half), slow blink */
+      @keyframes coffee-lid {
+        0%, 20%, 92%, 100% { transform: scaleY(1); }
+        26%, 50% { transform: scaleY(0.1); }
+        56% { transform: scaleY(0.4); }
+        64%, 76% { transform: scaleY(0.5); }
+        81%, 84% { transform: scaleY(0.1); }
+        88% { transform: scaleY(0.5); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Static Legs -->
+  <g id="legs" fill="#DE886D">
+    <rect x="3" y="12" width="1" height="3"/>
+    <rect x="5" y="12" width="1" height="3"/>
+    <rect x="9" y="12" width="1" height="3"/>
+    <rect x="11" y="12" width="1" height="3"/>
+  </g>
+
+  <!-- Animated Upper Body -->
+  <g class="action-body">
+    <!-- Torso -->
+    <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+    <!-- Left Arm -->
+    <g class="arm-l">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <!-- Eyes (lids close from the top) -->
+    <g class="eyes-look">
+      <g class="eyes-lid" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
+      </g>
+    </g>
+    <!-- Right Arm holding the mug (drawn in front so the mug reaches the face) -->
+    <g class="arm-r">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+      <!-- Steam wisps (thin, 1px, opacity only) -->
+      <rect class="steam-a" x="14" y="5" width="0.5" height="1" fill="#D7D7DC"/>
+      <rect class="steam-b" x="15" y="4.5" width="0.5" height="1" fill="#D7D7DC"/>
+      <!-- Tiny mug (pops in/out on the hand) -->
+      <g class="mug-pop">
+        <g class="mug-tilt">
+          <rect x="13.5" y="6.5" width="2" height="2.5" fill="#F4EEE4"/>
+          <rect x="15.5" y="7" width="0.7" height="1.5" fill="#D9CDBE"/>
+          <rect x="13.5" y="6.5" width="2" height="0.5" fill="#6F4A34"/>
+          <rect x="13.5" y="8.5" width="2" height="0.5" fill="#D9CDBE"/>
+        </g>
+      </g>
+      <!-- Dust poof -->
+      <g class="poof" fill="#D7D7DC">
+        <rect x="13" y="6.5" width="0.5" height="0.5"/>
+        <rect x="16" y="6" width="0.5" height="0.5"/>
+        <rect x="12.5" y="8.5" width="0.5" height="0.5"/>
+        <rect x="16.5" y="8.5" width="0.5" height="0.5"/>
+      </g>
+    </g>
+  </g>
+</svg>

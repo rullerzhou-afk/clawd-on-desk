@@ -251,6 +251,15 @@ function reportAttachmentCapability(fieldName, deriveCapability) {
 reportAttachmentCapability("accessories", themeSchema.deriveAccessoryCapability);
 reportAttachmentCapability("mouthAccessories", themeSchema.deriveMouthAccessoryCapability);
 
+// Report malformed cost hints before asset checks, rather than silently
+// accepting a declaration the runtime will reject.
+const cpuIntensiveSchemaErrors = themeSchema.validateTheme(raw)
+  .filter((message) => message.includes("rendering.cpuIntensiveFiles"));
+for (const message of cpuIntensiveSchemaErrors) {
+  console.log(`  ${FAIL} ${message}`);
+  errors++;
+}
+
 if (check(!!raw.states, "states object exists")) {
   for (const s of REQUIRED_STATES) {
     check(
@@ -317,6 +326,11 @@ check(assetsDirExists, `assets/ directory exists`);
 const referencedFiles = new Set(themeSchema.collectRequiredAssetFiles({
   ...raw, idleVisualOptions: undefined,
 }));
+// Cost hints may name assets outside the default visual bindings, but those
+// filenames must still resolve before a theme can be distributed.
+if (cpuIntensiveSchemaErrors.length === 0 && Array.isArray(raw.rendering?.cpuIntensiveFiles)) {
+  for (const file of raw.rendering.cpuIntensiveFiles) referencedFiles.add(file);
+}
 const idleVisualOptions = Object.prototype.hasOwnProperty.call(raw, "idleVisualOptions")
   ? themeSchema.normalizeIdleVisualOptions(raw.idleVisualOptions, (message) => warn(false, message))
   : [];

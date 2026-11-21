@@ -812,33 +812,38 @@ describe("setState() debounce", () => {
 
 describe("working sub-animations", () => {
   let api;
-  beforeEach(() => { api = require("../src/state")(makeCtx()); });
-  afterEach(() => { api.cleanup(); });
-
-  it("1 working session → typing SVG", () => {
-    api.sessions.set("s1", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "clawd-working-typing.svg");
+  let random;
+  beforeEach(() => {
+    random = mock.method(Math, "random", () => 0);
+    api = require("../src/state")(makeCtx());
   });
+  afterEach(() => { api.cleanup(); random.mock.restore(); });
 
-  it("2 working sessions → headphones groove SVG", () => {
-    api.sessions.set("s1", rawSession("working"));
-    api.sessions.set("s2", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "clawd-headphones-groove.svg");
-  });
-
-  it("3+ working sessions → building SVG", () => {
-    api.sessions.set("s1", rawSession("working"));
-    api.sessions.set("s2", rawSession("thinking"));
-    api.sessions.set("s3", rawSession("working"));
-    assert.strictEqual(api.getSvgOverride("working"), "clawd-working-building.svg");
-  });
+  for (const [count, files] of [
+    [1, ["clawd-working-typing.svg", "clawd-alive-work-coffee.svg"]],
+    [2, ["clawd-headphones-groove.svg", "clawd-alive-work-dual.svg"]],
+    [3, ["clawd-working-building.svg", "clawd-alive-work-trio.svg"]],
+    [4, ["clawd-alive-work-control-room.svg", "clawd-alive-work-swamped.svg"]],
+    [5, ["clawd-alive-work-chaos.svg"]],
+    [6, ["clawd-alive-work-chaos.svg"]],
+  ]) {
+    files.forEach((file, index) => {
+      it(`issue #1351: ${count} working sessions select ${file}`, () => {
+        random.mock.mockImplementation(() => index === 0 ? 0 : 0.99);
+        for (let n = 0; n < count; n++) {
+          api.sessions.set(`s${n}`, rawSession(n === 1 ? "thinking" : "working"));
+        }
+        assert.strictEqual(api.getSvgOverride("working"), file);
+      });
+    });
+  }
 
   it("1 juggling session → headphones groove SVG", () => {
     api.sessions.set("s1", rawSession("juggling"));
     assert.strictEqual(api.getSvgOverride("juggling"), "clawd-headphones-groove.svg");
   });
 
-  it("2+ juggling sessions → three-ball juggling SVG", () => {
+  it("2 juggling sessions → three-ball juggling SVG", () => {
     api.sessions.set("s1", rawSession("juggling"));
     api.sessions.set("s2", rawSession("juggling"));
     assert.strictEqual(api.getSvgOverride("juggling"), "clawd-working-juggling.svg");
@@ -855,8 +860,12 @@ describe("working sub-animations", () => {
 // api.sessions directly.
 describe("#862 juggling tier counts subagents, not sessions", () => {
   let api;
-  beforeEach(() => { api = require("../src/state")(makeCtx()); });
-  afterEach(() => { api.cleanup(); });
+  let random;
+  beforeEach(() => {
+    random = mock.method(Math, "random", () => 0);
+    api = require("../src/state")(makeCtx());
+  });
+  afterEach(() => { api.cleanup(); random.mock.restore(); });
 
   const GROOVE = "clawd-headphones-groove.svg";
   const JUGGLE = "clawd-working-juggling.svg";
@@ -1215,8 +1224,10 @@ describe("#862 juggling tier counts subagents, not sessions", () => {
 describe("#862 renderer tier timing", () => {
   let api;
   let changes;
+  let random;
 
   beforeEach(() => {
+    random = mock.method(Math, "random", () => 0);
     mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     changes = [];
     api = require("../src/state")(makeCtx({
@@ -1232,6 +1243,7 @@ describe("#862 renderer tier timing", () => {
   afterEach(() => {
     api.cleanup();
     mock.timers.reset();
+    random.mock.restore();
   });
 
   function native(event, child, state) {
