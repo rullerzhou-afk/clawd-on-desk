@@ -3,10 +3,6 @@
 // Registered in ~/.codebuddy/settings.json by hooks/codebuddy-install.js
 // CodeBuddy uses Claude Code-compatible hook format with identical event names.
 
-const fs = require("node:fs");
-const path = require("node:path");
-const { execFileSync } = require("node:child_process");
-
 const {
   postStateToRunningServer,
   readHostPrefix,
@@ -43,84 +39,78 @@ const EVENT_TO_LIFECYCLE = {
   SessionEnd: "end",
 };
 
-// CodeBuddy 5.x IDE and CodeBuddy CLI share the same harness. The hook payload
-// distinguishes them with client: "CodeBuddyIDE" vs "CLI" (bare CLI also omits
-// agent_type). Forward it so Clawd can choose an app-window focus target for
-// IDE conversations without confusing them with real terminal sessions.
-const SESSION_TITLE_MAX = 60;
-const PROMPT_TITLE_SECRET_RE = /\b(api[_-]?key|authorization|bearer|password|passwd|private[_-]?key|secret|token)\b|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|[A-Za-z0-9+/=_-]{32,}/i;
+// Session title handling mirrors the MiniMax hook: CodeBuddy reports no
+// guaranteed session title, so the HUD falls back to the first prompt line.
+// Truncation counts Unicode code points and includes the ellipsis in the limit,
+// so it never splits a surrogate pair. An input that already contains an
+// isolated surrogate is passed through as-is; this helper does not repair it.
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+const SESSION_TITLE_MAX = 80;
+const PROMPT_TITLE_MAX = 40;
+const PROMPT_TITLE_SECRET_RE =
+  /\b(api[_-]?key|authorization|bearer|password|passwd|private[_-]?key|secret|token)\b|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|[A-Za-z0-9+/=_-]{32,}/i;
 
-function deriveSessionTitle(hookName, payload) {
-  const rawTitle =
-    payload && typeof payload.session_title === "string" ? payload.session_title.trim() : "";
-  if (rawTitle) {
-    return rawTitle.length > SESSION_TITLE_MAX
-      ? rawTitle.slice(0, SESSION_TITLE_MAX - 1) + "\u2026"
-      : rawTitle;
-  }
-  if (hookName === "UserPromptSubmit" && payload && typeof payload.prompt === "string") {
-    for (const line of payload.prompt.split(/\r?\n/)) {
-      const candidate = line.trim();
-      if (candidate) {
-        if (PROMPT_TITLE_SECRET_RE.test(candidate)) return null;
-        return candidate.length > SESSION_TITLE_MAX
-          ? candidate.slice(0, SESSION_TITLE_MAX - 1) + "\u2026"
-          : candidate;
-      }
-    }
+function truncateTitle(text, maxLength) {
+  const points = Array.from(text);
+  return points.length > maxLength
+    ? `${points.slice(0, maxLength - 1).join("")}\u2026`
+    : text;
+}
+
+function normalizeTitle(value, maxLength = SESSION_TITLE_MAX) {
+  if (typeof value !== "string") return null;
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  return truncateTitle(collapsed, maxLength);
+}
+
+function looksSecretishPromptTitle(value) {
+  return typeof value === "string" && PROMPT_TITLE_SECRET_RE.test(value);
+}
+
+function extractPromptTitle(prompt) {
+  if (typeof prompt !== "string") return null;
+  for (const line of prompt.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (!candidate) continue;
+    // Judge the complete first prompt line before truncation, and never fall
+    // through to the next line once it looks like a secret.
+    if (looksSecretishPromptTitle(candidate)) return null;
+    return normalizeTitle(candidate, PROMPT_TITLE_MAX);
   }
   return null;
 }
 
-// Identify the CodeBuddy distribution that owns the hook process. Both release
-// and Insiders ship product.json next to the app bundle, so we can report the
-// exact bundle to activate and, when that build implements /conversation/open,
-// its system URL scheme without hard-coding install paths or protocol names.
-function readCodeBuddyAppInfo(command, fsApi = fs) {
-  const text = typeof command === "string" ? command : "";
-  const marker = text.indexOf(".app/");
-  if (marker < 1) return null;
-  let dir = text.slice(0, marker + 4);
-  for (let i = 0; i < 8 && dir; i++) {
-    const appRoot = path.posix.join(dir, "Contents", "Resources", "app");
-    try {
-      const product = JSON.parse(fsApi.readFileSync(path.posix.join(appRoot, "product.json"), "utf8"));
-      const value = product.urlProtocol;
-      if (typeof value !== "string" || !value.trim()) {
-        const parent = path.posix.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-        continue;
-      }
-      let urlScheme = null;
-      try {
-        const main = fsApi.readFileSync(path.posix.join(appRoot, "out", "main.js"), "utf8");
-        if (main.includes("/conversation/open")) urlScheme = value.trim();
-      } catch {}
-      return { bundlePath: dir, urlScheme };
-    } catch {}
-    const parent = path.posix.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
+// Return the title and whether it came from the prompt in the same decision, so
+// the wire marker can never disagree with the chosen title. A native title that
+// cleans down to nothing (for example control characters only) falls through to
+// the prompt and is then marked as prompt-derived.
+function resolveSessionTitle(payload, event) {
+  if (!payload || typeof payload !== "object") return { title: null, fromPrompt: false };
+  const sessionTitle = normalizeTitle(payload.session_title);
+  if (sessionTitle) return { title: sessionTitle, fromPrompt: false };
+  if (event === "UserPromptSubmit") {
+    const title = extractPromptTitle(payload.prompt);
+    return { title, fromPrompt: !!title };
   }
-  return null;
+  return { title: null, fromPrompt: false };
 }
 
 // Session metadata shared by IDE and CLI hooks. CodeBuddy 5.x IDE reports
 // client: "CodeBuddyIDE" while a bare CLI reports "CLI"; the marker is kept
 // sticky by the state machine so later tool/Stop events keep the focus carrier.
-function attachSessionMetadata(hookName, payload, body, { appInfo = null } = {}) {
+function attachSessionMetadata(hookName, payload, body) {
   const codebuddyClient = payload && typeof payload.client === "string"
     ? payload.client.trim()
     : "";
   if (codebuddyClient) body.codebuddy_client = codebuddyClient;
-  if (appInfo && appInfo.urlScheme) body.codebuddy_url_scheme = appInfo.urlScheme;
-  if (appInfo && appInfo.bundlePath) body.codebuddy_app_bundle = appInfo.bundlePath;
-  const sessionTitle = deriveSessionTitle(hookName, payload);
-  if (sessionTitle) {
-    body.session_title = sessionTitle;
-    body.session_title_from_prompt = !(payload && typeof payload.session_title === "string"
-      && payload.session_title.trim());
+  const { title, fromPrompt } = resolveSessionTitle(payload, hookName);
+  if (title) {
+    body.session_title = title;
+    body.session_title_from_prompt = fromPrompt;
   }
   if (payload && typeof payload.transcript_path === "string" && payload.transcript_path.trim()) {
     body.transcript_path = payload.transcript_path.trim();
@@ -247,20 +237,7 @@ function run() {
       const body = { state, session_id: sessionId, event };
       body.agent_id = "codebuddy";
       if (cwd) body.cwd = cwd;
-      let appInfo = null;
-      const isIdeHook = payload && typeof payload.client === "string"
-        && payload.client.trim() === "CodeBuddyIDE";
-      if (isIdeHook && !remote && process.platform === "darwin") {
-        let ancestorPid = process.ppid;
-        for (let depth = 0; depth < 6 && ancestorPid > 1 && !appInfo; depth++) {
-          try {
-            const ancestor = execFileSync("ps", ["-o", "comm=", "-p", String(ancestorPid)], { encoding: "utf8", timeout: 500 }).trim();
-            appInfo = readCodeBuddyAppInfo(ancestor);
-            ancestorPid = parseInt(execFileSync("ps", ["-o", "ppid=", "-p", String(ancestorPid)], { encoding: "utf8", timeout: 500 }).trim(), 10);
-          } catch { break; }
-        }
-      }
-      attachSessionMetadata(hookName, payload, body, { appInfo });
+      attachSessionMetadata(hookName, payload, body);
       if (remote) {
         body.host = readHostPrefix();
         applyWslSourceFields(body, { remote: true });
@@ -301,16 +278,13 @@ function run() {
 
 if (require.main === module) {
   run();
-} else if (safetyTimer) {
-  clearTimeout(safetyTimer);
-  _exited = true;
 }
 
 module.exports = {
-  HOOK_MAP,
-  stdoutForEvent,
-  deriveSessionTitle,
+  normalizeTitle,
+  extractPromptTitle,
+  resolveSessionTitle,
   attachSessionMetadata,
-  readCodeBuddyAppInfo,
   SESSION_TITLE_MAX,
+  PROMPT_TITLE_MAX,
 };

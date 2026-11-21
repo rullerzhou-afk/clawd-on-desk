@@ -4285,3 +4285,50 @@ describe("DeepSeek balance ingress", () => {
     }
   });
 });
+
+describe("PR #1386 follow-up: CodeBuddy client ingress", () => {
+  it("forwards codebuddy_client and drops the retired app fields", async () => {
+    const result = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "UserPromptSubmit",
+      agent_id: "codebuddy",
+      session_id: "codebuddy-client-forward",
+      codebuddy_client: "CodeBuddyIDE",
+      codebuddy_url_scheme: "codebuddycn",
+      codebuddy_app_bundle: "/Applications/CodeBuddy CN.app",
+    }));
+    const opts = result.calls.updateSession[0][3];
+    assert.equal(opts.codebuddyClient, "CodeBuddyIDE");
+    assert.equal(Object.hasOwn(opts, "codebuddyUrlScheme"), false);
+    assert.equal(Object.hasOwn(opts, "codebuddyAppBundle"), false);
+  });
+
+  it("forwards codebuddy_client for host and WSL rows too", async () => {
+    for (const source of [
+      { host: "remote-machine" },
+      { wsl_distro: "Ubuntu" },
+      { host: "wsl:Ubuntu", wsl_distro: "Ubuntu" },
+    ]) {
+      const result = await callStatePost(JSON.stringify({
+        state: "working",
+        event: "UserPromptSubmit",
+        agent_id: "codebuddy",
+        session_id: "codebuddy-client-source",
+        codebuddy_client: "CodeBuddyIDE",
+        ...source,
+      }));
+      assert.equal(result.calls.updateSession[0][3].codebuddyClient, "CodeBuddyIDE");
+    }
+  });
+
+  it("does not accept codebuddy_client from another agent", async () => {
+    const result = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "Stop",
+      agent_id: "codex",
+      session_id: "codex-not-codebuddy",
+      codebuddy_client: "CodeBuddyIDE",
+    }));
+    assert.equal(result.calls.updateSession[0][3].codebuddyClient, undefined);
+  });
+});

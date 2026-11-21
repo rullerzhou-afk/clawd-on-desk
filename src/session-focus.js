@@ -122,22 +122,19 @@ function getSessionFocusTarget(entry, options = {}) {
     return { canFocus: true, type: "dsh-desktop", url: dshDesktopUrl };
   }
 
-  // CodeBuddy 5.x IDE sessions are hosted by the CodeBuddy app, not by a
-  // terminal tab. Only builds that actually implement the conversation/open
-  // route report codebuddyUrlScheme; older 5.x, 4.x and the release build
-  // before that route ships fall back to app-window activation. Bare CLI
-  // reports client "CLI" and keeps the ordinary terminal focus path.
+  // CodeBuddy 5.x IDE sessions are hosted by the CodeBuddy app, not a terminal
+  // tab. Only a local macOS session with a recorded process can identify the
+  // running app at click time (that lookup also backs the terminal fallback),
+  // so every other platform keeps the pre-existing terminal/process path.
+  // Whether the build supports a conversation deep link is decided then too.
   if (entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
-    const scheme = typeof entry.codebuddyUrlScheme === "string"
-      ? entry.codebuddyUrlScheme.trim() : "";
-    const conversationId = typeof entry.rawSessionId === "string" && entry.rawSessionId.trim()
-      ? entry.rawSessionId.trim()
-      : (typeof entry.id === "string" ? entry.id : "");
-    if (/^[a-z0-9-]{1,64}$/i.test(scheme)
-      && /^[A-Za-z0-9_-]{1,128}$/.test(conversationId)) {
-      return { canFocus: true, type: "codebuddy-conversation", url: scheme + "://codebuddy-ide/conversation/open?id=" + conversationId };
+    const platform = normalizeOsPlatform(options) || process.platform;
+    if (platform === "darwin"
+      && Number.isSafeInteger(Number(entry.sourcePid)) && Number(entry.sourcePid) > 1
+      && !entry.wslDistro && entry.platform !== "wsl"
+      && !entry.headless) {
+      return { canFocus: true, type: "codebuddy-ide", url: null };
     }
-    return { canFocus: true, type: "codebuddy-ide", url: null };
   }
 
   if (entry.sourcePid) {
@@ -182,6 +179,19 @@ function getDirectSendFocusTarget(entry, options = {}) {
       type: "dsh-desktop",
       url: "dsh://open",
       reason: "dsh_desktop_requires_manual_paste",
+    };
+  }
+
+  // The CodeBuddy IDE is an app window, not a terminal: focus can land in the
+  // code editor instead of a composer that accepts injected text. Direct Send
+  // must therefore fall back to the clipboard for IDE sessions on every
+  // platform. A CLI session keeps the ordinary terminal/direct-send path.
+  if (entry && entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
+    return {
+      canFocus: false,
+      type: "codebuddy-ide",
+      url: null,
+      reason: "codebuddy_ide_requires_manual_paste",
     };
   }
 

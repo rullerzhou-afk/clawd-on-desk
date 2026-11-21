@@ -1493,9 +1493,7 @@ function createCard(session, now) {
     const button = document.createElement("button");
     button.type = "button";
     const focusTargetType = session.focusTarget && session.focusTarget.type;
-    button.textContent = focusTargetType === "codebuddy-conversation"
-      ? t("dashboardOpenCodeBuddy")
-      : focusTargetType === "codebuddy-ide"
+    button.textContent = focusTargetType === "codebuddy-ide"
       ? t("dashboardOpenCodeBuddy")
       : focusTargetType === "codex-app"
       ? t("dashboardOpenCodexApp")
