@@ -199,6 +199,22 @@ describe("buildStateBody adapter → shared resolver context (#634)", () => {
     const promptBody = buildStateBody("UserPromptSubmit", { session_id: "s", cwd: CWD }, capture(withHwnd({ foregroundWtHwnd: null })));
     assert.ok(!("wt_hwnd" in promptBody));
   });
+
+  // A non-Windows resolver returns terminal-first metadata with a DIFFERENT agent
+  // PID, so a platform-gate regression would show up here even though the real
+  // POSIX walk happens to anchor the agent at process.ppid.
+  for (const platform of ["darwin", "linux"]) {
+    it(`issue #1392: ${platform} desktop entrypoint keeps the resolver's stable PID`, () => {
+      const meta = { stablePid: 500, terminalPid: null, snapshotOk: true, agentPid: 600, agentCommandLine: "", headless: false, detectedEditor: null, pidChain: [], foregroundWtHwnd: null, tmuxSocket: null, tmuxClient: null, cacheSource: "fresh" };
+      const body = buildStateBody("PreToolUse", { session_id: "s", cwd: CWD }, capture(meta), {
+        env: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+        platform,
+      });
+      assert.strictEqual(body.claude_entrypoint, "claude-desktop");
+      assert.strictEqual(body.source_pid, 500, "only Windows rewrites the source PID");
+      assert.strictEqual(body.agent_pid, 600);
+    });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -618,3 +634,262 @@ describe("clawd-hook end-to-end with the real resolver — non-Windows", () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// issue #1392 — Windows Claude Desktop anchors on the bundled CLI agent PID
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DESKTOP_PID = 4021;
+const SIHOST_PID = 4022;
+const SVCHOST_PID = 4023;
+const WRAPPED_CLI_PID = 4010;
+const DESKTOP_CLI_CMD = "C:\\Users\\u\\AppData\\Local\\Claude-Data\\claude-code\\2.1.326\\claude.exe";
+
+// The two hook launch shapes the resolver walks from process.ppid:
+//   PowerShell — wrapper (ppid) -> CLI -> desktop -> sihost -> svchost
+//   direct     — CLI (ppid) -> desktop -> sihost -> svchost
+// In both, the CLI is the agent and the desktop window is its parent. sihost is
+// the last readable process before the svchost system boundary.
+function desktopChain({ wrapper = true, cliCommand = DESKTOP_CLI_CMD, includeAgent = true } = {}) {
+  const cliPid = wrapper ? WRAPPED_CLI_PID : PPID;
+  const procs = [];
+  if (wrapper) {
+    procs.push({
+      pid: PPID, name: "powershell.exe",
+      ppid: includeAgent ? cliPid : SIHOST_PID,
+      cmd: "powershell.exe -Command node clawd-hook.js",
+    });
+  }
+  if (includeAgent) {
+    procs.push({ pid: cliPid, name: "claude.exe", ppid: DESKTOP_PID, cmd: cliCommand });
+  }
+  procs.push({
+    pid: DESKTOP_PID, name: "claude.exe", ppid: SIHOST_PID,
+    cmd: "C:\\Program Files\\WindowsApps\\Claude\\app\\claude.exe",
+  });
+  procs.push({ pid: SIHOST_PID, name: "sihost.exe", ppid: SVCHOST_PID, cmd: "sihost.exe" });
+  procs.push({ pid: SVCHOST_PID, name: "svchost.exe", ppid: 0, cmd: "svchost.exe -k netsvcs" });
+  return { procs, cliPid };
+}
+
+describe("issue #1392: Windows Claude Desktop anchors on the CLI agent PID", () => {
+  let env;
+  before(() => { env = loadRealResolver({ platform: "win32" }); });
+  after(() => env.restore());
+
+  function withAlive(t, pids) {
+    const alive = new Set([process.pid, ...pids]);
+    t.mock.method(process, "kill", (pid, signal) => {
+      assert.strictEqual(signal, 0, "only liveness probes are allowed");
+      if (!alive.has(Number(pid))) throw Object.assign(new Error("mock dead process"), { code: "ESRCH" });
+      return true;
+    });
+    return alive;
+  }
+
+  function run(event, payload, { hookEnv = {}, platform = "win32", chain, resolve = env.makeResolve() } = {}) {
+    env.state.spawns = 0;
+    if (chain) env.state.snapshot = snapshotJson(chain.procs);
+    // Mirrors main(): SessionStart prewarms one no-arg snapshot, remote skips it.
+    if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+    const body = env.buildStateBody(event, payload, resolve, { env: hookEnv, platform });
+    return { body, spawns: env.state.spawns, resolve };
+  }
+
+  it("issue #1392: PowerShell SessionStart anchors source_pid and the v2 cache on the CLI", (t) => {
+    const chain = desktopChain({ wrapper: true });
+    withAlive(t, [chain.cliPid, DESKTOP_PID, SIHOST_PID]);
+    const sid = freshSid();
+    const { body, spawns } = run("SessionStart", { session_id: sid, cwd: CWD }, {
+      chain, hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(spawns, 1, "prewarm + start build = ONE snapshot");
+    assert.strictEqual(body.agent_pid, chain.cliPid);
+    assert.strictEqual(body.source_pid, chain.cliPid, "not the exiting PowerShell wrapper");
+    assert.strictEqual(body.claude_entrypoint, "claude-desktop");
+    const cached = pidCache.readPidCacheV2(NS, sid, CWD);
+    assert.ok(cached, "SessionStart wrote v2");
+    assert.strictEqual(cached.stablePid, chain.cliPid, "the cache anchor is the long-lived CLI");
+  });
+
+  it("issue #1392: direct-run SessionStart does not anchor on the desktop app's parent (sihost)", (t) => {
+    const chain = desktopChain({ wrapper: false });
+    withAlive(t, [chain.cliPid, DESKTOP_PID, SIHOST_PID]);
+    const sid = freshSid();
+    const { body } = run("SessionStart", { session_id: sid, cwd: CWD }, {
+      chain, hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(body.agent_pid, chain.cliPid);
+    assert.strictEqual(body.source_pid, chain.cliPid);
+    assert.notStrictEqual(body.source_pid, SIHOST_PID);
+    assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD).stablePid, chain.cliPid);
+  });
+
+  it("issue #1392: an ordinary event cold cache writes the CLI anchor too", (t) => {
+    const chain = desktopChain({ wrapper: true });
+    withAlive(t, [chain.cliPid, DESKTOP_PID, SIHOST_PID]);
+    const sid = freshSid();
+    const { body, spawns } = run("PostToolUse", { session_id: sid, cwd: CWD }, {
+      chain, hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(spawns, 1, "a cold ordinary event takes one fresh snapshot");
+    assert.strictEqual(body.agent_pid, chain.cliPid);
+    assert.strictEqual(body.source_pid, chain.cliPid);
+    assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD).stablePid, chain.cliPid,
+      "eventLifecycle writes the same CLI anchor as SessionStart");
+  });
+
+  it("issue #1392: a pre-upgrade cache hit is corrected to the agent without a snapshot", (t) => {
+    withAlive(t, [SIHOST_PID, WRAPPED_CLI_PID]);
+    const sid = freshSid();
+    // The shape an older hook left behind: both PIDs are alive, so every
+    // lifecycle would keep hitting this entry forever.
+    pidCache.writePidCacheV2(NS, sid, CWD, {
+      stablePid: SIHOST_PID, agentPid: WRAPPED_CLI_PID, headless: false, detectedEditor: null,
+    });
+    for (const event of ["PreToolUse", "UserPromptSubmit"]) {
+      const { body, spawns } = run(event, { session_id: sid, cwd: CWD }, {
+        hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+      });
+      assert.strictEqual(spawns, 0, `${event} hit must never spawn`);
+      assert.strictEqual(body.source_pid, WRAPPED_CLI_PID, `${event} reports the CLI, not sihost`);
+      assert.strictEqual(body.agent_pid, WRAPPED_CLI_PID);
+    }
+  });
+
+  it("issue #1392: a Windows terminal Claude session (cli / unset entrypoint) stays terminal-first", (t) => {
+    const chain = desktopChain({ wrapper: true });
+    withAlive(t, [chain.cliPid]);
+    for (const hookEnv of [{ CLAUDE_CODE_ENTRYPOINT: "cli" }, {}]) {
+      const { body } = run("PreToolUse", { session_id: freshSid(), cwd: CWD }, { chain, hookEnv });
+      assert.strictEqual(body.agent_pid, chain.cliPid);
+      assert.strictEqual(body.source_pid, PPID, "the terminal/wrapper anchor is unchanged");
+      assert.notStrictEqual(body.source_pid, chain.cliPid);
+    }
+  });
+
+  it("issue #1392: headless desktop session (claude -p) is not moved onto the agent", (t) => {
+    const chain = desktopChain({ wrapper: true, cliCommand: `${DESKTOP_CLI_CMD} --print` });
+    withAlive(t, [chain.cliPid]);
+    const { body } = run("PreToolUse", { session_id: freshSid(), cwd: CWD }, {
+      chain, hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(body.agent_pid, chain.cliPid);
+    assert.strictEqual(body.headless, true);
+    assert.strictEqual(body.source_pid, PPID, "headless keeps the terminal-first anchor");
+  });
+
+  it("issue #1392: a desktop snapshot without an agent falls back to stablePid", (t) => {
+    const chain = desktopChain({ wrapper: true, includeAgent: false });
+    withAlive(t, [DESKTOP_PID, SIHOST_PID]);
+    const sid = freshSid();
+    const { body } = run("PreToolUse", { session_id: sid, cwd: CWD }, {
+      chain, hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(body.source_pid, PPID, "the wrapper is still the best known anchor");
+    assert.ok(!("agent_pid" in body));
+    assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD), null, "a walk with no agent is not cacheable");
+  });
+
+  it("issue #1392: remote hooks still ship no PID fields", (t) => {
+    const hadRemote = process.env.CLAWD_REMOTE;
+    process.env.CLAWD_REMOTE = "1";
+    try {
+      withAlive(t, []);
+      const { body, spawns } = run("PreToolUse", { session_id: freshSid(), cwd: CWD }, {
+        hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+      });
+      assert.strictEqual(spawns, 0, "remote must not spawn");
+      assert.ok(!("source_pid" in body));
+      assert.ok(!("agent_pid" in body));
+      assert.strictEqual(typeof body.host, "string");
+    } finally {
+      if (hadRemote === undefined) delete process.env.CLAWD_REMOTE;
+      else process.env.CLAWD_REMOTE = hadRemote;
+    }
+  });
+
+  it("issue #1392: preferAgentPid stays opt-in per namespace (kimi ignored)", () => {
+    const chain = desktopChain({ wrapper: true });
+    env.state.snapshot = snapshotJson(chain.procs);
+    const meta = env.makeResolve()({
+      namespace: "kimi", sessionId: "other-adapter", cacheCwd: CWD,
+      cacheable: false, lifecycle: "start", preferAgentPid: true,
+    });
+    assert.strictEqual(meta.agentPid, chain.cliPid);
+    assert.strictEqual(meta.stablePid, PPID, "a non-whitelisted namespace keeps terminal-first");
+  });
+
+  it("issue #1392: the cached CLI anchor outlives the wrapper through event, prompt and end", (t) => {
+    const chain = desktopChain({ wrapper: true });
+    const alive = withAlive(t, [chain.cliPid, DESKTOP_PID, SIHOST_PID]);
+    alive.add(PPID);
+    const sid = freshSid();
+    const hookEnv = { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" };
+
+    const start = run("SessionStart", { session_id: sid, cwd: CWD }, { chain, hookEnv });
+    assert.strictEqual(start.spawns, 1, "SessionStart prewarm resolves exactly once");
+    assert.strictEqual(start.body.source_pid, chain.cliPid);
+
+    // The wrapper exits right after the hook returns.
+    alive.delete(PPID);
+    for (const event of ["PreToolUse", "UserPromptSubmit"]) {
+      const { body, spawns } = run(event, { session_id: sid, cwd: CWD }, { hookEnv });
+      assert.strictEqual(spawns, 0, `${event} hits the CLI-anchored cache with zero spawns`);
+      assert.strictEqual(body.source_pid, chain.cliPid);
+    }
+
+    const end = run("SessionEnd", { session_id: sid, cwd: CWD }, { hookEnv });
+    assert.strictEqual(end.spawns, 0);
+    assert.strictEqual(end.body.source_pid, chain.cliPid);
+    assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD), null, "SessionEnd drops the cache");
+  });
+
+  it("issue #1392: a cached headless session is not moved onto the agent either", (t) => {
+    withAlive(t, [SIHOST_PID, WRAPPED_CLI_PID]);
+    const sid = freshSid();
+    pidCache.writePidCacheV2(NS, sid, CWD, {
+      stablePid: SIHOST_PID, agentPid: WRAPPED_CLI_PID, headless: true, detectedEditor: null,
+    });
+    const { body, spawns } = run("PreToolUse", { session_id: sid, cwd: CWD }, {
+      hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" },
+    });
+    assert.strictEqual(spawns, 0);
+    assert.strictEqual(body.source_pid, SIHOST_PID, "the adapter honours the cached headless boolean");
+    assert.strictEqual(body.agent_pid, WRAPPED_CLI_PID);
+    assert.strictEqual(body.headless, true);
+  });
+
+  it("issue #1392: Cursor's imported hook never matches the desktop anchor", (t) => {
+    const chain = desktopChain({ wrapper: true });
+    withAlive(t, [chain.cliPid]);
+    const { body } = run("PreToolUse", {
+      session_id: freshSid(), cwd: CWD, cursor_version: "1.2.3",
+    }, { chain, hookEnv: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" } });
+    assert.strictEqual(body.agent_id, "cursor-agent");
+    assert.ok(!("claude_entrypoint" in body), "the entrypoint field is only written for claude-code");
+    assert.strictEqual(body.agent_pid, chain.cliPid);
+    assert.strictEqual(body.source_pid, PPID, "Cursor keeps the terminal-first anchor");
+  });
+});
+
+for (const platform of ["darwin", "linux"]) {
+  describe(`issue #1392: ${platform} Claude Desktop is unchanged`, () => {
+    let env;
+    before(() => { env = loadRealResolver({ platform }); });
+    after(() => env.restore());
+
+    it(`issue #1392: ${platform} keeps the terminal-first anchor even with the desktop token`, () => {
+      env.state.spawns = 0;
+      const body = env.buildStateBody(
+        "PreToolUse",
+        { session_id: freshSid(), cwd: CWD },
+        env.makeResolve(),
+        { env: { CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, platform },
+      );
+      assert.strictEqual(body.claude_entrypoint, "claude-desktop");
+      assert.strictEqual(body.source_pid, PPID);
+      assert.ok(!("agent_pid" in body));
+    });
+  });
+}

@@ -9,6 +9,7 @@ const {
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  getSessionFocusWtHwnd,
   isFocusableLocalHudSession,
   isKdeWaylandSession,
 } = require("../src/session-focus");
@@ -409,5 +410,17 @@ describe("session focus helpers", () => {
         osPlatform: "linux", env: unsupported,
       }).canFocus, false, String(version));
     }
+  });
+
+  it("issue #1392: Claude Desktop ignores a stored WT handle, other sessions keep it", () => {
+    assert.strictEqual(
+      getSessionFocusWtHwnd({ claudeEntrypoint: "claude-desktop", wtHwnd: "0x51" }),
+      null,
+      "the stored WT handle is only whatever terminal was foreground at event time"
+    );
+    assert.strictEqual(getSessionFocusWtHwnd({ claudeEntrypoint: "cli", wtHwnd: "0x51" }), "0x51");
+    assert.strictEqual(getSessionFocusWtHwnd({ wtHwnd: "0x51" }), "0x51");
+    assert.strictEqual(getSessionFocusWtHwnd({ claudeEntrypoint: "claude-desktop" }), null);
+    assert.strictEqual(getSessionFocusWtHwnd(null), undefined);
   });
 });
