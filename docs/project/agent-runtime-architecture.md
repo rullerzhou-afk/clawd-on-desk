@@ -383,6 +383,8 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → 同上状态机（agent_id: codebuddy）
   Hook 注册到 ~/.codebuddy/settings.json，格式与 Claude Code 完全兼容。
   command hook 对所有事件都输出 `{}`，不做工具或权限决定；阻塞式审批只走 PermissionRequest HTTP hook。
+  Windows 点击时从深层 agent-harness.exe 路径向上定位安装目录；harness 退出而 sourcePid 仍活时，
+  会话按普通会话超时退场，不立即删除。
 
 自定义 HTTP Agent（动态注册，state-only）：
   Settings 选择本机可执行文件

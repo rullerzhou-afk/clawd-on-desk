@@ -133,8 +133,10 @@ const config = getPlatformConfig({
 // a live agent PID the Windows PID cache is never written, so every
 // UserPromptSubmit (cache-only by design) reaches Clawd without a source PID and
 // a freshly started conversation cannot be focused until its first tool event.
-// agent-harness.exe lives for the IDE's chat session, the same lifetime the
-// cache needs; it is not a terminal, so terminal-first anchoring is unchanged.
+// The IDE's extension host owns agent-harness.exe: one process serves every
+// chat in the window and is replaced on a window reload or crash (its PID cache
+// entry then fails the liveness check). It is not a terminal, so terminal-first
+// anchoring is unchanged.
 const CODEBUDDY_AGENT_NAMES = Object.freeze({
   win: new Set(["codebuddy.exe", "agent-harness.exe"]),
   mac: new Set(["codebuddy"]),

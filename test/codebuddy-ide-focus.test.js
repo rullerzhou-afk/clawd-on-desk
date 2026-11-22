@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { execFileSync } = require("node:child_process");
 const { i18n } = require("../src/i18n");
 
 const {
@@ -113,6 +114,24 @@ function winCodeBuddyStats(appDir, mtimeMs = 1) {
 
 function winProcessLine(processId, image) {
   return `${processId}\t${image}`;
+}
+
+// A read of any path still yields a valid CodeBuddy app, so a rejection can
+// only come from the image-path guards, not from a missing fixture.
+function alwaysCodeBuddyWindowsFs() {
+  return {
+    promises: {
+      readFile: async (filePath) => String(filePath).endsWith("product.json")
+        ? JSON.stringify({ urlProtocol: "codebuddycn", nameShort: "CodeBuddy CN", applicationName: "buddycn" })
+        : "x/conversation/open/y",
+      stat: async () => ({ mtimeMs: 1 }),
+    },
+  };
+}
+
+function harnessImageFor(appDir) {
+  return `${appDir}\\resources\\app\\extensions\\genie\\harness\\node_modules`
+    + "\\@tencent-ai\\agent-harness-win32-x64\\bin\\agent-harness.exe";
 }
 
 describe("PR #1386 follow-up: CodeBuddy hook titles", () => {
@@ -609,6 +628,23 @@ describe("CodeBuddy Windows app lookup", () => {
     assert.deepEqual(result, { bundlePath: stableDir, urlScheme: "codebuddycn" });
   });
 
+  it("PR #1407 follow-up: matches the international CodeBuddy.exe main process", async () => {
+    const intlDir = "C:\\Program Files\\CodeBuddy";
+    const files = winCodeBuddyFiles(intlDir, {
+      protocol: "codebuddy",
+      nameShort: "CodeBuddy",
+      applicationName: "buddy",
+    });
+    const stats = winCodeBuddyStats(intlDir);
+    for (const image of [`${intlDir}\\CodeBuddy.exe`, `${intlDir}\\codebuddy.exe`]) {
+      const result = await findCodeBuddyWindowsApp([17], {
+        readImagePath: () => image,
+        fs: makeFs(files, stats),
+      });
+      assert.deepEqual(result, { bundlePath: intlDir, urlScheme: "codebuddy" }, image);
+    }
+  });
+
   it("reports no scheme for a build without the conversation route", async () => {
     const legacyDir = "C:\\Program Files\\CodeBuddy CN";
     const result = await findCodeBuddyWindowsApp([7], {
@@ -618,20 +654,145 @@ describe("CodeBuddy Windows app lookup", () => {
     assert.deepEqual(result, { bundlePath: legacyDir, urlScheme: null });
   });
 
-  it("rejects relative, UNC, non-normalized and non-exe images", async () => {
+  it("PR #1407 follow-up: rejects malformed images even when every read is a valid CodeBuddy app", async () => {
     for (const image of [
       "CodeBuddy CN\\CodeBuddy CN.exe",
       "\\\\server\\share\\CodeBuddy CN\\CodeBuddy CN.exe",
       "C:\\Apps\\..\\CodeBuddy CN\\CodeBuddy CN.exe",
       "C:/Apps/CodeBuddy CN/CodeBuddy CN.exe",
       `${stableDir}\\CodeBuddy CN.dll`,
+      `${stableDir}\\Code\tBuddy\\CodeBuddy CN.exe`,
     ]) {
       const result = await findCodeBuddyWindowsApp([5], {
-        execFile: makeExecFile({ stdout: `${winProcessLine(5, image)}\n` }),
-        fs: makeFs({}, {}),
+        readImagePath: () => image,
+        fs: alwaysCodeBuddyWindowsFs(),
       });
       assert.equal(result, null, image);
     }
+
+    const accepted = await findCodeBuddyWindowsApp([5], {
+      readImagePath: () => stableExe,
+      fs: alwaysCodeBuddyWindowsFs(),
+    });
+    assert.deepEqual(accepted, { bundlePath: stableDir, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: maps a deep agent-harness image to its install directory", async () => {
+    const root = "C:\\Users\\me\\AppData\\Local\\Programs\\CodeBuddy CN";
+    const result = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => harnessImageFor(root),
+      fs: makeFs(winCodeBuddyFiles(root), winCodeBuddyStats(root)),
+    });
+    assert.deepEqual(result, { bundlePath: root, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: matches the harness image without regard to case", async () => {
+    const root = "C:\\Program Files\\CodeBuddy CN Mixed Case";
+    const image = `${root}\\Resources\\App\\Extensions\\Genie\\Harness\\Agent-Harness.EXE`;
+    const result = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => image,
+      fs: makeFs(winCodeBuddyFiles(root), winCodeBuddyStats(root)),
+    });
+    assert.deepEqual(result, { bundlePath: root, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: supports an install directory with non-ASCII characters", async () => {
+    const root = "C:\\程序\\CodeBuddy CN";
+    const result = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => harnessImageFor(root),
+      fs: makeFs(winCodeBuddyFiles(root), winCodeBuddyStats(root)),
+    });
+    assert.deepEqual(result, { bundlePath: root, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: returns the versioned app directory that owns resources\\app", async () => {
+    const root = "C:\\Program Files\\CodeBuddy CN";
+    const appDir = `${root}\\abc123`;
+    const result = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => harnessImageFor(appDir),
+      fs: makeFs(winCodeBuddyFiles(appDir), winCodeBuddyStats(appDir)),
+    });
+    assert.deepEqual(result, { bundlePath: appDir, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: keeps an install directory that itself contains resources\\app", async () => {
+    const root = "C:\\Program Files\\resources\\app\\extensions\\CodeBuddy CN";
+    const files = winCodeBuddyFiles(root);
+    const stats = winCodeBuddyStats(root);
+
+    const harness = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => harnessImageFor(root),
+      fs: makeFs(files, stats),
+    });
+    assert.deepEqual(harness, { bundlePath: root, urlScheme: "codebuddycn" });
+
+    const main = await findCodeBuddyWindowsApp([8], {
+      readImagePath: () => `${root}\\CodeBuddy CN.exe`,
+      fs: makeFs(files, stats),
+    });
+    assert.deepEqual(main, { bundlePath: root, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: never climbs out of a non-harness exe under extensions", async () => {
+    const root = "C:\\Program Files\\CodeBuddy CN";
+    const helperDir = `${root}\\resources\\app\\extensions\\genie\\harness\\bin`;
+    const files = {
+      ...winCodeBuddyFiles(root),
+      ...winCodeBuddyFiles(helperDir),
+    };
+    const stats = {
+      ...winCodeBuddyStats(root, 10),
+      ...winCodeBuddyStats(helperDir, 20),
+    };
+    const result = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => `${helperDir}\\helper.exe`,
+      fs: makeFs(files, stats),
+    });
+    assert.deepEqual(result, { bundlePath: helperDir, urlScheme: "codebuddycn" });
+
+    const suffixDir = `${root}\\resources\\app\\extensions\\x`;
+    const suffixed = await findCodeBuddyWindowsApp([8], {
+      readImagePath: () => `${suffixDir}\\agent-harness.exe.helper.exe`,
+      fs: makeFs({
+        ...files,
+        ...winCodeBuddyFiles(suffixDir),
+      }, {
+        ...stats,
+        ...winCodeBuddyStats(suffixDir, 30),
+      }),
+    });
+    assert.deepEqual(suffixed, { bundlePath: suffixDir, urlScheme: "codebuddycn" });
+  });
+
+  it("PR #1407 follow-up: never climbs for an agent-harness.exe outside extensions", async () => {
+    const root = "C:\\Program Files\\CodeBuddy CN";
+    const binDir = `${root}\\bin`;
+    const files = {
+      ...winCodeBuddyFiles(root),
+      ...winCodeBuddyFiles(binDir),
+    };
+    const stats = {
+      ...winCodeBuddyStats(root, 10),
+      ...winCodeBuddyStats(binDir, 20),
+    };
+    const result = await findCodeBuddyWindowsApp([7], {
+      readImagePath: () => `${binDir}\\agent-harness.exe`,
+      fs: makeFs(files, stats),
+    });
+    assert.deepEqual(result, { bundlePath: binDir, urlScheme: "codebuddycn" });
+
+    const appBinDir = `${root}\\resources\\app\\bin`;
+    const underApp = await findCodeBuddyWindowsApp([8], {
+      readImagePath: () => `${appBinDir}\\agent-harness.exe`,
+      fs: makeFs({
+        ...files,
+        ...winCodeBuddyFiles(appBinDir),
+      }, {
+        ...stats,
+        ...winCodeBuddyStats(appBinDir, 30),
+      }),
+    });
+    assert.deepEqual(underApp, { bundlePath: appBinDir, urlScheme: "codebuddycn" });
   });
 
   it("returns null without valid PIDs, output or a CodeBuddy product", async () => {
@@ -726,6 +887,161 @@ describe("CodeBuddy Windows app lookup", () => {
   });
 });
 
+describe("PR #1407 follow-up: CodeBuddy Windows focus end to end", () => {
+  const stableDir = "C:\\Apps\\CodeBuddy CN";
+  const insidersDir = "C:\\Apps\\CodeBuddy CN Insiders";
+  const stableExe = `${stableDir}\\CodeBuddy CN.exe`;
+  const insidersExe = `${insidersDir}\\CodeBuddy CN Insiders.exe`;
+  const files = {
+    ...winCodeBuddyFiles(stableDir),
+    ...winCodeBuddyFiles(insidersDir, {
+      protocol: "codebuddycn-insiders",
+      nameShort: "CodeBuddy CN Insiders",
+      applicationName: "buddycn-insiders",
+    }),
+  };
+  const stats = {
+    ...winCodeBuddyStats(stableDir, 10),
+    ...winCodeBuddyStats(insidersDir, 20),
+  };
+
+  async function runFocus(entry, imageByPid) {
+    const calls = { external: [], terminal: [], logs: [], find: [] };
+    const result = focusCodeBuddyIdeTarget({
+      shell: {
+        openExternal(url) {
+          calls.external.push(url);
+          return Promise.resolve();
+        },
+      },
+      focusEntry: {
+        id: "codebuddy:cb",
+        rawSessionId: "abc-123",
+        agentId: "codebuddy",
+        codebuddyClient: "CodeBuddyIDE",
+        ...entry,
+      },
+      sessionId: "codebuddy:cb",
+      requestSource: "dashboard",
+      platform: "win32",
+      focusLog: (line) => calls.logs.push(line),
+      focusTerminalSession: () => {
+        calls.terminal.push("terminal");
+        return true;
+      },
+      findApp: (pids) => {
+        calls.find.push(pids);
+        return findCodeBuddyWindowsApp(pids, {
+          readImagePath: (processId) => imageByPid.get(processId) || null,
+          fs: makeFs(files, stats),
+        });
+      },
+    });
+    await result;
+    return calls;
+  }
+
+  it("PR #1407 follow-up: finds the right edition from source plus a deep harness after a Clawd restart", async () => {
+    const calls = await runFocus(
+      { sourcePid: 9001, agentPid: 9002 },
+      new Map([[9002, harnessImageFor(stableDir)]])
+    );
+    assert.deepEqual(calls.external, ["codebuddycn://codebuddy-ide/conversation/open?id=abc-123"]);
+    assert.equal(calls.terminal.length, 0);
+  });
+
+  it("PR #1407 follow-up: ignores a reused chain-head wrapper that now belongs to another edition", async () => {
+    const calls = await runFocus(
+      { pidChain: [9003, 9002], sourcePid: 9001, agentPid: 9002 },
+      new Map([
+        [9003, insidersExe],
+        [9001, stableExe],
+        [9002, harnessImageFor(stableDir)],
+      ])
+    );
+    assert.deepEqual(calls.external, ["codebuddycn://codebuddy-ide/conversation/open?id=abc-123"]);
+    assert.equal(calls.terminal.length, 0);
+  });
+
+  it("PR #1407 follow-up: ignores a reused harness PID while the original main process is alive", async () => {
+    const calls = await runFocus(
+      { pidChain: [9003, 9002], sourcePid: 9001, agentPid: 9002 },
+      new Map([
+        [9001, stableExe],
+        [9002, harnessImageFor(insidersDir)],
+      ])
+    );
+    assert.deepEqual(calls.external, ["codebuddycn://codebuddy-ide/conversation/open?id=abc-123"]);
+    assert.equal(calls.terminal.length, 0);
+  });
+});
+
+describe("PR #1407 follow-up: CodeBuddy macOS focus end to end", () => {
+  it("keeps the full chain so the inner Insiders app wins over the outer Stable app", async () => {
+    const insidersBundle = "/Applications/CodeBuddy CN Insiders.app";
+    const stableBundle = "/Applications/CodeBuddy CN.app";
+    const execFile = makeExecFile({
+      stdout: [
+        psLine(100, `${insidersBundle}/Contents/MacOS/CodeBuddy CN Insiders`),
+        psLine(200, `${stableBundle}/Contents/MacOS/CodeBuddy CN`),
+        "",
+      ].join("\n"),
+    });
+    const files = {
+      ...codeBuddyFiles(insidersBundle, {
+        protocol: "codebuddycn-insiders",
+        applicationName: "CodeBuddy CN Insiders",
+      }),
+      ...codeBuddyFiles(stableBundle),
+    };
+    const stats = {
+      ...codeBuddyStats(insidersBundle, 10),
+      ...codeBuddyStats(stableBundle, 20),
+    };
+    const external = [];
+    const terminals = [];
+    const result = focusCodeBuddyIdeTarget({
+      shell: {
+        openExternal(url) {
+          external.push(url);
+          return Promise.resolve();
+        },
+      },
+      focusEntry: {
+        id: "codebuddy:cb",
+        rawSessionId: "abc-123",
+        agentId: "codebuddy",
+        codebuddyClient: "CodeBuddyIDE",
+        pidChain: [100, 200],
+        sourcePid: 200,
+        agentPid: 100,
+      },
+      sessionId: "codebuddy:cb",
+      platform: "darwin",
+      focusLog: () => {},
+      focusTerminalSession: () => {
+        terminals.push("terminal");
+        return true;
+      },
+      findApp: (pids) => findCodeBuddyMacApp(pids, { execFile, fs: makeFs(files, stats) }),
+    });
+    await result;
+    assert.deepEqual(external, ["codebuddycn-insiders://codebuddy-ide/conversation/open?id=abc-123"]);
+    assert.equal(terminals.length, 0);
+  });
+});
+
+describe("PR #1407 follow-up: CodeBuddy Windows focus wiring", () => {
+  it("PR #1407 follow-up: uses the in-process image reader without spawning PowerShell", () => {
+    const script = path.join(__dirname, "helpers", "codebuddy-windows-focus-wiring.js");
+    const stdout = execFileSync(process.execPath, [script], { encoding: "utf8", timeout: 60_000 });
+    const parsed = JSON.parse(stdout);
+    assert.deepEqual(parsed.result, { bundlePath: "C:\\Apps\\CodeBuddy CN", urlScheme: "codebuddycn" });
+    assert.equal(parsed.execCalls, 0, "the in-process reader must replace the Get-Process spawn");
+    assert.deepEqual(parsed.closeCalls, [4242], "the Win32 handle must be closed");
+  });
+});
+
 describe("PR #1386 follow-up: CodeBuddy app activation", () => {
   const bundlePath = "/Applications/CodeBuddy CN.app";
 
@@ -770,6 +1086,7 @@ function runCodeBuddyTarget(overrides = {}) {
     },
     sessionId: "codebuddy:cb",
     requestSource: "dashboard",
+    platform: overrides.platform || "win32",
     focusLog: overrides.focusLog || ((line) => calls.logs.push(line)),
     focusTerminalSession: () => {
       calls.terminal.push("terminal");
@@ -912,19 +1229,61 @@ describe("PR #1386 follow-up: CodeBuddy click dispatch", () => {
     assert.equal(deepLink.calls.terminal.length, 0);
   });
 
-  it("queries PIDs in pidChain, sourcePid, agentPid order and deduplicates", async () => {
-    const { calls, result } = runCodeBuddyTarget({
+  it("PR #1407 follow-up: queries the agent's ancestors, then source, then the agent", async () => {
+    const cases = [
+      { name: "agent in the middle", pidChain: [9, 7, 5, 3], sourcePid: 7, agentPid: 5, expected: [3, 7, 5] },
+      { name: "agent at the chain head", pidChain: [5, 3, 2], sourcePid: 8, agentPid: 5, expected: [3, 2, 8, 5] },
+      { name: "agent at the chain tail", pidChain: [9, 7, 5], sourcePid: 8, agentPid: 5, expected: [8, 5] },
+      { name: "agent absent from the chain", pidChain: [9, 7], sourcePid: 8, agentPid: 5, expected: [8, 5] },
+      { name: "no agent", pidChain: [9, 7, 9], sourcePid: 7, expected: [9, 7] },
+      { name: "source equals agent", pidChain: [5, 3], sourcePid: 5, agentPid: 5, expected: [3, 5] },
+      { name: "no pids", pidChain: [9, 7], sourcePid: null, agentPid: null, expected: [9, 7] },
+    ];
+    for (const { name, expected, ...entry } of cases) {
+      const { calls, result } = runCodeBuddyTarget({
+        focusEntry: {
+          id: "codebuddy:cb",
+          rawSessionId: "abc-123",
+          agentId: "codebuddy",
+          ...entry,
+        },
+        app: { bundlePath: "/Applications/CodeBuddy CN.app", urlScheme: null },
+      });
+      await result;
+      assert.deepStrictEqual(calls.find[0], expected, name);
+    }
+
+    const darwin = runCodeBuddyTarget({
+      platform: "darwin",
       focusEntry: {
         id: "codebuddy:cb",
         rawSessionId: "abc-123",
         agentId: "codebuddy",
-        pidChain: [9, 7, 9, "x"],
-        sourcePid: 7,
+        pidChain: [9, 7, 5, 3],
+        sourcePid: 3,
         agentPid: 5,
       },
+      app: { bundlePath: "/Applications/CodeBuddy CN.app", urlScheme: null },
     });
-    await result;
-    assert.deepEqual(calls.find[0], [9, 7, 5]);
+    await darwin.result;
+    assert.deepStrictEqual(darwin.calls.find[0], [9, 7, 5, 3], "macOS keeps the full chain");
+
+    for (const pidChain of ["97", {}]) {
+      const darwinBadChain = runCodeBuddyTarget({
+        platform: "darwin",
+        focusEntry: {
+          id: "codebuddy:cb",
+          rawSessionId: "abc-123",
+          agentId: "codebuddy",
+          pidChain,
+          sourcePid: 8,
+          agentPid: 5,
+        },
+        app: { bundlePath: "/Applications/CodeBuddy CN.app", urlScheme: null },
+      });
+      await darwinBadChain.result;
+      assert.deepStrictEqual(darwinBadChain.calls.find[0], [8, 5], JSON.stringify(pidChain));
+    }
 
     const withoutChain = runCodeBuddyTarget({
       focusEntry: {
@@ -937,7 +1296,7 @@ describe("PR #1386 follow-up: CodeBuddy click dispatch", () => {
       app: { bundlePath: "/Applications/CodeBuddy CN.app", urlScheme: null },
     });
     await withoutChain.result;
-    assert.deepEqual(withoutChain.calls.find[0], [7, 5], "sourcePid must be tried before agentPid");
+    assert.deepStrictEqual(withoutChain.calls.find[0], [7, 5], "sourcePid must be tried before agentPid");
   });
 
   it("falls back to the terminal when app lookup throws or rejects", async () => {
@@ -1049,6 +1408,7 @@ describe("PR #1386 follow-up: main CodeBuddy dispatch wiring", () => {
     assert.equal(dispatched[0].openApp, openApp);
     assert.equal(dispatched[0].focusTerminalSession, focusTerminalSession);
     assert.equal(dispatched[0].requestSource, "dashboard");
+    assert.equal(dispatched[0].platform, "darwin");
   });
 
   it("uses the Windows finder and no app activation on a Windows host", () => {
@@ -1058,6 +1418,7 @@ describe("PR #1386 follow-up: main CodeBuddy dispatch wiring", () => {
     assert.equal(dispatched[0].findApp, findWindowsApp);
     assert.equal(Object.hasOwn(dispatched[0], "openApp"), false);
     assert.equal(dispatched[0].focusTerminalSession, focusTerminalSession);
+    assert.equal(dispatched[0].platform, "win32");
   });
 });
 
