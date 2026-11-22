@@ -71,6 +71,7 @@ if (_xwaylandRelaunch) {
 }
 
 const { clampTextScale, scaleWidth, scaleHeight, resolveTextScaleForKey } = require("./text-scale");
+const { estimateHostBootTimeMs } = require("./host-boot-time");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -212,7 +213,7 @@ const {
   getSessionFocusWtHwnd,
   mergeSessionFocusEntry,
 } = require("./session-focus");
-const { focusCodexThreadTarget, focusDshDesktopTarget } = require("./session-focus-handoff");
+const { focusCodexThreadTarget, focusDshDesktopTarget, focusCodeBuddyIdeTarget } = require("./session-focus-handoff");
 const { publishDshFocus } = require("./dsh-focus-stream");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
@@ -2955,6 +2956,8 @@ const {
   killFocusHelper,
   focusTerminalWindow,
   focusProcessAppWindow,
+  findCodeBuddyMacApp,
+  openCodeBuddyMacApp,
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
 } = _focus;
@@ -3019,6 +3022,20 @@ function focusDashboardSession(sessionId, options = {}) {
     return true;
   }
 
+  if (focusTarget.type === "codebuddy-ide") {
+    focusCodeBuddyIdeTarget({
+      shell,
+      focusEntry,
+      sessionId: id,
+      requestSource,
+      focusLog,
+      focusTerminalSession,
+      findApp: findCodeBuddyMacApp,
+      openApp: openCodeBuddyMacApp,
+    });
+    return true;
+  }
+
   if (focusTarget.type === "dsh-desktop" && focusTarget.url) {
     focusDshDesktopTarget({
       shell,
@@ -3039,7 +3056,7 @@ function focusDashboardSession(sessionId, options = {}) {
   if (focusEntry.platform === "webui") {
     focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
-    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
+    focusLog(`focus result branch=none reason=${focusTarget.reason || "no-source-pid"} source=${requestSource} sid=${id}`);
   }
   return false;
 }
@@ -3258,6 +3275,10 @@ getSessionHudWindow = _sessionHud.getWindow;
 getQuotaRingWindow = _sessionHud.getQuotaRingWindow;
 
 agentRuntime = createAgentRuntimeMain({
+  // Local rollout files survive a host reboot; their old unfinished turns do
+  // not prove a Codex client has started again in this boot. Null means no
+  // boundary (uptime unavailable) and must not block startup.
+  localCodexBootTimeMs: estimateHostBootTimeMs(),
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,

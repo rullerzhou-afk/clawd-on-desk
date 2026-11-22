@@ -9,7 +9,7 @@ const { i18n } = require("./i18n");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
 const { sessionAliasKey } = require("./session-alias");
 const { getOpencodeAttachTarget } = require("./opencode-attach-target");
-const { getSessionFocusTarget } = require("./session-focus");
+const { getSessionFocusTarget, hasLinuxTabTarget } = require("./session-focus");
 const {
   buildLatestLocalCodexProcessIds,
   isSupersededLocalCodexProcessSession,
@@ -526,7 +526,13 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     // terminal-tab switch lands after the window focus is confirmed, which
     // src/telegram-direct-send.js has to wait out before pasting.
     orcaPaneKey: (session && session.orcaPaneKey) || null,
+    // Recalculation only needs to know a pane/tab can be selected; raw targets
+    // stay out of the snapshot.
+    hasPaneFocusTarget: hasLinuxTabTarget(session, {
+      osPlatform: options.focusHostPlatform || options.osPlatform,
+    }),
     canFocus: focusTarget.canFocus === true,
+    focusUnavailableReason: focusTarget.reason || null,
     canOpenInTerminal: !!getOpencodeAttachTarget(session, options.platform || process.platform),
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
@@ -546,6 +552,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     ...(session && typeof session.codexClientEphemeral === "boolean"
       ? { codexClientEphemeral: session.codexClientEphemeral } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
+    codebuddyClient: (session && session.codebuddyClient) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
       ? session.assistantLastOutput
@@ -805,6 +812,7 @@ function sessionSnapshotSignature(snapshot) {
       planProgress: entry.planProgress || null,
       codexClientEphemeral: entry.codexClientEphemeral,
       dshCarrier: entry.dshCarrier,
+      codebuddyClient: entry.codebuddyClient,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,
       assistantLastOutputTruncated: !!entry.assistantLastOutputTruncated,

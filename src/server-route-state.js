@@ -556,6 +556,11 @@ function handleStatePost(req, res, options) {
       const codexClientEphemeral = readCodexClientEphemeral(data,
         agentId === "codex" && hookSource === "codex-official"
         && trustedProfileId === "local" && !host && !wslDistro);
+      // Only distinguishes an IDE conversation from a terminal; app ownership
+      // is verified at click time from the live process.
+      const codebuddyClient = agentId === "codebuddy" && typeof data.codebuddy_client === "string" && data.codebuddy_client.trim()
+        ? data.codebuddy_client.trim().slice(0, 64)
+        : null;
       const attachMetadata = agentId === "opencode" && hookSource === "opencode-plugin"
         && trustedProfileId === "local" && !host && !wslDistro && !headless
         && Object.hasOwn(data, "opencode_attach_url")
@@ -1256,6 +1261,7 @@ function handleStatePost(req, res, options) {
             codexOriginator,
             codexSource,
             dshCarrier,
+            ...(codebuddyClient ? { codebuddyClient } : {}),
             ghosttyTerminalId,
             displayHint: display_svg,
             sessionTitle,

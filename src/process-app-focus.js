@@ -1,10 +1,20 @@
 "use strict";
 
-// A PID is only a hint: it may have been reused. Activate only a verified
-// Codex Desktop GUI ancestor of its live app-server, never an arbitrary GUI.
+// Two kinds of app activation live here.
+//
+// Codex Desktop: a PID is only a hint because it may have been reused. Activate
+// only a verified desktop GUI ancestor of its live app-server, never an
+// arbitrary GUI.
+//
+// CodeBuddy IDE: the session's own process chain must still contain a running
+// CodeBuddy app bundle, and that bundle's product.json must name CodeBuddy. We
+// never guess a distribution by name or path. The app must be running when the
+// click looks it up; activation is app-level, and if it exits between the
+// lookup and `open` the system may still relaunch it.
 // This is app activation, not conversation selection or permission to paste.
 const pid = value => Number.isSafeInteger(Number(value)) && Number(value) > 1 ? Number(value) : null;
 const posix = require("node:path").posix;
+const fs = require("node:fs");
 
 function windowsProcessAppScript(sourcePid) {
   const source = pid(sourcePid);
@@ -188,4 +198,138 @@ function focusProcessAppWindow(request, { execFile, platform, windowsActivationC
   });
 }
 
-module.exports = { focusProcessAppWindow, windowsProcessAppScript, macCodexProcessTarget };
+// Takes the outermost `.app` bundle with the same `.app/Contents/` rule as
+// extractMacAppBundlePath in src/focus.js. This variant also rejects paths that
+// are not absolute, change under posix.normalize, or contain control characters.
+function codeBuddyBundlePathFromImage(image) {
+  const text = typeof image === "string" ? image.trim() : "";
+  if (!text.startsWith("/") || posix.normalize(text) !== text || /[\0\r\n]/.test(text)) return null;
+  const marker = text.indexOf(".app/Contents/");
+  return marker > 0 ? text.slice(0, marker + 4) : null;
+}
+
+function isCodeBuddyProduct(product) {
+  if (!product || typeof product !== "object" || Array.isArray(product)) return false;
+  return ["urlProtocol", "applicationName", "nameShort", "nameLong"].some((field) =>
+    typeof product[field] === "string" && product[field].toLowerCase().includes("codebuddy"));
+}
+
+async function statOrNull(fsApi, filePath) {
+  try {
+    return await fsApi.promises.stat(filePath);
+  } catch {
+    return null;
+  }
+}
+
+// The conversation route is a build capability. Keep one entry per bundle so an
+// app update cannot leave stale keys behind; a hit requires both mtimes and the
+// currently read urlProtocol to match, so a replaced or edited app is rechecked.
+const codeBuddyRouteCache = new Map();
+const CODEBUDDY_URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{0,63}$/;
+
+async function inspectCodeBuddyBundle(bundlePath, fsApi) {
+  const appRoot = posix.join(bundlePath, "Contents", "Resources", "app");
+  const productPath = posix.join(appRoot, "product.json");
+  const mainPath = posix.join(appRoot, "out", "main.js");
+  // Stat before reading so an update between the two cannot pair a stale
+  // protocol with fresh mtimes.
+  const [productStat, mainStat] = await Promise.all([
+    statOrNull(fsApi, productPath),
+    statOrNull(fsApi, mainPath),
+  ]);
+  let product;
+  try {
+    product = JSON.parse(await fsApi.promises.readFile(productPath, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isCodeBuddyProduct(product)) return null;
+
+  const urlProtocol = typeof product.urlProtocol === "string" ? product.urlProtocol.trim() : "";
+  const productMtimeMs = productStat ? productStat.mtimeMs : null;
+  const mainMtimeMs = mainStat ? mainStat.mtimeMs : null;
+  const cached = codeBuddyRouteCache.get(bundlePath);
+  if (cached
+    && cached.productMtimeMs === productMtimeMs
+    && cached.mainMtimeMs === mainMtimeMs
+    && cached.urlProtocol === urlProtocol) {
+    return { bundlePath, urlScheme: cached.urlScheme };
+  }
+
+  let urlScheme = null;
+  try {
+    const main = await fsApi.promises.readFile(mainPath, "utf8");
+    if (CODEBUDDY_URL_SCHEME_RE.test(urlProtocol) && main.includes("/conversation/open")) {
+      urlScheme = urlProtocol;
+    }
+  } catch {
+    // A temporary failure only downgrades this click to app activation. Do not
+    // cache it: the next click retries, and a late failure cannot replace the
+    // result of a concurrent successful read.
+    return { bundlePath, urlScheme: null };
+  }
+  codeBuddyRouteCache.set(bundlePath, { productMtimeMs, mainMtimeMs, urlProtocol, urlScheme });
+  return { bundlePath, urlScheme };
+}
+
+// Find the running CodeBuddy app that owns this session's process chain. The
+// caller supplies PIDs in priority order (hook walk outward, then source and
+// agent PIDs); the first image whose outer bundle is a verified CodeBuddy wins.
+function findCodeBuddyMacApp(pids, { execFile, fs: fsApi = fs } = {}) {
+  const candidates = Array.isArray(pids) ? pids : [];
+  if (!candidates.length) return Promise.resolve(null);
+  const output = new Promise((resolve) => {
+    try {
+      execFile("ps", ["-ww", "-o", "pid=,comm=", "-p", candidates.join(",")],
+        { timeout: 1000, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } },
+        (_error, stdout) => resolve(stdout));
+    } catch {
+      resolve(null);
+    }
+  });
+  return output.then(async (stdout) => {
+    // ps exits non-zero when one of the listed PIDs is already gone but still
+    // prints the live rows, so parse stdout regardless of the error.
+    const commByPid = new Map();
+    for (const line of String(stdout || "").split(/\r?\n/)) {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/);
+      if (match) commByPid.set(Number(match[1]), match[2]);
+    }
+    const seen = new Set();
+    for (const candidatePid of candidates) {
+      const bundlePath = codeBuddyBundlePathFromImage(commByPid.get(candidatePid));
+      if (!bundlePath || seen.has(bundlePath)) continue;
+      seen.add(bundlePath);
+      const info = await inspectCodeBuddyBundle(bundlePath, fsApi);
+      if (info) return info;
+    }
+    return null;
+  });
+}
+
+// Activate the verified bundle with one argv value, no shell. A successful
+// submission is not a confirmed foreground change (same contract as Codex
+// app activation), so callers must branch on `submitted`.
+function openCodeBuddyMacApp(bundlePath, { execFile } = {}) {
+  return new Promise((resolve) => {
+    try {
+      execFile("/usr/bin/open", [bundlePath], { timeout: 3000 }, (error) => {
+        resolve(error
+          ? { confirmed: false, submitted: false, reason: "codebuddy-app-activation-failed" }
+          : { confirmed: false, submitted: true, reason: "codebuddy-app-activation-submitted" });
+      });
+    } catch {
+      resolve({ confirmed: false, submitted: false, reason: "codebuddy-app-activation-failed" });
+    }
+  });
+}
+
+module.exports = {
+  CODEBUDDY_URL_SCHEME_RE,
+  focusProcessAppWindow,
+  findCodeBuddyMacApp,
+  openCodeBuddyMacApp,
+  windowsProcessAppScript,
+  macCodexProcessTarget,
+};

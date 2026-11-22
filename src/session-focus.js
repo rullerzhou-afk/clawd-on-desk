@@ -62,6 +62,28 @@ function hasSupportedHerdrPaneTarget(entry, options = {}) {
   return osPlatform === "darwin" || osPlatform === "linux";
 }
 
+// wmctrl and xdotool only see X11 windows. KWin scripting requires Plasma 6's
+// /Scripting/Script<id> path and windowList()/activeWindow API; other Wayland
+// desktops and older Plasma versions cannot raise native terminal windows (#1001).
+function isKdeWaylandSession(env = process.env) {
+  return env.XDG_SESSION_TYPE === "wayland"
+    && String(env.XDG_CURRENT_DESKTOP || "").split(":").some((name) => name.toUpperCase() === "KDE")
+    && /^\d+$/.test(env.KDE_SESSION_VERSION || "")
+    && Number(env.KDE_SESSION_VERSION) >= 6;
+}
+
+function canRaiseLinuxTerminalWindow(env = process.env) {
+  return env.XDG_SESSION_TYPE !== "wayland" || isKdeWaylandSession(env);
+}
+
+// A terminal pane or an editor terminal tab can still be selected when the window
+// itself cannot be raised.
+function hasLinuxTabTarget(entry, options = {}) {
+  return !!(entry && (entry.hasPaneFocusTarget === true
+    || entry.tmuxSocket || entry.tmuxClient || entry.editor
+    || hasSupportedHerdrPaneTarget(entry, options)));
+}
+
 // Claude Desktop sessions on Windows are reached through their bundled CLI's
 // parent chain. Any WT handle kept on such a session is just whatever terminal
 // happened to be foreground when an event arrived (for example a turn sent from
@@ -111,7 +133,27 @@ function getSessionFocusTarget(entry, options = {}) {
     return { canFocus: true, type: "dsh-desktop", url: dshDesktopUrl };
   }
 
+  // CodeBuddy 5.x IDE sessions are hosted by the CodeBuddy app, not a terminal
+  // tab. Only a local macOS session with a recorded process can identify the
+  // running app at click time (that lookup also backs the terminal fallback),
+  // so every other platform keeps the pre-existing terminal/process path.
+  // Whether the build supports a conversation deep link is decided then too.
+  if (entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
+    const platform = normalizeOsPlatform(options) || process.platform;
+    if (platform === "darwin"
+      && Number.isSafeInteger(Number(entry.sourcePid)) && Number(entry.sourcePid) > 1
+      && !entry.wslDistro && entry.platform !== "wsl"
+      && !entry.headless) {
+      return { canFocus: true, type: "codebuddy-ide", url: null };
+    }
+  }
+
   if (entry.sourcePid) {
+    if (normalizeOsPlatform(options) === "linux"
+      && !canRaiseLinuxTerminalWindow(options.env || process.env)
+      && !hasLinuxTabTarget(entry, options)) {
+      return { canFocus: false, type: null, url: null, reason: "linux-wayland-window-raise" };
+    }
     return { canFocus: true, type: "terminal", url: null };
   }
 
@@ -148,6 +190,19 @@ function getDirectSendFocusTarget(entry, options = {}) {
       type: "dsh-desktop",
       url: "dsh://open",
       reason: "dsh_desktop_requires_manual_paste",
+    };
+  }
+
+  // The CodeBuddy IDE is an app window, not a terminal: focus can land in the
+  // code editor instead of a composer that accepts injected text. Direct Send
+  // must therefore fall back to the clipboard for IDE sessions on every
+  // platform. A CLI session keeps the ordinary terminal/direct-send path.
+  if (entry && entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
+    return {
+      canFocus: false,
+      type: "codebuddy-ide",
+      url: null,
+      reason: "codebuddy_ide_requires_manual_paste",
     };
   }
 
@@ -193,6 +248,8 @@ module.exports = {
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
   getSessionFocusWtHwnd,
+  hasLinuxTabTarget,
   isDshDesktopSession,
   isFocusableLocalHudSession,
+  isKdeWaylandSession,
 };

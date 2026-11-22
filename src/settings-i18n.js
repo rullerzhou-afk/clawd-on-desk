@@ -9807,6 +9807,7 @@
     "hanzhe-one", "52mzd", "gzx19990101", "ypjn", "jin-codes", "LetitiaChan", "sanzanazaman",
     "zero-or-one", "integrasoft-c", "yunho09", "tianxingjian2406", "Aminorsh", "daijx-ai", "XYZliang",
     "sunfleeting-debug", "du-xinyi", "AllanOliveiraM", "RyanChenJJH", "alwinecor",
+    "rexxless", "commiyou", "richard-kramer",
   ];
 
   root.ClawdSettingsI18n = {

@@ -37,6 +37,11 @@ v1.6.0:
 - Second publication, rehearsed before tagging (`publish=true`, `initial=false`, main `e1bc1bf4`, same packages): [42438436616](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/42438436616), 54 seconds. `InRelease` got a new date, the package index was unchanged, and `verify-live` passed on a Raspberry Pi 5 (Debian 13).
 - Release event: `Request APT publication` [42442419574](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/42442419574) started the publisher [42442425294](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/42442425294) (58 seconds), and 1.6.0 was live about 30 seconds after the release. The source keeps 1.6.0, 1.5.0 and 1.4.0 and retired 1.3.0. The previous `Packages.gz` stayed available by hash, and `verify-live` reported version 1.6.0. The four-system upgrade acceptance was not rerun for this release.
 
+v1.7.0:
+
+- Second publication, rehearsed before tagging (`publish=true`, `initial=false`, main `5054fdf0`, same packages): [44879857715](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/44879857715), 74 seconds. `InRelease` got a new date, the package index was unchanged, and `verify-live` passed on a Raspberry Pi 5 (Debian 13).
+- Release event: `Request APT publication` [44885592121](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/44885592121) started the publisher [44885598204](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/44885598204) (61 seconds), and 1.7.0 was live about 35 seconds after the release. The source keeps 1.7.0, 1.6.0 and 1.5.0 and retired 1.4.0. The previous `Packages.gz` stayed available by hash, and `verify-live` reported version 1.7.0. The four-system upgrade acceptance was not rerun for this release.
+
 **Still to verify** (not yet done):
 
 - On a real Linux desktop: the update notification, the "Update with APT" button, and opening the guide.

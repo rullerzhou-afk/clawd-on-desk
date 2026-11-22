@@ -29,7 +29,7 @@ function makeFakeMonitorClass(instances) {
     constructor(agent, callback, options) {
       this.agent = agent;
       this.callback = callback;
-      this.options = options;
+      this.options = options || {};
       this.started = 0;
       this.stopped = 0;
       instances.push(this);
@@ -1891,6 +1891,66 @@ describe("agent-runtime-main", () => {
     }
   });
 
+  it("a recognized internal thread cannot recover a row from pending agent-exit evidence", () => {
+    const instances = [];
+    const alive = new Set([42]);
+    const harness = makeRealStateHarness({ ctxOverrides: {
+      processKill: (pid) => {
+        if (alive.has(pid)) return true;
+        const error = new Error("synthetic dead process");
+        error.code = "ESRCH";
+        throw error;
+      },
+    } });
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    try {
+      const rawSessionId = "codex:ambient-recovery";
+      const sessionId = localSessionKey(rawSessionId);
+      const transcriptPath = path.join(os.tmpdir(), "synthetic-internal-thread.jsonl");
+      const opts = {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId,
+        sourcePid: 42,
+        agentPid: 42,
+        transcriptPath,
+        turnId: "turn-1",
+      };
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", opts);
+      assert.ok(harness.state.sessions.has(sessionId));
+      alive.delete(42);
+      harness.state.cleanStaleSessions();
+      assert.strictEqual(harness.state.sessions.has(sessionId), false);
+      assert.strictEqual(
+        harness.state.hasRecoverableCodexProcessExit(sessionId, { turnId: "turn-1", transcriptPath }), true);
+
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+        ...opts,
+        codexInternalThread: CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+      });
+
+      monitor.options.onActivity(rawSessionId, "thinking", "event_msg:agent_reasoning", {
+        turnId: "turn-1", transcriptPath, recapOccurredAt: Date.now(),
+      });
+      assert.strictEqual(harness.state.sessions.has(sessionId), false, "internal work cannot recover a row");
+      assert.strictEqual(
+        harness.state.hasRecoverableCodexProcessExit(sessionId, { turnId: "turn-1", transcriptPath }), true,
+        "the recovery record is not consumed by a hidden thread");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
   it("issue #1073 follow-up: retires an ambient-suggestion row without completion, automation end, or recap", () => {
     const instances = [];
     const FakeMonitor = makeFakeMonitorClass(instances);
@@ -2956,6 +3016,69 @@ describe("agent-runtime-main", () => {
       await runtime.getCodexArchiveTracker().scanNow();
       assert.notStrictEqual(official("thinking", "UserPromptSubmit"), false);
       assert.ok(harness.state.sessions.get(id), "fresh activity after unarchive recreates the task");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("archive evidence revokes a rowless agent-exit recovery so unarchive cannot revive its old turn", async () => {
+    const { root, archiveDir } = makeTempArchiveHome();
+    const bare = ARCHIVE_UUID.d;
+    const raw = `codex:${bare}`;
+    const id = localSessionKey(raw);
+    const transcriptPath = path.join(root, "rollout-live.jsonl");
+    const alive = new Set([42]);
+    const harness = makeRealStateHarness({ ctxOverrides: {
+      processKill: (pid) => {
+        if (alive.has(pid)) return true;
+        const error = new Error("synthetic dead process");
+        error.code = "ESRCH";
+        throw error;
+      },
+    } });
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      loadCodexArchiveTracker: () => require("../src/codex-archive-tracker"),
+      codexArchiveOptions: {
+        codexHome: root,
+        setInterval: () => 0,
+        clearInterval: () => {},
+      },
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    try {
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", {
+        agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId: raw,
+        sourcePid: 42, agentPid: 42, transcriptPath, turnId: "A",
+      });
+      assert.ok(harness.state.sessions.has(id));
+      alive.delete(42);
+      harness.state.cleanStaleSessions();
+      assert.strictEqual(harness.state.sessions.has(id), false);
+      assert.strictEqual(
+        harness.state.hasRecoverableCodexProcessExit(id, { turnId: "A", transcriptPath }), true);
+
+      writeArchivedRollout(archiveDir, bare);
+      await runtime.getCodexArchiveTracker().scanNow();
+      assert.strictEqual(
+        harness.state.hasRecoverableCodexProcessExit(id, { turnId: "A", transcriptPath }), false,
+        "archive evidence revokes the outliving recovery record");
+      assert.strictEqual(runtime.getCodexTurnFenceSnapshot(id), null,
+        "archive evidence also clears the retired turn's fence");
+      fs.unlinkSync(path.join(archiveDir, `rollout-2026-03-25T15-10-51-${bare}.jsonl`));
+      await runtime.getCodexArchiveTracker().scanNow();
+
+      monitor.options.onActivity(raw, "thinking", "event_msg:agent_reasoning", {
+        turnId: "A", transcriptPath, recapOccurredAt: Date.now(),
+      });
+      assert.strictEqual(harness.state.sessions.has(id), false, "a retired turn cannot come back after unarchive");
     } finally {
       runtime.cleanup();
       harness.state.cleanup();

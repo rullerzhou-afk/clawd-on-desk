@@ -84,7 +84,7 @@ function copyRasterToCache(sourceAbs, destAbs, stat) {
   }
 }
 
-function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
+function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs, requireCompleteAssets = false) {
   let changed = false;
   const missing = [];
   const referenced = new Set(rasterRefs.keys());
@@ -144,6 +144,7 @@ function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
       changed = true;
     } catch (e) {
       console.error(`[theme-loader] Failed to cache raster ${ref.sourceRel} for theme "${themeId}":`, e.message);
+      if (requireCompleteAssets) missing.push(ref.sourceRel);
       removeCachedRaster(cacheDir, destRel);
       if (cacheMeta.rasters[destRel]) {
         delete cacheMeta.rasters[destRel];
@@ -164,9 +165,8 @@ function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
 
 function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
   const strict = !!(opts && opts.strict);
-  // Dark appearance has to detect missing rasters even on the lenient startup
-  // path; the light appearance keeps the historical "strict only" behavior.
-  const requireRasterDependencies = !!(opts && opts.requireRasterDependencies);
+  // Dark appearance needs a complete cache. Light appearance keeps best-effort caching.
+  const requireCompleteAssets = !!(opts && opts.requireCompleteAssets);
   const themeCacheDir = opts && opts.themeCacheDir;
   const sourceAssetsDir = (opts && opts.sourceAssetsDir) || externalAssetsSourceDir(themeDir);
   // The light appearance keeps its historical cache directory and meta name.
@@ -236,15 +236,21 @@ function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
             rasterRefs.set(ref.destRel, ref);
           }
         } catch (e) {
+          if (requireCompleteAssets) {
+            const error = new Error(`Failed to cache SVG "${file}": ${e?.message ?? String(e)}`, { cause: e });
+            error.code = e?.code;
+            throw error;
+          }
           console.error(`[theme-loader] Failed to sanitize ${file}:`, e.message);
         }
       }
     }
   } catch (e) {
+    if (requireCompleteAssets) throw e;
     console.error(`[theme-loader] Failed to scan assets for theme "${themeId}":`, e.message);
   }
 
-  const rasterCopyResult = syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs);
+  const rasterCopyResult = syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs, requireCompleteAssets);
   if (rasterCopyResult.changed) metaChanged = true;
 
   if (metaChanged) {
@@ -253,7 +259,7 @@ function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
     } catch {}
   }
 
-  if ((strict || requireRasterDependencies) && rasterCopyResult.missing.length > 0) {
+  if ((strict || requireCompleteAssets) && rasterCopyResult.missing.length > 0) {
     const error = new Error(
       `Theme "${themeId}" missing raster dependencies: ${rasterCopyResult.missing.join(", ")}`
     );

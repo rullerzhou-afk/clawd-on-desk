@@ -433,20 +433,31 @@ function createAgentRuntimeMain(options = {}) {
       && (session.profileId || "local") === "local"
       && !session.host
       && !session.wslDistro
+      && String(session.platform || "").trim().toLowerCase() !== "wsl"
     );
   }
 
   function collectLiveLocalCodexCandidates() {
     const state = getStateRuntime();
     const sessions = state && state.sessions;
-    const out = [];
-    if (!sessions || typeof sessions.forEach !== "function") return out;
-    sessions.forEach((session, id) => {
-      if (!isLocalCodexSessionRecord(session)) return;
-      const raw = bareCodexSessionId(session.rawSessionId || id);
-      if (raw) out.push(raw);
-    });
-    return out;
+    const out = new Set();
+    if (sessions && typeof sessions.forEach === "function") {
+      sessions.forEach((session, id) => {
+        if (!isLocalCodexSessionRecord(session)) return;
+        const raw = bareCodexSessionId(session.rawSessionId || id);
+        if (raw) out.add(raw);
+      });
+    }
+    // An agent-exit sweep can retire the row while its recovery evidence still
+    // outlives it. That id must still be checked for archive evidence, or a
+    // later unarchive would let the old turn restore the row.
+    if (typeof state?.listRecoverableCodexRawSessionIds === "function") {
+      for (const value of state.listRecoverableCodexRawSessionIds()) {
+        const raw = bareCodexSessionId(value);
+        if (raw) out.add(raw);
+      }
+    }
+    return [...out];
   }
 
   function retireArchivedCodexSession(sessionId) {
@@ -514,6 +525,18 @@ function createAgentRuntimeMain(options = {}) {
     let retired = false;
     for (const id of targets) {
       if (retireArchivedCodexSession(id)) retired = true;
+    }
+    // An agent-exit sweep may already have removed the row while its recovery
+    // tuple and turn fence outlive it. Archive evidence must revoke those too,
+    // or unarchive plus a late same-turn record would rebuild the task.
+    const bareArchiveId = bareCodexSessionId(rawArchiveId);
+    if (bareArchiveId) {
+      const localId = resolveSessionIdentity(`codex:${bareArchiveId}`, "local").sessionId;
+      if (typeof state.forgetCodexProcessExit === "function"
+        && state.forgetCodexProcessExit(localId)) {
+        clearCodexSessionTracking(localId);
+        retired = true;
+      }
     }
     return retired;
   }
@@ -743,6 +766,19 @@ function createAgentRuntimeMain(options = {}) {
     const sessionBeforeUpdate = event === "SessionEnd" && sessions && typeof sessions.get === "function"
       ? sessions.get(sessionId)
       : null;
+    if (isLocalOfficialCodexEvent && event === "SessionStart" && state === "idle"
+      && shouldHoldRetiredCodexInitialization(sessionId, opts, stateRuntime)) {
+      // agent-exit retired the row but not this open turn. Initialization is
+      // not new activity: stash its process/focus metadata on the recovery
+      // record until real progress restores the row and reattaches it.
+      const heldTurnId = normalizeCodexTurnId(opts.turnId)
+        || codexTurnFence.getSnapshot(sessionId)?.currentTurnId;
+      stateRuntime.retainCodexInitializationForRecovery?.(sessionId, {
+        ...opts, turnId: heldTurnId,
+      });
+      debugLog(`codex-initialization defer-retired sid=${String(sessionId).replace(/[\r\n]/g, "_")}`);
+      return true;
+    }
     // Initialization can arrive after the fallback already accepted this turn.
     // Keep its real phase/clock; valid initialization metadata still belongs to
     // the conversation. New/closed owners and compaction keep their lifecycle path.
@@ -806,6 +842,19 @@ function createAgentRuntimeMain(options = {}) {
     if (qoderDesktop) enrichQoderSessionTitle(sessionId, event, opts, qoderDesktop);
     enrichWorkBuddySessionTitle(sessionId, event, opts);
     return result;
+  }
+
+  function shouldHoldRetiredCodexInitialization(sessionId, opts, stateRuntime) {
+    if (!isAgentEnabled("codex") || !stateRuntime
+      || typeof stateRuntime.hasRecoverableCodexProcessExit !== "function"
+      || stateRuntime.sessions?.has(sessionId)
+      || opts.headless || opts.subagentId || opts.subagentType || opts.recapIsSubagent) return false;
+    const owner = codexTurnFence.getSnapshot(sessionId);
+    const turnId = normalizeCodexTurnId(opts.turnId) || owner?.currentTurnId;
+    return !!owner && !owner.terminalLatch && !!turnId && owner.currentTurnId === turnId
+      && stateRuntime.hasRecoverableCodexProcessExit(sessionId, {
+        turnId, transcriptPath: opts.transcriptPath, allowMissingInitializerPath: true,
+      });
   }
 
   function shouldPreserveCodexInitialization(sessionId, opts, stateRuntime) {
@@ -1005,28 +1054,52 @@ function createAgentRuntimeMain(options = {}) {
     );
   }
 
-  function touchLocalCodexProgress(sessionId, activityState, activity) {
+  function touchLocalCodexProgress(sessionId, activityState, activity, event) {
     if (!activity || activity.headless === true
       || !CODEX_WORKING_LIKE_STATES.has(activityState)
       || !Number.isSafeInteger(activity.recapOccurredAt)
       || activity.recapOccurredAt < 0 || activity.recapOccurredAt > now() + 1500) return false;
     const state = getStateRuntime();
     const session = state?.sessions?.get(sessionId);
-    if (!isLocalCodexSessionRecord(session) || session.headless
-      || (session.state === "idle" && !Number.isFinite(session.codexWorkingTimeoutAt))) return false;
-    const lastActivityAt = session.state === "idle"
-      ? session.codexWorkingTimeoutActivityAt : session.updatedAt;
-    if (!Number.isFinite(lastActivityAt) || activity.recapOccurredAt < lastActivityAt) return false;
+    if (session && (!isLocalCodexSessionRecord(session) || session.headless
+      || (session.state === "idle" && !Number.isFinite(session.codexWorkingTimeoutAt)))) return false;
+    if (session) {
+      const lastActivityAt = session.state === "idle"
+        ? session.codexWorkingTimeoutActivityAt : session.updatedAt;
+      if (!Number.isFinite(lastActivityAt) || activity.recapOccurredAt < lastActivityAt) return false;
+    }
     const snapshot = codexTurnFence.getSnapshot(sessionId);
     const turnId = normalizeCodexTurnId(activity.turnId);
     // Only the already accepted current turn can refresh/revive its row.
     // Never create an owner from a stray model record or a late closed turn.
     if (!turnId || !snapshot || snapshot.terminalLatch
       || snapshot.currentTurnId !== turnId) return false;
+    // Without a row this progress can only be a process-exit restore. Decide
+    // that before observe(), whose LRU touch could otherwise evict another
+    // session's closed-turn tombstone for a row that never comes back.
+    if (!session && (event === "event_msg:guardian_assessment"
+      || typeof state?.canRestoreCodexProcessExit !== "function"
+      || !state.canRestoreCodexProcessExit(sessionId, {
+        turnId, transcriptPath: activity.transcriptPath, activityState, now: activity.recapOccurredAt,
+      }))) return false;
     const decision = codexTurnFence.observe({
       sessionId, source: "jsonl", event: "CodexLiveProgress", state: activityState, turnId,
     });
     if (!decision.accept) return false;
+    if (event !== "event_msg:guardian_assessment"
+      && typeof state?.acceptCodexLiveProcessProgress === "function"
+      && state.acceptCodexLiveProcessProgress(sessionId, {
+        turnId, transcriptPath: activity.transcriptPath, activityState, now: activity.recapOccurredAt,
+      })) {
+      const restored = state.sessions?.get(sessionId);
+      // A process-exit restore also recreates presentation admission. Let an
+      // optional delegated-child monitor re-declare only its own live children.
+      if (!session && isLocalCodexSessionRecord(restored) && !restored.headless) {
+        codexMonitor?.refreshSubagentsOfParent?.(restored.rawSessionId || sessionId);
+      }
+      return true;
+    }
+    if (!session) return false;
     return typeof state.touchSessionActivity === "function" && state.touchSessionActivity(sessionId, {
       agentId: "codex", profileId: "local", localOnly: true, reviveIdle: true,
       activityState, onlyWorkingTimeout: true, now: activity.recapOccurredAt,
@@ -1225,6 +1298,9 @@ function createAgentRuntimeMain(options = {}) {
         annotateCodexAccountQuota();
       }, {
         classifier: localCodexSubagentClassifier,
+        // Only the local production monitor uses this host's boot boundary.
+        // Direct monitor fixtures can inject a deterministic value explicitly.
+        bootTimeMs: options.localCodexBootTimeMs,
         onSubagentActivity: (rawParentId, activity) => {
           const releasing = activity?.phase === "stop";
           // Teardown must release its previously admitted evidence even after
@@ -1259,12 +1335,14 @@ function createAgentRuntimeMain(options = {}) {
           // clear a parent bubble, or carry child plan/process/recap metadata.
           state.updateCodexSubagentActivity?.(parent.sessionId, activity);
         },
-        onActivity: (sid, activityState, _event, activity) => {
+        onActivity: (sid, activityState, event, activity) => {
+          if (disposed || !isAgentEnabled("codex")) return;
           const sessionIdentity = resolveSessionIdentity(sid, "local");
           if (shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
             agentId: "codex", profileId: sessionIdentity.profileId,
-          }) || hasCodexSessionEndTombstone(sessionIdentity.sessionId)) return;
-          touchLocalCodexProgress(sessionIdentity.sessionId, activityState, activity);
+          }) || hasCodexSessionEndTombstone(sessionIdentity.sessionId)
+            || isCodexInternalThreadSession(sessionIdentity.sessionId)) return;
+          touchLocalCodexProgress(sessionIdentity.sessionId, activityState, activity, event);
         },
         onUserInputRequest: (sid, request, extra) => {
           const sessionIdentity = resolveSessionIdentity(sid, "local");
