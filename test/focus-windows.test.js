@@ -333,7 +333,8 @@ describe("Windows terminal focus", () => {
       assert.match(helperScript, /GetConsoleWindow/);
       assert.match(helperScript, /FindConsoleWindowForPid/);
       assert.match(helperScript, /IsLegacyConsoleWindow/);
-      assert.match(cmd, /FindConsoleWindowForPid\(\[uint32\]\$curPid\)/);
+      assert.match(cmd, /FindConsoleWindowForPid\(\[uint32\]\$probePid\)/);
+      assert.match(cmd, /\$consoleProbePids \+= \[int\]\$curPid/);
       assert.match(cmd, /\$pendingConsoleHwnd = \[IntPtr\]::Zero/);
       assert.match(cmd, /\$consoleShimSkipped = \$false/);
       assert.match(cmd, /IsLegacyConsoleWindow\(\$consoleHwnd\)/);
@@ -345,6 +346,79 @@ describe("Windows terminal focus", () => {
       assert.match(cmd, /reason = 'legacy-conhost-window'/);
       assert.match(cmd, /reason = 'console-window-shim-skip'/);
       assert.doesNotMatch(cmd, /reason = 'console-window'/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("probes consoles only after the process-tree walk and only for recovery reasons", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+      const walkAt = cmd.indexOf("for ($i = 0; $i -lt 8; $i++) {");
+      const wtTitleAt = cmd.indexOf("$wtProcs = @()");
+      const gateAt = cmd.indexOf("if (-not $focused -and $consoleRecoveryReasons -contains $reason) {");
+      const probeAt = cmd.indexOf("[WinFocus]::FindConsoleWindowForPid([uint32]$probePid)");
+
+      assert.ok(walkAt > 0 && wtTitleAt > walkAt && gateAt > wtTitleAt && probeAt > gateAt,
+        "the console probe must follow the walk and the WT title match, inside its reason gate");
+      assert.match(cmd, /if \(-not \$focused -and \$consoleRecoveryReasons -contains \$reason\) \{\r?\n    foreach \(\$probePid in \$consoleProbePids\) \{/,
+        "the console probe loop must be the first statement inside the reason gate");
+      const walkBody = cmd.slice(walkAt, wtTitleAt);
+      assert.doesNotMatch(walkBody, /FindConsoleWindowForPid/,
+        "the walk must only record PIDs, never detach the helper's console");
+      assert.match(walkBody, /\$consoleProbePids \+= \[int\]\$curPid/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lists the console recovery reasons once and uses that list for both console branches", () => {
+    const reasons = [
+      "no-parent-window",
+      "no-parent-window-no-title",
+      "wt-parent-title-ambiguous",
+      "wt-parent-pid-window-ambiguous",
+      "wt-parent-no-pid-window",
+      "wt-title-ambiguous",
+      "wt-title-mismatch-pid-window-ambiguous",
+      "wt-title-mismatch-single-wt-window-ambiguous",
+      "wt-title-mismatch-no-pid-window",
+      "orca-window-missing",
+      "orca-window-ambiguous",
+    ];
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
+      const listMatch = cmd.match(/\$consoleRecoveryReasons = @\(([\s\S]*?)\)/);
+      assert.ok(listMatch, "the reasons must be defined in one list");
+      const listed = listMatch[1].match(/'([^']+)'/g).map((quoted) => quoted.slice(1, -1));
+      assert.deepStrictEqual(listed, reasons);
+      assert.equal(listed.length, 11);
+      const uses = cmd.match(/\$consoleRecoveryReasons -contains \$reason/g) || [];
+      // One gate for the probe itself, then one for each console branch.
+      assert.equal(uses.length, 3);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("keeps the generated focus script free of blank lines", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const scripts = {
+        titled: focus.__test.makeFocusCmd(1234, ["repo"]),
+        untitled: focus.__test.makeFocusCmd(1234, []),
+        orca: focus.__test.makeFocusCmd(1234, ["repo"], null, null, "tok", ["repo"], true),
+      };
+      for (const [name, script] of Object.entries(scripts)) {
+        for (const line of script.trim().split(/\r?\n/)) {
+          assert.notEqual(line.trim(), "", `${name} script must not contain a blank line`);
+        }
+      }
     } finally {
       cleanup();
     }
@@ -905,6 +979,680 @@ describe("Windows terminal focus", () => {
       assert.match(linuxLogs.join("\n"), /focus result branch=linux-command-submitted/);
     } finally {
       linux.cleanup();
+    }
+  });
+});
+
+function helperLifecycleHarness(options = {}) {
+  const helpers = [];
+  const events = [];
+  const allowCalls = [];
+  const execCalls = [];
+  let spawnAttempts = 0;
+
+  const spawn = () => {
+    spawnAttempts += 1;
+    if (options.failSpawnOnCall === spawnAttempts) throw new Error("spawn failed");
+    const index = helpers.length;
+    const helper = new EventEmitter();
+    helper.index = index;
+    helper.pid = 9000 + index;
+    helper.writes = [];
+    helper.stdin = {
+      writable: true,
+      write(chunk) {
+        events.push({ type: "write", helper: index, chunk: String(chunk) });
+        helper.writes.push(String(chunk));
+      },
+      on() {},
+    };
+    helper.stdout = new EventEmitter();
+    helper.stdout.setEncoding = () => {};
+    helper.stdout.unref = () => {};
+    helper.unref = () => {};
+    helper.kill = () => {};
+    helper.emitResult = (token, reason = "parent-direct", extra = {}) => {
+      helper.stdout.emit("data", `__CLAWD_FOCUS_RESULT__ ${JSON.stringify({
+        token,
+        reason,
+        targetHwnd: "101",
+        foregroundHwnd: "101",
+        confirmed: true,
+        status: "confirmed",
+        ...extra,
+      })}\n`);
+    };
+    helpers.push(helper);
+    return helper;
+  };
+
+  const loaded = loadFocusWithMock({
+    spawn,
+    execFile: (cmd, args, opts, cb) => {
+      if (typeof opts === "function") cb = opts;
+      execCalls.push({ cmd, args: [...(args || [])] });
+      if (options.onExecFile) options.onExecFile(cmd, args, cb);
+    },
+  });
+  const logs = [];
+  const focus = loaded.initFocus({
+    focusLog: (msg) => logs.push(msg),
+    _allowSetForeground: (pid) => {
+      allowCalls.push(pid);
+      events.push({ type: "allow", pid });
+    },
+  });
+  focus.initFocusHelper();
+
+  let requestCount = 0;
+  const commandWrites = (helper) => helper.writes.filter((write) => write.includes("$focusToken ="));
+  const tokenOf = (write) => write.match(/\$focusToken = '([^']+)'/)[1];
+
+  return {
+    focus,
+    helpers,
+    events,
+    allowCalls,
+    execCalls,
+    logs,
+    request(overrides = {}) {
+      requestCount += 1;
+      return focus.focusTerminalWindow({
+        sourcePid: 1000 + requestCount,
+        cwd: `D:\\repo-${requestCount}`,
+        sessionId: `session-${requestCount}`,
+        agentId: "claude-code",
+        requestSource: "hud",
+        ...overrides,
+      });
+    },
+    commandWrites,
+    tokenOf,
+    cleanup() {
+      focus.cleanup();
+      loaded.cleanup();
+    },
+  };
+}
+
+describe("Windows focus helper lifecycle", () => {
+  it("spawns a replacement after a helper that produced a result exits", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const pending = harness.request();
+      const h1 = harness.helpers[0];
+      const token = harness.tokenOf(harness.commandWrites(h1)[0]);
+      h1.emitResult(token);
+      assert.equal((await pending).reason, "parent-direct");
+
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      assert.equal(harness.helpers.length, 2);
+      assert.equal(harness.helpers[1].writes.length, 2, "replacement receives both initialization writes");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("redispatches an unanswered request to the replacement helper", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const h1 = harness.helpers[0];
+      const writes = harness.commandWrites(h1);
+      const tokenA = harness.tokenOf(writes[0]);
+      const tokenB = harness.tokenOf(writes[1]);
+
+      h1.emitResult(tokenA);
+      await first;
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const h2 = harness.helpers[1];
+      const redispatch = harness.commandWrites(h2);
+      assert.equal(redispatch.length, 1);
+      assert.equal(harness.tokenOf(redispatch[0]), tokenB);
+      assert.equal(redispatch[0], writes[1], "the same command text is resent");
+
+      h2.emitResult(tokenB);
+      const result = await second;
+      assert.equal(result.token, tokenB);
+      assert.equal(result.reason, "parent-direct");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("completes a result that arrives after exit and before close, then redispatches the rest", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const h1 = harness.helpers[0];
+      const writes = harness.commandWrites(h1);
+      const tokenA = harness.tokenOf(writes[0]);
+      const tokenB = harness.tokenOf(writes[1]);
+
+      const line = `__CLAWD_FOCUS_RESULT__ ${JSON.stringify({
+        token: tokenA, reason: "parent-direct", targetHwnd: "101", foregroundHwnd: "101",
+      })}\n`;
+      const split = Math.floor(line.length / 2);
+      h1.stdout.emit("data", line.slice(0, split));
+      h1.emit("exit", 0);
+      h1.stdout.emit("data", line.slice(split));
+
+      assert.equal((await first).reason, "parent-direct");
+
+      h1.emit("close", 0);
+      const h2 = harness.helpers[1];
+      const redispatch = harness.commandWrites(h2);
+      assert.equal(redispatch.length, 1);
+      assert.equal(harness.tokenOf(redispatch[0]), tokenB);
+
+      h2.emitResult(tokenB);
+      assert.equal((await second).reason, "parent-direct");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("redispatches a request only once", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const h1 = harness.helpers[0];
+      const tokenA = harness.tokenOf(harness.commandWrites(h1)[0]);
+      const tokenB = harness.tokenOf(harness.commandWrites(h1)[1]);
+
+      h1.emitResult(tokenA);
+      await first;
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const h2 = harness.helpers[1];
+      assert.equal(harness.commandWrites(h2).length, 1);
+      h2.emit("exit", 0);
+      h2.emit("close", 0);
+
+      const result = await second;
+      assert.equal(result.token, tokenB);
+      assert.equal(result.reason, "focus-helper-exited");
+      assert.equal(harness.helpers.length, 2, "a helper that never answered must not be replaced");
+      assert.equal(harness.commandWrites(h2).length, 1, "no third write");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("fails a pending request immediately when the helper exits without a result", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const pending = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const result = await pending;
+      assert.equal(result.reason, "focus-helper-exited");
+      assert.equal(harness.helpers.length, 1, "a helper that never answered must not be replaced");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("does not refill or redispatch after an explicit stop", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      const second = harness.request();
+      const writesBeforeStop = harness.commandWrites(h1).length;
+      harness.focus.cleanup();
+
+      const result = await second;
+      assert.equal(result.reason, "focus-helper-stopped");
+
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+      assert.equal(harness.helpers.length, 1, "no replacement after an explicit stop");
+      assert.equal(harness.commandWrites(h1).length, writesBeforeStop, "no late write after an explicit stop");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("ignores a late exit from a helper that was replaced by the one-shot fallback", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      harness.helpers[0].stdin.writable = false;
+      const second = harness.request();
+      assert.equal(harness.helpers.length, 2);
+      assert.equal(harness.execCalls.length, 1);
+
+      harness.helpers[0].emit("exit", 0);
+      const third = harness.request();
+
+      assert.equal(harness.execCalls.length, 1, "the replacement must keep handling requests");
+      const h2Writes = harness.commandWrites(harness.helpers[1]);
+      assert.equal(h2Writes.length, 1);
+      assert.match(h2Writes[0], /\$focusToken = '[0-9a-f]+'/);
+      void second;
+      void third;
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("keeps each helper's stdout buffer separate", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      const tokenA = harness.tokenOf(harness.commandWrites(h1)[0]);
+      const lineA = `__CLAWD_FOCUS_RESULT__ ${JSON.stringify({
+        token: tokenA, reason: "parent-direct", targetHwnd: "101", foregroundHwnd: "101",
+      })}\n`;
+      const splitA = Math.floor(lineA.length / 2);
+      h1.stdout.emit("data", lineA.slice(0, splitA));
+      h1.emit("exit", 0);
+
+      const second = harness.request();
+      assert.equal(harness.helpers.length, 2, "a request without a current helper starts one through the one-shot path");
+      const h2 = harness.helpers[1];
+
+      const third = harness.request();
+      const tokenC = harness.tokenOf(harness.commandWrites(h2)[0]);
+      const lineC = `__CLAWD_FOCUS_RESULT__ ${JSON.stringify({
+        token: tokenC, reason: "parent-direct", targetHwnd: "101", foregroundHwnd: "101",
+      })}\n`;
+      const splitC = Math.floor(lineC.length / 2);
+      h2.stdout.emit("data", lineC.slice(0, splitC));
+      h1.stdout.emit("data", lineA.slice(splitA));
+      h2.stdout.emit("data", lineC.slice(splitC));
+
+      assert.equal((await first).reason, "parent-direct");
+      assert.equal((await third).reason, "parent-direct");
+
+      // close means stdout is drained; the old helper's late close arrives last.
+      h1.emit("close", 0);
+      assert.equal(harness.helpers.length, 2, "the late close from the old helper must not start another helper");
+      void second;
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("redispatches only the newest unanswered request", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const third = harness.request();
+      const h1 = harness.helpers[0];
+      const writes = harness.commandWrites(h1);
+      const tokenA = harness.tokenOf(writes[0]);
+      const tokenB = harness.tokenOf(writes[1]);
+      const tokenC = harness.tokenOf(writes[2]);
+
+      h1.emitResult(tokenA);
+      await first;
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const h2 = harness.helpers[1];
+      const redispatch = harness.commandWrites(h2);
+      assert.equal(redispatch.length, 1);
+      assert.equal(harness.tokenOf(redispatch[0]), tokenC);
+
+      assert.equal((await second).reason, "focus-helper-exited");
+      assert.equal((await second).token, tokenB);
+      h2.emitResult(tokenC);
+      assert.equal((await third).reason, "parent-direct");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("does not redispatch an older request when a newer one went out elsewhere", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const h1 = harness.helpers[0];
+      const tokenA = harness.tokenOf(harness.commandWrites(h1)[0]);
+      h1.emitResult(tokenA);
+      await first;
+      h1.emit("exit", 0);
+
+      const third = harness.request();
+      assert.equal(harness.helpers.length, 2, "the newer request starts a helper through the one-shot path");
+      assert.equal(harness.execCalls.length, 1);
+
+      h1.emit("close", 0);
+      const result = await second;
+      assert.equal(result.reason, "focus-helper-exited");
+      assert.equal(harness.commandWrites(harness.helpers[1]).length, 0);
+      void third;
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("does not redispatch a request older than the retry window", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      const second = harness.request();
+      t.mock.timers.tick(1600);
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const h2 = harness.helpers[1];
+      assert.equal(harness.commandWrites(h2).length, 0, "stale requests are not resent");
+      assert.equal((await second).reason, "focus-helper-exited");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("does not redispatch a request that already timed out", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      const second = harness.request();
+      let completions = 0;
+      second.then(() => { completions += 1; });
+      t.mock.timers.tick(3000);
+      assert.equal((await second).reason, "focus-result-timeout");
+
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+      const h2 = harness.helpers[1];
+      assert.equal(harness.commandWrites(h2).length, 0);
+      assert.equal(completions, 1);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("keeps the original deadline when a request is redispatched", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const harness = helperLifecycleHarness();
+    try {
+      const startedAt = Date.now();
+      const pending = harness.request();
+      const h1 = harness.helpers[0];
+      const tokenB = harness.tokenOf(harness.commandWrites(h1)[0]);
+      // An unrelated result proves the helper ran a command, so its close may
+      // start a replacement.
+      h1.emitResult("warmup-token");
+
+      t.mock.timers.tick(1000);
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const h2 = harness.helpers[1];
+      assert.equal(harness.tokenOf(harness.commandWrites(h2)[0]), tokenB);
+
+      let settledAt = null;
+      pending.then(() => { settledAt = Date.now(); });
+
+      t.mock.timers.tick(1999);
+      await Promise.resolve();
+      assert.equal(settledAt, null, "the request must not settle before the original 3s deadline");
+
+      t.mock.timers.tick(1);
+      await Promise.resolve();
+      assert.equal(settledAt, startedAt + 3000, "the redispatch keeps the deadline from the original dispatch");
+      assert.equal((await pending).reason, "focus-result-timeout");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("redispatches without repeating tab switches and re-arming the replacement's foreground grant", async (t) => {
+    const http = require("node:http");
+    const originalRequest = http.request;
+    const tabRequests = [];
+    http.request = (options) => {
+      tabRequests.push(options);
+      return { on() { return this; }, end() {}, destroy() {} };
+    };
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      harness.allowCalls.length = 0;
+      harness.events.length = 0;
+      const second = harness.request({ editor: "code", pidChain: [1234, 5678] });
+      const tokenB = harness.tokenOf(harness.commandWrites(h1)[1]);
+
+      t.mock.timers.tick(800);
+      assert.equal(tabRequests.length, 5, "the original dispatch requests a tab switch");
+
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+      const h2 = harness.helpers[1];
+      assert.deepEqual(harness.allowCalls, [h1.pid, h2.pid]);
+      const allowH2At = harness.events.findIndex((e) => e.type === "allow" && e.pid === h2.pid);
+      const writeBAt = harness.events.findIndex((e) => e.type === "write" && e.helper === h2.index && e.chunk.includes(tokenB));
+      assert.ok(allowH2At >= 0 && writeBAt > allowH2At, "the replacement is granted foreground before the write");
+
+      t.mock.timers.tick(800);
+      assert.equal(tabRequests.length, 5, "a redispatch must not repeat the tab switch");
+
+      h2.emitResult(tokenB);
+      assert.equal((await second).reason, "parent-direct");
+    } finally {
+      http.request = originalRequest;
+      harness.cleanup();
+    }
+  });
+
+  it("reports focus-helper-exited when the replacement fails to spawn or start", async () => {
+    const failing = helperLifecycleHarness();
+    try {
+      const first = failing.request();
+      const h1 = failing.helpers[0];
+      h1.emitResult(failing.tokenOf(failing.commandWrites(h1)[0]));
+      await first;
+
+      const second = failing.request();
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+      const h2 = failing.helpers[1];
+      assert.equal(failing.commandWrites(h2).length, 1);
+      h2.emit("error", new Error("cannot start"));
+      h2.emit("close", 0);
+
+      assert.equal((await second).reason, "focus-helper-exited");
+
+      const third = failing.request();
+      assert.equal(failing.execCalls.length, 1, "the next request falls back to the one-shot path");
+      assert.equal(failing.helpers.length, 3);
+      void third;
+    } finally {
+      failing.cleanup();
+    }
+  });
+
+  it("does not throw from the close handler when the replacement cannot be spawned", async () => {
+    const harness = helperLifecycleHarness({ failSpawnOnCall: 2 });
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      const second = harness.request();
+      h1.emit("exit", 0);
+      assert.doesNotThrow(() => h1.emit("close", 0));
+      assert.equal((await second).reason, "focus-helper-exited");
+      assert.equal(harness.helpers.length, 1);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("does not refill a helper that exited before an explicit stop", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      h1.emit("exit", 0);
+      harness.focus.cleanup();
+      h1.emit("close", 0);
+
+      assert.equal(harness.helpers.length, 1, "a helper that exited before the stop must not refill");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("does not refill an older exited helper after a later helper is stopped", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+
+      h1.emit("exit", 0);
+      const second = harness.request();
+      assert.equal(harness.helpers.length, 2, "the newer request starts a helper through the one-shot path");
+
+      harness.focus.cleanup();
+      h1.emit("close", 0);
+
+      assert.equal(harness.helpers.length, 2, "stopping the newest helper must also cover the older one");
+      assert.equal(harness.execCalls.length, 1);
+      void second;
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("redispatches a request at most once even when the replacement answered another request", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const h1 = harness.helpers[0];
+      const tokenA = harness.tokenOf(harness.commandWrites(h1)[0]);
+      const tokenB = harness.tokenOf(harness.commandWrites(h1)[1]);
+      h1.emitResult(tokenA);
+      await first;
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+
+      const h2 = harness.helpers[1];
+      assert.equal(harness.tokenOf(harness.commandWrites(h2)[0]), tokenB);
+      h2.emitResult("unrelated-token");
+      h2.emit("exit", 0);
+      h2.emit("close", 0);
+
+      assert.equal(harness.helpers.length, 3, "a replacement that answered something is still replaced");
+      const h3 = harness.helpers[2];
+      assert.equal(harness.commandWrites(h3).length, 0, "an already redispatched request must not be resent");
+      assert.equal((await second).reason, "focus-helper-exited");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("ignores a late error from a helper that was replaced by the one-shot fallback", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      harness.helpers[0].stdin.writable = false;
+      const second = harness.request();
+      assert.equal(harness.helpers.length, 2);
+      assert.equal(harness.execCalls.length, 1);
+
+      harness.helpers[0].emit("error", new Error("late failure"));
+      const third = harness.request();
+
+      assert.equal(harness.execCalls.length, 1, "the replacement must keep handling requests");
+      assert.equal(harness.commandWrites(harness.helpers[1]).length, 1);
+      void second;
+      void third;
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("settles only the requests written to the helper that closed", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const first = harness.request();
+      const second = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]));
+      await first;
+      h1.emit("exit", 0);
+
+      const third = harness.request();
+      const fourth = harness.request();
+      assert.equal(harness.execCalls.length, 1);
+      const h2 = harness.helpers[1];
+      const tokenD = harness.tokenOf(harness.commandWrites(h2)[0]);
+      let fourthSettled = false;
+      fourth.then(() => { fourthSettled = true; });
+
+      h1.emit("close", 0);
+      assert.equal(harness.commandWrites(h2).length, 1, "another helper's request must not be resent");
+      assert.equal(fourthSettled, false, "another helper's request must stay pending");
+      assert.equal((await second).reason, "focus-helper-exited");
+
+      h2.emitResult(tokenD);
+      assert.equal((await fourth).reason, "parent-direct");
+      void third;
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("refills after an unconfirmed result", async () => {
+    const harness = helperLifecycleHarness();
+    try {
+      const pending = harness.request();
+      const h1 = harness.helpers[0];
+      h1.emitResult(harness.tokenOf(harness.commandWrites(h1)[0]), "wt-title-mismatch-no-pid-window", {
+        targetHwnd: null,
+        foregroundHwnd: null,
+      });
+
+      const result = await pending;
+      assert.equal(result.reason, "wt-title-mismatch-no-pid-window");
+      assert.equal(result.confirmed, false);
+
+      h1.emit("exit", 0);
+      h1.emit("close", 0);
+      assert.equal(harness.helpers.length, 2, "an unconfirmed result still proves the helper ran a command");
+    } finally {
+      harness.cleanup();
     }
   });
 });
