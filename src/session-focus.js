@@ -134,13 +134,13 @@ function getSessionFocusTarget(entry, options = {}) {
   }
 
   // CodeBuddy 5.x IDE sessions are hosted by the CodeBuddy app, not a terminal
-  // tab. Only a local macOS session with a recorded process can identify the
-  // running app at click time (that lookup also backs the terminal fallback),
-  // so every other platform keeps the pre-existing terminal/process path.
+  // tab. A local macOS or Windows session with a recorded process can identify
+  // the running app at click time (that PID also backs the terminal/window
+  // fallback); Linux, WSL and headless rows keep the pre-existing path.
   // Whether the build supports a conversation deep link is decided then too.
   if (entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
     const platform = normalizeOsPlatform(options) || process.platform;
-    if (platform === "darwin"
+    if ((platform === "darwin" || platform === "win32")
       && Number.isSafeInteger(Number(entry.sourcePid)) && Number(entry.sourcePid) > 1
       && !entry.wslDistro && entry.platform !== "wsl"
       && !entry.headless) {

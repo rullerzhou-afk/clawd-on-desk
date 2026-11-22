@@ -2957,6 +2957,7 @@ const {
   focusTerminalWindow,
   focusProcessAppWindow,
   findCodeBuddyMacApp,
+  findCodeBuddyWindowsApp,
   openCodeBuddyMacApp,
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
@@ -3023,6 +3024,7 @@ function focusDashboardSession(sessionId, options = {}) {
   }
 
   if (focusTarget.type === "codebuddy-ide") {
+    const isWindowsHost = process.platform === "win32";
     focusCodeBuddyIdeTarget({
       shell,
       focusEntry,
@@ -3030,8 +3032,10 @@ function focusDashboardSession(sessionId, options = {}) {
       requestSource,
       focusLog,
       focusTerminalSession,
-      findApp: findCodeBuddyMacApp,
-      openApp: openCodeBuddyMacApp,
+      findApp: isWindowsHost ? findCodeBuddyWindowsApp : findCodeBuddyMacApp,
+      // Windows has no bundle activation; leaving openApp unset makes a build
+      // without the route (or a failed deep link) use the window focus below.
+      ...(isWindowsHost ? {} : { openApp: openCodeBuddyMacApp }),
     });
     return true;
   }

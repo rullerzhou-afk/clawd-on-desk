@@ -2599,6 +2599,12 @@ return {
   findCodeBuddyMacApp: pids => require("./process-app-focus").findCodeBuddyMacApp(pids, {
     execFile, fs,
   }),
+  findCodeBuddyWindowsApp: pids => {
+    const processAppFocus = require("./process-app-focus");
+    return processAppFocus.findCodeBuddyWindowsApp(pids, {
+      execFile, fs, readImagePath: processAppFocus.getWindowsImagePathReader(),
+    });
+  },
   openCodeBuddyMacApp: bundlePath => require("./process-app-focus").openCodeBuddyMacApp(bundlePath, {
     execFile,
   }),

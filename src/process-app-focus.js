@@ -7,13 +7,14 @@
 // arbitrary GUI.
 //
 // CodeBuddy IDE: the session's own process chain must still contain a running
-// CodeBuddy app bundle, and that bundle's product.json must name CodeBuddy. We
-// never guess a distribution by name or path. The app must be running when the
-// click looks it up; activation is app-level, and if it exits between the
-// lookup and `open` the system may still relaunch it.
+// CodeBuddy app (a macOS bundle or a Windows install directory), and that app's
+// product.json must name CodeBuddy. We never guess a distribution by name or
+// path. The app must be running when the click looks it up; macOS activation is
+// app-level, and if it exits between the lookup and `open` the system may
+// still relaunch it.
 // This is app activation, not conversation selection or permission to paste.
 const pid = value => Number.isSafeInteger(Number(value)) && Number(value) > 1 ? Number(value) : null;
-const posix = require("node:path").posix;
+const { posix, win32 } = require("node:path");
 const fs = require("node:fs");
 
 function windowsProcessAppScript(sourcePid) {
@@ -222,16 +223,17 @@ async function statOrNull(fsApi, filePath) {
   }
 }
 
-// The conversation route is a build capability. Keep one entry per bundle so an
+// The conversation route is a build capability. Keep one entry per app so an
 // app update cannot leave stale keys behind; a hit requires both mtimes and the
 // currently read urlProtocol to match, so a replaced or edited app is rechecked.
 const codeBuddyRouteCache = new Map();
 const CODEBUDDY_URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{0,63}$/;
 
-async function inspectCodeBuddyBundle(bundlePath, fsApi) {
-  const appRoot = posix.join(bundlePath, "Contents", "Resources", "app");
-  const productPath = posix.join(appRoot, "product.json");
-  const mainPath = posix.join(appRoot, "out", "main.js");
+// `appPath` is the macOS bundle or the Windows install directory; it is the
+// cache key and is returned as `bundlePath` for the click handler.
+async function inspectCodeBuddyApp(appPath, appRoot, pathApi, fsApi) {
+  const productPath = pathApi.join(appRoot, "product.json");
+  const mainPath = pathApi.join(appRoot, "out", "main.js");
   // Stat before reading so an update between the two cannot pair a stale
   // protocol with fresh mtimes.
   const [productStat, mainStat] = await Promise.all([
@@ -249,12 +251,12 @@ async function inspectCodeBuddyBundle(bundlePath, fsApi) {
   const urlProtocol = typeof product.urlProtocol === "string" ? product.urlProtocol.trim() : "";
   const productMtimeMs = productStat ? productStat.mtimeMs : null;
   const mainMtimeMs = mainStat ? mainStat.mtimeMs : null;
-  const cached = codeBuddyRouteCache.get(bundlePath);
+  const cached = codeBuddyRouteCache.get(appPath);
   if (cached
     && cached.productMtimeMs === productMtimeMs
     && cached.mainMtimeMs === mainMtimeMs
     && cached.urlProtocol === urlProtocol) {
-    return { bundlePath, urlScheme: cached.urlScheme };
+    return { bundlePath: appPath, urlScheme: cached.urlScheme };
   }
 
   let urlScheme = null;
@@ -267,10 +269,14 @@ async function inspectCodeBuddyBundle(bundlePath, fsApi) {
     // A temporary failure only downgrades this click to app activation. Do not
     // cache it: the next click retries, and a late failure cannot replace the
     // result of a concurrent successful read.
-    return { bundlePath, urlScheme: null };
+    return { bundlePath: appPath, urlScheme: null };
   }
-  codeBuddyRouteCache.set(bundlePath, { productMtimeMs, mainMtimeMs, urlProtocol, urlScheme });
-  return { bundlePath, urlScheme };
+  codeBuddyRouteCache.set(appPath, { productMtimeMs, mainMtimeMs, urlProtocol, urlScheme });
+  return { bundlePath: appPath, urlScheme };
+}
+
+function inspectCodeBuddyBundle(bundlePath, fsApi) {
+  return inspectCodeBuddyApp(bundlePath, posix.join(bundlePath, "Contents", "Resources", "app"), posix, fsApi);
 }
 
 // Find the running CodeBuddy app that owns this session's process chain. The
@@ -308,6 +314,133 @@ function findCodeBuddyMacApp(pids, { execFile, fs: fsApi = fs } = {}) {
   });
 }
 
+// Windows images come from Get-Process. Accept only a normalized, drive-rooted
+// path to an .exe; its directory is the install root that holds resources\app.
+// Helpers such as agent-harness.exe live deeper and simply have no product.json
+// next to them, so they are skipped by the same product check as macOS.
+function codeBuddyWindowsAppDirFromImage(image) {
+  const text = typeof image === "string" ? image.trim() : "";
+  if (!/^[A-Za-z]:\\/.test(text) || win32.normalize(text) !== text || /[\0\r\n\t]/.test(text)) return null;
+  if (!/\.exe$/i.test(text)) return null;
+  const dir = win32.dirname(text);
+  return dir && dir !== text ? dir : null;
+}
+
+function windowsCodeBuddyProcessScript(pids) {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
+    "foreach ($p in Get-Process -Id " + pids.join(",") + " -ErrorAction SilentlyContinue) {",
+    "  if ($p.Path) { [Console]::Out.WriteLine(([string]$p.Id) + [char]9 + $p.Path) }",
+    "}",
+  ].join("\n");
+}
+
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const WINDOWS_IMAGE_PATH_CHARS = 32768;
+
+// Reads a live process's image path in-process through Win32, the same calls
+// src/win-foreground-terminal.js already makes. A cold PowerShell spawn costs
+// ~250ms per click on Windows; this costs well under a millisecond. Returns a
+// `pid => string | null` reader, or null when the FFI cannot be loaded.
+function createWindowsImagePathReader({ koffi } = {}) {
+  let OpenProcess;
+  let QueryFullProcessImageNameW;
+  let CloseHandle;
+  try {
+    const ffi = koffi || require("koffi");
+    const kernel32 = ffi.load("kernel32.dll");
+    OpenProcess = kernel32.func("void * __stdcall OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)");
+    QueryFullProcessImageNameW = kernel32.func("bool __stdcall QueryFullProcessImageNameW(void *hProcess, uint32 dwFlags, _Out_ uint16_t *lpExeName, _Inout_ uint32 *lpdwSize)");
+    CloseHandle = kernel32.func("bool __stdcall CloseHandle(void *hObject)");
+  } catch {
+    return null;
+  }
+  return (rawPid) => {
+    const processId = pid(rawPid);
+    if (!processId) return null;
+    let handle = null;
+    try {
+      handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+      if (!handle) return null;
+      const buffer = new Uint16Array(WINDOWS_IMAGE_PATH_CHARS);
+      const length = [WINDOWS_IMAGE_PATH_CHARS];
+      if (!QueryFullProcessImageNameW(handle, 0, buffer, length)) return null;
+      const count = Math.max(0, Math.min(Number(length[0]) || 0, buffer.length));
+      let text = "";
+      for (let i = 0; i < count; i++) text += String.fromCharCode(buffer[i]);
+      return text || null;
+    } catch {
+      return null;
+    } finally {
+      if (handle) {
+        try { CloseHandle(handle); } catch { /* best effort */ }
+      }
+    }
+  };
+}
+
+let defaultWindowsImagePathReader;
+// Built once on first use; null off Windows or when the FFI is unavailable,
+// in which case the lookup falls back to one Get-Process call.
+function getWindowsImagePathReader() {
+  if (defaultWindowsImagePathReader === undefined) {
+    defaultWindowsImagePathReader = process.platform === "win32" ? createWindowsImagePathReader() : null;
+  }
+  return defaultWindowsImagePathReader;
+}
+
+function queryWindowsImagesWithPowerShell(candidates, execFile) {
+  return new Promise((resolve) => {
+    try {
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsCodeBuddyProcessScript(candidates)],
+        { timeout: 3000, windowsHide: true, encoding: "utf8", maxBuffer: 64 * 1024 },
+        (_error, stdout) => resolve(stdout));
+    } catch {
+      resolve(null);
+    }
+  }).then((stdout) => {
+    const imageByPid = new Map();
+    for (const line of String(stdout || "").split(/\r?\n/)) {
+      const match = line.match(/^\s*(\d+)\t(.+)$/);
+      if (match) imageByPid.set(Number(match[1]), match[2]);
+    }
+    return imageByPid;
+  });
+}
+
+// Windows counterpart of findCodeBuddyMacApp: read the image of each of the
+// session's recorded PIDs (priority order kept by the caller), then the first
+// live image whose install directory carries a CodeBuddy product.json wins.
+// The result's `bundlePath` is that install directory. `readImagePath` is
+// the in-process reader; without one, a single Get-Process call is the fallback.
+function findCodeBuddyWindowsApp(pids, { execFile, fs: fsApi = fs, readImagePath = null } = {}) {
+  const candidates = (Array.isArray(pids) ? pids : []).map(pid).filter(Boolean);
+  if (!candidates.length) return Promise.resolve(null);
+  const images = typeof readImagePath === "function"
+    ? Promise.resolve().then(() => {
+      const imageByPid = new Map();
+      for (const candidatePid of candidates) {
+        let image = null;
+        try { image = readImagePath(candidatePid); } catch { image = null; }
+        if (typeof image === "string" && image) imageByPid.set(candidatePid, image);
+      }
+      return imageByPid;
+    })
+    : queryWindowsImagesWithPowerShell(candidates, execFile);
+  return images.then(async (imageByPid) => {
+    const seen = new Set();
+    for (const candidatePid of candidates) {
+      const appDir = codeBuddyWindowsAppDirFromImage(imageByPid.get(candidatePid));
+      if (!appDir || seen.has(appDir.toLowerCase())) continue;
+      seen.add(appDir.toLowerCase());
+      const info = await inspectCodeBuddyApp(appDir, win32.join(appDir, "resources", "app"), win32, fsApi);
+      if (info) return info;
+    }
+    return null;
+  });
+}
+
 // Activate the verified bundle with one argv value, no shell. A successful
 // submission is not a confirmed foreground change (same contract as Codex
 // app activation), so callers must branch on `submitted`.
@@ -327,8 +460,11 @@ function openCodeBuddyMacApp(bundlePath, { execFile } = {}) {
 
 module.exports = {
   CODEBUDDY_URL_SCHEME_RE,
+  createWindowsImagePathReader,
   focusProcessAppWindow,
   findCodeBuddyMacApp,
+  findCodeBuddyWindowsApp,
+  getWindowsImagePathReader,
   openCodeBuddyMacApp,
   windowsProcessAppScript,
   macCodexProcessTarget,
