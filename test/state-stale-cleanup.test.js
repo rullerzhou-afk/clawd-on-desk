@@ -15,6 +15,7 @@ const {
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
   isLocalClaudeDesktopIdleSession,
+  isLocalCodeBuddyIdeSession,
   getStaleSessionDecision,
 } = require("../src/state-stale-cleanup");
 
@@ -74,6 +75,16 @@ function workbuddyDesktopSession(overrides = {}) {
     agentId: "workbuddy",
     agentPid: 50,
     sourcePid: 51,
+    ...overrides,
+  });
+}
+
+function codebuddyIdeSession(overrides = {}) {
+  return session({
+    agentId: "codebuddy",
+    codebuddyClient: "CodeBuddyIDE",
+    agentPid: 70,
+    sourcePid: 71,
     ...overrides,
   });
 }
@@ -1304,5 +1315,125 @@ describe("state stale cleanup decisions", () => {
     });
     assert.deepStrictEqual(result, { action: null });
     assert.deepStrictEqual(calls, []);
+  });
+
+  // ── CodeBuddy IDE: the harness restarts under a live IDE ──
+
+  it("PR #1407 follow-up: keeps a CodeBuddy IDE row when only the harness exited", () => {
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const alivePids = new Set([71]);
+
+    for (const updatedAt of [1000000, 1000000 - 59_999, 1000000 - 60_000]) {
+      const { result } = decision(codebuddyIdeSession({ updatedAt }), { alivePids, staleConfig });
+      assert.deepStrictEqual(result, { action: null }, `age ${1000000 - updatedAt}`);
+    }
+
+    const { result, calls } = decision(codebuddyIdeSession({ updatedAt: 1000000 - 60_001 }), {
+      alivePids,
+      staleConfig,
+    });
+    assert.deepStrictEqual(result, { action: "delete", reason: "codebuddy-ide-agent-exit-timeout" });
+    assert.deepStrictEqual(calls, [70, 71], "the dead agent and the live source are each probed once");
+  });
+
+  it("PR #1407 follow-up: deletes an expired attention or notification row without idling first", () => {
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const alivePids = new Set([71]);
+    for (const state of ["attention", "notification"]) {
+      const { result } = decision(codebuddyIdeSession({ state, updatedAt: 1000000 - 60_001 }), {
+        alivePids,
+        staleConfig,
+      });
+      assert.deepStrictEqual(result, {
+        action: "delete",
+        reason: "codebuddy-ide-agent-exit-timeout",
+      }, state);
+    }
+  });
+
+  it("PR #1407 follow-up: applies the ordinary working timeout to CodeBuddy IDE work", () => {
+    const alivePids = new Set([71]);
+    for (const state of ["working", "executing", "juggling", "thinking"]) {
+      assert.deepStrictEqual(decision(codebuddyIdeSession({
+        state,
+        updatedAt: 1000000 - WORKING_STALE_MS + 1,
+      }), { alivePids }).result, { action: null }, `${state} before timeout`);
+      assert.deepStrictEqual(decision(codebuddyIdeSession({
+        state,
+        updatedAt: 1000000 - WORKING_STALE_MS - 1,
+      }), { alivePids }).result, {
+        action: "idle",
+        reason: "working-timeout",
+        updateTimestamp: true,
+      }, `${state} after timeout`);
+    }
+  });
+
+  it("PR #1407 follow-up: keeps the immediate agent-exit when the source is gone", () => {
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const expired = 1000000 - 60_001;
+    assert.deepStrictEqual(decision(codebuddyIdeSession({
+      updatedAt: expired,
+    }), { alivePids: new Set(), staleConfig }).result, { action: "delete", reason: "agent-exit" });
+    assert.deepStrictEqual(decision(codebuddyIdeSession({
+      sourcePid: null,
+      updatedAt: expired,
+    }), { alivePids: new Set([71]), staleConfig }).result, { action: "delete", reason: "agent-exit" });
+    assert.deepStrictEqual(decision(codebuddyIdeSession({
+      sourcePid: 70,
+      updatedAt: expired,
+    }), { alivePids: new Set([71]), staleConfig }).result, { action: "delete", reason: "agent-exit" });
+  });
+
+  it("PR #1407 follow-up: only local CodeBuddy IDE sessions get the harness hold", () => {
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const alivePids = new Set([71]);
+    const cases = [
+      codebuddyIdeSession({ codebuddyClient: "CLI" }),
+      codebuddyIdeSession({ codebuddyClient: null }),
+      codebuddyIdeSession({ host: "remote-box" }),
+      codebuddyIdeSession({ headless: true }),
+      codebuddyIdeSession({ platform: "wsl" }),
+      session({ agentId: "claude-code", agentPid: 70, sourcePid: 71 }),
+      session({ agentId: "claude-code", codebuddyClient: "CodeBuddyIDE", agentPid: 70, sourcePid: 71 }),
+    ];
+    for (const target of cases) {
+      assert.deepStrictEqual(
+        decision(target, { alivePids, staleConfig }).result,
+        { action: "delete", reason: "agent-exit" },
+        JSON.stringify({ agentId: target.agentId, codebuddyClient: target.codebuddyClient })
+      );
+    }
+
+    const wsl = codebuddyIdeSession({ wslDistro: "Ubuntu" });
+    assert.strictEqual(isLocalCodeBuddyIdeSession(wsl), false);
+    assert.deepStrictEqual(
+      decision({ ...wsl, updatedAt: 1000000 - SESSION_STALE_MS - 1 }, { alivePids, staleConfig }).result,
+      { action: "delete", reason: "unreachable" }
+    );
+  });
+
+  it("PR #1407 follow-up: keeps CodeBuddy IDE rows when sessionStaleMs is disabled", () => {
+    const { result } = decision(codebuddyIdeSession({ updatedAt: 1 }), {
+      alivePids: new Set([71]),
+      staleConfig: { sessionStaleMs: 0 },
+    });
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("PR #1407 follow-up: keeps the old behavior while the harness is alive", () => {
+    const { result } = decision(codebuddyIdeSession({ updatedAt: 1 }), {
+      alivePids: new Set([70, 71]),
+    });
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("PR #1407 follow-up: does not probe the source for a non-CodeBuddy session", () => {
+    const { calls } = decision(session({
+      agentId: "claude-code",
+      agentPid: 70,
+      sourcePid: 71,
+    }), { alivePids: new Set([71]) });
+    assert.deepStrictEqual(calls, [70]);
   });
 });

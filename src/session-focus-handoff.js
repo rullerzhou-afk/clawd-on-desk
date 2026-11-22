@@ -254,13 +254,29 @@ function focusCodexThreadTarget({
     });
 }
 
-// Priority order for locating the CodeBuddy app: the hook's own process chain
-// first (walking outward, the first CodeBuddy is the session's distribution),
-// then the resolved source and agent PIDs. Deduplicated positive integers only.
-function collectCodeBuddyPids(focusEntry) {
-  const values = [];
-  if (focusEntry && Array.isArray(focusEntry.pidChain)) values.push(...focusEntry.pidChain);
-  if (focusEntry) values.push(focusEntry.sourcePid, focusEntry.agentPid);
+// On Windows the entries before the agent in pidChain are per-event shells that
+// have already exited. A cache hit has no fresh chain and leaves the old one on
+// the session, so an agent that is missing from its chain belongs to a former
+// process and the whole chain must be ignored.
+function chainAboveAgent(pidChain, agentPid) {
+  if (!agentPid) return pidChain;
+  const agentIndex = pidChain.indexOf(agentPid);
+  return agentIndex >= 0 ? pidChain.slice(agentIndex + 1) : [];
+}
+
+// On Windows the candidates are the agent's ancestors, then the resolved
+// source, then the agent itself. Elsewhere every event rebuilds the process
+// tree, so the full pidChain comes first, then source, then agent.
+// Deduplicated positive integers only.
+function collectCodeBuddyPids(focusEntry, platform) {
+  const pidChain = focusEntry && Array.isArray(focusEntry.pidChain) ? focusEntry.pidChain : [];
+  const agentPid = focusEntry && focusEntry.agentPid;
+  const chain = platform === "win32" ? chainAboveAgent(pidChain, agentPid) : pidChain;
+  const values = [
+    ...chain,
+    focusEntry && focusEntry.sourcePid,
+    agentPid,
+  ];
   const seen = new Set();
   const pids = [];
   for (const value of values) {
@@ -289,6 +305,7 @@ function focusCodeBuddyIdeTarget({
   focusTerminalSession = () => false,
   findApp = () => Promise.resolve(null),
   openApp = null,
+  platform = process.platform,
 } = {}) {
   const id = String(sessionId || (focusEntry && focusEntry.id) || "");
   const context = `source=${requestSource} sid=${id}`;
@@ -334,7 +351,7 @@ function focusCodeBuddyIdeTarget({
     .catch((err) => fallBackToTerminal("codebuddy-app-activation-failed", err)));
 
   return Promise.resolve()
-    .then(() => findApp(collectCodeBuddyPids(focusEntry)))
+    .then(() => findApp(collectCodeBuddyPids(focusEntry, platform)))
     .then((app) => {
       const bundlePath = app && typeof app.bundlePath === "string" ? app.bundlePath : "";
       if (!bundlePath) return fallBackToTerminal("codebuddy-app-not-found");

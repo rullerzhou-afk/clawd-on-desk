@@ -314,14 +314,19 @@ function findCodeBuddyMacApp(pids, { execFile, fs: fsApi = fs } = {}) {
   });
 }
 
-// Windows images come from Get-Process. Accept only a normalized, drive-rooted
-// path to an .exe; its directory is the install root that holds resources\app.
-// Helpers such as agent-harness.exe live deeper and simply have no product.json
-// next to them, so they are skipped by the same product check as macOS.
+const CODEBUDDY_HARNESS_IMAGE_RE = /^(.+)\\resources\\app\\extensions\\(?:.+\\)?agent-harness\.exe$/i;
+
+// Accept only a normalized, drive-rooted path to an .exe. The in-process Win32
+// query supplies these images; Get-Process is only the fallback. The IDE's
+// agent-harness.exe lives deep under the install directory, so climb back to
+// the directory that owns resources\app. Other executables use their own
+// directory, which the product.json check then filters like macOS does.
 function codeBuddyWindowsAppDirFromImage(image) {
   const text = typeof image === "string" ? image.trim() : "";
   if (!/^[A-Za-z]:\\/.test(text) || win32.normalize(text) !== text || /[\0\r\n\t]/.test(text)) return null;
   if (!/\.exe$/i.test(text)) return null;
+  const harness = text.match(CODEBUDDY_HARNESS_IMAGE_RE);
+  if (harness) return harness[1];
   const dir = win32.dirname(text);
   return dir && dir !== text ? dir : null;
 }

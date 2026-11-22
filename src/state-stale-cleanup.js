@@ -104,6 +104,18 @@ function isLocalClaudeDesktopIdleSession(session) {
     && session.claudeEntrypoint === "claude-desktop";
 }
 
+function isLocalCodeBuddyIdeSession(session) {
+  return !!session
+    && session.agentId === "codebuddy"
+    && session.codebuddyClient === "CodeBuddyIDE"
+    && !session.host
+    && !session.headless
+    // A WSL session can carry only wslDistro (no host prefix), so exclude both
+    // markers explicitly; its Linux PIDs must never be probed as local ones.
+    && !isWslSourced({ wslDistro: session.wslDistro, host: session.host })
+    && session.platform !== "wsl";
+}
+
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
   const config = options.staleConfig || {};
@@ -160,7 +172,17 @@ function getStaleSessionDecision(session, options = {}) {
   const hasReachableAgentPid = !!(pidReachable && session.agentPid);
   const agentAlive = hasReachableAgentPid ? isProcessAliveOnce(session.agentPid) : null;
 
-  if (hasReachableAgentPid && !agentAlive) {
+  // The IDE extension host owns agent-harness.exe and restarts it on a crash or
+  // window reload while the IDE stays open. sourcePid can be the IDE's own
+  // launcher, so it cannot keep the row alive forever: this only defers the
+  // exit to the session timeout below.
+  const codeBuddyIdeAgentExitWithLiveSource = hasReachableAgentPid
+    && !agentAlive
+    && isLocalCodeBuddyIdeSession(session)
+    && !!session.sourcePid
+    && isProcessAliveOnce(session.sourcePid);
+
+  if (hasReachableAgentPid && !agentAlive && !codeBuddyIdeAgentExitWithLiveSource) {
     return { action: "delete", reason: "agent-exit" };
   }
 
@@ -323,6 +345,12 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: null };
   }
 
+  // Past the idle cutoff a CodeBuddy IDE row whose source is still alive is
+  // retired by age; working-like states already took the branch above.
+  if (sessionStaleMs > 0 && age > sessionStaleMs && codeBuddyIdeAgentExitWithLiveSource) {
+    return { action: "delete", reason: "codebuddy-ide-agent-exit-timeout" };
+  }
+
   // sessionStaleMs === 0 disables the idle/non-working age cutoff entirely.
   if (sessionStaleMs > 0 && age > sessionStaleMs) {
     if (pidReachable && session.sourcePid) {
@@ -360,5 +388,6 @@ module.exports = {
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
   isLocalClaudeDesktopIdleSession,
+  isLocalCodeBuddyIdeSession,
   getStaleSessionDecision,
 };

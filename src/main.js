@@ -3032,6 +3032,7 @@ function focusDashboardSession(sessionId, options = {}) {
       requestSource,
       focusLog,
       focusTerminalSession,
+      platform: process.platform,
       findApp: isWindowsHost ? findCodeBuddyWindowsApp : findCodeBuddyMacApp,
       // Windows has no bundle activation; leaving openApp unset makes a build
       // without the route (or a failed deep link) use the window focus below.

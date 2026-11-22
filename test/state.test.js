@@ -14,7 +14,7 @@ const _cloudlingTheme = themeLoader.loadTheme("cloudling");
 const { createTranslator } = require("../src/i18n");
 const { makeSessionKey, resolveSessionIdentity } = require("../src/session-key");
 const { isSessionInProgress, sessionSnapshotSignature } = require("../src/state-session-snapshot");
-const { isFocusableLocalHudSession } = require("../src/session-focus");
+const { getSessionFocusTarget, isFocusableLocalHudSession } = require("../src/session-focus");
 const { countLiveSubagents } = require("../src/state-visual-resolver");
 const { resolveIdleVisualChoice } = require("../src/idle-visual");
 
@@ -92,6 +92,47 @@ describe("PR #1386 follow-up: CodeBuddy IDE session metadata", () => {
     assert.strictEqual(session.sessionTitle, "分辨率分别是？");
     assert.strictEqual(session.sessionTitleFromPrompt, true);
     assert.strictEqual(session.codebuddyClient, "CodeBuddyIDE");
+  });
+
+  it("PR #1407 follow-up: keeps a CodeBuddy IDE row after the harness exits and refreshes identity later", () => {
+    const alivePids = new Set([71001]);
+    const localApi = require("../src/state")(makeCtx({
+      processKill: makePidKill(alivePids),
+    }));
+    try {
+      localApi.updateSession("codebuddy:s2", "working", "PreToolUse", {
+        agentId: "codebuddy", codebuddyClient: "CodeBuddyIDE",
+        sourcePid: 71001, agentPid: 71002, pidChain: [71003, 71002],
+        cwd: "/tmp/project",
+      });
+      localApi.cleanStaleSessions();
+      assert.ok(localApi.sessions.has("codebuddy:s2"), "a live IDE source must keep the row");
+
+      localApi.updateSession("codebuddy:s2", "thinking", "UserPromptSubmit", {
+        agentId: "codebuddy", codebuddyClient: "CodeBuddyIDE", cwd: "/tmp/project",
+        sessionTitle: "next turn", sessionTitleFromPrompt: true,
+      });
+      let session = localApi.sessions.get("codebuddy:s2");
+      assert.strictEqual(session.sourcePid, 71001);
+      assert.deepStrictEqual(
+        getSessionFocusTarget({ ...session, id: "codebuddy:s2" }, { osPlatform: "win32" }),
+        { canFocus: true, type: "codebuddy-ide", url: null }
+      );
+
+      alivePids.add(71004);
+      alivePids.add(71005);
+      alivePids.add(71006);
+      localApi.updateSession("codebuddy:s2", "working", "PreToolUse", {
+        agentId: "codebuddy", codebuddyClient: "CodeBuddyIDE",
+        sourcePid: 71006, agentPid: 71004, pidChain: [71005, 71004], cwd: "/tmp/project",
+      });
+      session = localApi.sessions.get("codebuddy:s2");
+      assert.strictEqual(session.sourcePid, 71006);
+      assert.strictEqual(session.agentPid, 71004);
+      assert.deepStrictEqual(session.pidChain, [71005, 71004]);
+    } finally {
+      localApi.cleanup();
+    }
   });
 });
 
