@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { createAccountQuotaStore } = require("../src/state-account-quota");
+const { normalizeCodexProfileConfig } = require("../src/codex-profiles");
 
 function tempPersistPath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-account-quota-")), "account-quota.json");
@@ -362,6 +363,36 @@ describe("account quota store", () => {
     assert.strictEqual(store.snapshot().length, 2);
     // Single source needs no merging.
     assert.strictEqual(store.snapshot({ mergeSources: true })[0].claudeQuota.updatedAt, 1000);
+  });
+
+  it("PR #1196 follow-up: reloading quota only retains configured local Codex profiles", (t) => {
+    const persistPath = tempPersistPath();
+    const home = path.dirname(persistPath);
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const now = () => 1000;
+    const profiles = (ids) => normalizeCodexProfileConfig({
+      profiles: ids.map((id) => ({ id, label: id, home: path.join(home, id) })),
+    }, { home, env: {} });
+    const store = createAccountQuotaStore({ persistPath, now, codexProfiles: profiles(["company", "lab"]) });
+    for (const [key, label, usedPercent] of [
+      [null, null, 10], ["remote:workbox", "workbox", 30],
+      ["codex-profile:company", "company", 70], ["codex-profile:lab", "lab", 80],
+    ]) {
+      store.update(key, { displayHost: label, codexQuota: { codexWeekly: { usedPercent, resetAt: 5000 } } });
+    }
+    assert.equal(store.flush(), true);
+
+    const keys = (snapshot) => snapshot.map((source) => source.sourceKey);
+    const reopened = createAccountQuotaStore({ persistPath, now, codexProfiles: profiles(["company"]) });
+    assert.deepEqual(keys(reopened.snapshot()).sort(), ["", "codex-profile:company", "remote:workbox"]);
+    assert.deepEqual(keys(reopened.snapshot({ mergeSources: true })), [null, "codex-profile:company"]);
+    assert.equal(reopened.flush(), true);
+
+    const defaultOnly = createAccountQuotaStore({ persistPath, now, codexProfiles: profiles([]) });
+    assert.deepEqual(keys(defaultOnly.snapshot()), ["", "remote:workbox"]);
+    assert.equal(defaultOnly.flush(), true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(persistPath, "utf8")).sources.map((source) => source.sourceKey),
+      ["", "remote:workbox"]);
   });
 
   it("keeps configured local Codex profiles separate from merged subscription sources", () => {

@@ -1711,7 +1711,7 @@ describe("dashboard window", () => {
     assert.match(rendererSource, /resetDateFormatterLang !== lang/);
   });
 
-  it("identifies the only additional local Codex quota while keeping default-only headers compact", () => {
+  it("PR #1196 follow-up: Dashboard labels default Codex by provider only alongside an extra local profile", () => {
     const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
     const functionSource = rendererSource.match(/function buildQuotaSourceHeader\([\s\S]*?^}/m);
     assert.ok(functionSource);
@@ -1721,6 +1721,14 @@ describe("dashboard window", () => {
       formatAsOf: () => "stale",
     });
     const currentQuota = { lastSeenAt: Date.now() };
+    for (const [provider, heading] of [
+      ["codexQuota", "dashboardQuotaSectionCodex"],
+      ["codexSparkQuota", "dashboardQuotaSectionCodexSpark"],
+    ]) {
+      const local = { sourceKey: null, host: null, multiSource: true };
+      assert.equal(buildHeader(local, currentQuota, null, provider), "dashboardQuotaSourceLocal");
+      assert.equal(buildHeader({ ...local, hasExtraCodexProfile: true }, currentQuota, null, provider), heading);
+    }
     assert.equal(buildHeader({
       sourceKey: "codex-profile:company", host: "Company", multiSource: false,
     }, currentQuota, null, "codexQuota"), "Company");

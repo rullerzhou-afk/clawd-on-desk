@@ -25,6 +25,7 @@ const {
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { getAgent } = require("../agents/registry");
 const { isPassiveNotifyEntry, isNativeQuestionNotify } = require("./passive-notify-entry");
+const { DEFAULT_CODEX_PROFILE_ID } = require("./codex-profiles");
 const { isCodexRemoteFallbackSuppressed } = require("./codex-remote-fallback-notice");
 const { validateQuestionAnswers } = require("./agent-question-wire");
 const { reminderHolds } = require("./permission-reminder");
@@ -782,6 +783,11 @@ function validateAndRemapIndexedElicitationAnswers(toolInput, indexedAnswers) {
     answers[wireQuestion] = answer.trim();
   }
   return { ok: true, answers };
+}
+
+function canFocusNativeQuestion(perm) {
+  return !perm.host && !(perm.isCodexUserInputNotify && perm.codexProfileId
+    && perm.codexProfileId !== DEFAULT_CODEX_PROFILE_ID);
 }
 
 function buildPermissionFocusEntry(perm) {
@@ -3309,6 +3315,7 @@ function buildPermissionBubblePayload(permEntry) {
     // read-only native-question card as Codex request_user_input.
     isClaudeTurnAskNotify: permEntry.isClaudeTurnAskNotify || false,
     isRemote: !!permEntry.host,
+    nativeQuestionFocusUnavailable: isNativeQuestionNotify(permEntry) && !canFocusNativeQuestion(permEntry),
     // Hermes must NOT get the regular go-to-terminal fallback: its opt-in
     // permission gate has no native approval prompt to hand back to. A 204 is
     // converted into a retryable block by the plugin. Clarify elicitation is
@@ -4953,7 +4960,7 @@ function handleBubbleExpanded(event, expanded) {
   if (isNativeQuestionNotify(perm)) {
     if (expanded === true) {
       dismissPassiveNotify(perm, "expand-focus");
-      if (!perm.host) {
+      if (canFocusNativeQuestion(perm)) {
         ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
       }
     }
@@ -5272,7 +5279,7 @@ function handleDecide(event, behavior) {
     dismissPassiveNotify(perm, "ipc-decide");
     // "codex-user-input-focus" is the renderer's generic native-question focus
     // action (name kept for compatibility); it covers the Claude card too.
-    if (behavior === "codex-user-input-focus" && !perm.host) {
+    if (behavior === "codex-user-input-focus" && canFocusNativeQuestion(perm)) {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
     return;

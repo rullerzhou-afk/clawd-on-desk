@@ -55,7 +55,7 @@ const {
   opencodeFamilyBridgeTokensEqual,
 } = require("./opencode-family-permission-identity");
 const { resolveSessionIdentity } = require("./session-key");
-const { codexProfileIdentity, resolveCodexProfile } = require("./codex-profiles");
+const { codexProfileIdentity, resolveExtraCodexHookProfile } = require("./codex-profiles");
 const {
   assessSessionAutomationIdentity,
 } = require("./session-automation-identity");
@@ -941,17 +941,7 @@ function handlePermissionPost(req, res, options) {
     // A WSL hook reports Linux PIDs that can alias live processes on this
     // Windows host, so they are stripped exactly like Remote SSH metadata.
     const wslSourced = isWslSourced({ wslDistro: data.wsl_distro, host: data.host });
-    const shouldResolveLocalCodexProfile = agentId === "codex"
-      && trustedProfileId === "local"
-      && !remoteProfile
-      && !wslSourced
-      && !normalizeString(data.host);
-    let codexProfile = null;
-    if (shouldResolveLocalCodexProfile) {
-      const profiles = typeof ctx.getCodexProfiles === "function" ? ctx.getCodexProfiles() : [];
-      const profile = resolveCodexProfile(data.transcript_path, profiles);
-      if (!profile.isDefault) codexProfile = profile;
-    }
+    const codexProfile = resolveExtraCodexHookProfile(ctx, data, { agentId, remoteProfile, wslSourced });
     // Intentional exception to the WSL PID strip: per-session automation
     // eligibility only strips Remote SSH, never WSL, to preserve the pre-fix
     // user-visible automation. Its trust therefore ends on session timeout,

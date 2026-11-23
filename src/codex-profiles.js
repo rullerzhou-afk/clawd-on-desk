@@ -13,6 +13,10 @@ const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const LABEL_CONTROL_RE = /[\x00-\x1f\x7f-\x9f\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069]/g;
 const PROFILE_CONFIG_KEYS = new Set(["id", "label", "home"]);
 
+function isValidCodexProfileId(id) {
+  return typeof id === "string" && PROFILE_ID_RE.test(id);
+}
+
 function normalizeHomePath(value, home = os.homedir()) {
   if (typeof value !== "string" || !value.trim()) return null;
   const input = value.trim();
@@ -44,7 +48,7 @@ function pathsOverlap(a, b) {
 // Resolve existing symlinks (and junctions on Windows), even when a Codex
 // sessions directory or a future transcript does not exist yet. Never inspect
 // files inside the home: this only resolves directory identities.
-function physicalPath(value) {
+function physicalPath(value, { rejectUnresolvedLeafLink = false } = {}) {
   let current = path.resolve(value);
   const missing = [];
   for (;;) {
@@ -52,6 +56,13 @@ function physicalPath(value) {
       return path.join(fs.realpathSync.native(current), ...missing.reverse());
     } catch (error) {
       if (!error || error.code !== "ENOENT") return null;
+      if (rejectUnresolvedLeafLink && !missing.length) {
+        try {
+          if (fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
+        } catch {
+          return null;
+        }
+      }
       const parent = path.dirname(current);
       if (parent === current) return null;
       missing.push(path.basename(current));
@@ -113,7 +124,7 @@ function normalizeCodexProfileConfig(config, options = {}) {
     const label = normalizeProfileLabel(entry.label);
     const profileHome = normalizeHomePath(entry.home, home);
     const labelKey = label && label.toLocaleLowerCase();
-    if (!PROFILE_ID_RE.test(id) || ids.has(id) || !label || labels.has(labelKey) || !profileHome) {
+    if (!isValidCodexProfileId(id) || ids.has(id) || !label || labels.has(labelKey) || !profileHome) {
       return failClosed();
     }
     const physicalHome = physicalPath(profileHome);
@@ -164,14 +175,27 @@ function resolveCodexProfile(transcriptPath, profiles) {
     || configuredProfiles[0];
   const transcript = normalizeTranscriptPath(transcriptPath);
   if (configuredProfiles.length === 1 || !transcript || !path.isAbsolute(transcript)) return defaultProfile;
-  const physicalTranscript = physicalPath(transcript);
+  const separator = process.platform === "win32" ? /[\\/]/ : "/";
+  if (transcript.split(separator).includes("..")) return defaultProfile;
+  const physicalTranscript = physicalPath(transcript, { rejectUnresolvedLeafLink: true });
   if (!physicalTranscript) return defaultProfile;
+  if (physicalSessionDirectories(defaultProfile.home).some((dir) => pathContains(dir, physicalTranscript))) {
+    return defaultProfile;
+  }
   // Hooks are installed in the default home. Only positive evidence from a
   // single additional profile's rollout directories overrides that default.
   const matches = configuredProfiles.filter((profile) => profile !== defaultProfile
     && physicalSessionDirectories(profile.home).some((dir) => pathContains(dir, physicalTranscript)
       && path.relative(dir, physicalTranscript) !== ""));
   return matches.length === 1 ? matches[0] : defaultProfile;
+}
+
+function resolveExtraCodexHookProfile(ctx, data, { agentId, remoteProfile, wslSourced }) {
+  if (agentId !== "codex" || remoteProfile || wslSourced
+    || (typeof data.host === "string" && data.host.trim())) return null;
+  const profiles = typeof ctx.getCodexProfiles === "function" ? ctx.getCodexProfiles() : [];
+  const profile = resolveCodexProfile(data.transcript_path, profiles);
+  return profile.isDefault ? null : profile;
 }
 
 function codexProfileIdentity(rawSessionId, profile, fallback = "default") {
@@ -201,10 +225,12 @@ module.exports = {
   DEFAULT_CODEX_PROFILE_ID,
   MAX_ADDITIONAL_CODEX_PROFILES,
   codexProfileIdentity,
+  isValidCodexProfileId,
   loadCodexProfiles,
   normalizeCodexProfileConfig,
   normalizeHomePath,
   normalizeProfileLabel,
   pathContains,
   resolveCodexProfile,
+  resolveExtraCodexHookProfile,
 };

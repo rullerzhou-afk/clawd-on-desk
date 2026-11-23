@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const { resolveSessionIdentity } = require("../src/session-key");
 const {
   codexProfileIdentity,
@@ -38,6 +39,25 @@ test("default profile preserves the existing home and optional profiles are vali
       quotaSource: "codex-profile:company",
     },
   ]);
+});
+
+test("PR #1196 follow-up: invalid Codex profile config logs a startup warning", () => {
+  const main = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+  const startupLoad = main.match(/\bloadCodexProfiles\(\{[^\n]+\}\)/);
+  assert.ok(startupLoad);
+  const warnings = [];
+  const profiles = vm.runInNewContext(startupLoad[0], {
+    loadCodexProfiles: (options) => loadCodexProfiles({
+      ...options,
+      readFileSync: () => "{invalid json",
+      home: TEST_HOME,
+      env: {},
+    }),
+    sessionLog() {}, // the session log path is initialized after this call
+    console: { warn: (message) => warnings.push(message) },
+  });
+  assert.equal(profiles.length, 1);
+  assert.match(warnings[0] || "", /local Codex profile config is invalid/);
 });
 
 test("invalid, duplicate, overlapping, or credential-shaped profile config fails closed", () => {
@@ -146,6 +166,47 @@ test("PR #1196 follow-up: single-profile routing preserves legacy custom transcr
   assert.equal(resolveCodexProfile(null, profiles), profiles[0]);
   assert.equal(resolveCodexProfile("relative.jsonl", profiles), profiles[0]);
 });
+
+for (const edge of ["overlaps the default root", "contains a parent segment", "is a dangling file link"]) {
+  test(`PR #1196 follow-up: a transcript that ${edge} stays with the default profile`, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-hook-path-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const defaultSessions = path.join(root, ".codex", "sessions");
+    const companyHome = path.join(root, "company");
+    const companySessions = path.join(companyHome, "sessions");
+    const outside = path.join(root, "outside", "nested");
+    for (const dir of [defaultSessions, companyHome, outside]) fs.mkdirSync(dir, { recursive: true });
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home: root, env: {} });
+    assert.equal(profiles.length, 2);
+    const directoryLink = process.platform === "win32" ? "junction" : "dir";
+    let transcript;
+    try {
+      if (edge === "overlaps the default root") {
+        fs.symlinkSync(defaultSessions, companySessions, directoryLink);
+        transcript = path.join(defaultSessions, "rollout.jsonl");
+        fs.writeFileSync(transcript, "");
+      } else {
+        fs.mkdirSync(companySessions);
+        if (edge === "contains a parent segment") {
+          const link = path.join(companySessions, "link");
+          fs.symlinkSync(outside, link, directoryLink);
+          transcript = [link, "..", "rollout.jsonl"].join(path.sep);
+          fs.writeFileSync(path.join(root, "outside", "rollout.jsonl"), "");
+          fs.writeFileSync(path.join(companySessions, "rollout.jsonl"), "");
+        } else {
+          transcript = path.join(companySessions, "rollout.jsonl");
+          fs.symlinkSync(path.join(outside, "missing.jsonl"), transcript, "file");
+        }
+      }
+    } catch (error) {
+      if (process.platform === "win32" && ["EPERM", "EACCES"].includes(error.code)) return t.skip("symlink permission is unavailable");
+      throw error;
+    }
+    assert.equal(resolveCodexProfile(transcript, profiles), profiles[0]);
+  });
+}
 
 test("zero-config preserves the legacy local session identity and quota source", () => {
   const rawId = "codex:legacy-session";

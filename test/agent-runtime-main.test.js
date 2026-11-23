@@ -575,6 +575,33 @@ describe("agent-runtime-main", () => {
     assert.equal(state.sessions.has(personalTurn.sessionId), true);
   });
 
+  it("PR #1196 follow-up: the default archive tracker resolves a relative CODEX_HOME itself", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-archive-home");
+    const env = { CODEX_HOME: " codex-dev " };
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env });
+    const createTracker = require("../src/codex-archive-tracker");
+    for (const override of [undefined, path.join(home, "override")]) {
+      const inputs = [];
+      const runtime = createAgentRuntimeMain({
+        codexProfiles,
+        loadCodexArchiveTracker: () => (options) => {
+          inputs.push(options);
+          return { codexHome: createTracker(options).codexHome };
+        },
+        codexArchiveOptions: {
+          resolveCodexHome: () => createTracker.resolveCodexHome(env, () => home),
+          ...(override ? { codexHome: override } : {}),
+        },
+      });
+      t.after(runtime.cleanup);
+      assert.equal(runtime.startCodexArchiveTracker().codexHome, override || "codex-dev");
+      assert.equal(Object.hasOwn(inputs[0], "codexHome"), override !== undefined);
+      assert.equal(inputs[1].codexHome, codexProfiles[1].home);
+    }
+  });
+
   it("retires archived sessions only from the owning local Codex profile", () => {
     const instances = [];
     const archiveTrackers = [];
@@ -1353,6 +1380,65 @@ describe("agent-runtime-main", () => {
       resolveCodexOfficialHookState(payload, "idle", new Map(), classifier, remoteId),
       { state: "idle", drop: false }
     );
+  });
+
+  for (const start of ["startCodexLogMonitor", "startMonitorForAgent"]) {
+    it(`PR #1196 follow-up: ${start} isolates a failing Codex scan and starts the archive trackers`, (t) => {
+      const home = path.join(os.tmpdir(), "clawd-codex-start-isolation");
+      const codexProfiles = normalizeCodexProfileConfig({
+        profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+      }, { home, env: {} });
+      const started = [];
+      const warnings = [];
+      let archivesStarted = 0;
+      class Monitor {
+        constructor(agent) { this.dir = agent.logConfig.sessionDir; }
+        start() {
+          started.push(this.dir);
+          if (this.dir === path.join(codexProfiles[0].home, "sessions")) throw new Error("scan failed");
+        }
+        stop() {}
+      }
+      const runtime = createAgentRuntimeMain({
+        codexProfiles,
+        loadCodexLogMonitor: () => Monitor,
+        loadCodexArchiveTracker: () => () => ({ start: () => archivesStarted++ }),
+        logWarn: (...args) => warnings.push(args.join(" ")),
+      });
+      t.after(runtime.cleanup);
+      assert.doesNotThrow(() => runtime[start]("codex"));
+      assert.deepEqual(started, codexProfiles.map((profile) => path.join(profile.home, "sessions")));
+      assert.equal(archivesStarted, 2);
+      assert.match(warnings[0], /Codex.*scan failed/);
+    });
+  }
+
+  it("PR #1196 follow-up: enabling Codex retries profiles that failed to construct", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-construction-retry");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const instances = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    let attempts = 0;
+    const runtime = createAgentRuntimeMain({
+      codexProfiles,
+      loadCodexLogMonitor: () => {
+        if (++attempts === 1) throw new Error("load failed");
+        return FakeMonitor;
+      },
+      logWarn: () => {},
+    });
+    t.after(runtime.cleanup);
+    runtime.startCodexLogMonitor();
+    const company = runtime.getCodexMonitors().get("company");
+    assert.ok(company);
+    assert.equal(runtime.getCodexMonitors().has("default"), false);
+    runtime.stopMonitorForAgent("codex");
+    runtime.startMonitorForAgent("codex");
+    assert.equal(runtime.getCodexMonitors().get("default")?.started, 1);
+    assert.equal(runtime.getCodexMonitors().get("company"), company);
+    assert.equal(company.started, 2);
   });
 
   it("starts and stops the Codex monitor through agent gate hooks and cleanup", () => {

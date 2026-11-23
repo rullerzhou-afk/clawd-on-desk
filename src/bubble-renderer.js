@@ -1606,12 +1606,10 @@ function show(data) {
     card.classList.add("codex-user-input-focus-card");
     card.setAttribute("role", "button");
     card.setAttribute("tabindex", "0");
-    card.setAttribute("aria-label", data.isRemote
-      ? bubbleText(data.lang, "gotIt")
-      : bubbleText(data.lang, copy.go));
-    btnAllow.textContent = data.isRemote
-      ? bubbleText(data.lang, "gotIt")
-      : bubbleText(data.lang, copy.go);
+    const actionLabel = bubbleText(data.lang,
+      data.isRemote || data.nativeQuestionFocusUnavailable ? "gotIt" : copy.go);
+    card.setAttribute("aria-label", actionLabel);
+    btnAllow.textContent = actionLabel;
     btnAllow.disabled = false;
     btnDeny.style.display = "none";
     revealCard();

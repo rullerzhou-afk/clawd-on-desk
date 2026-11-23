@@ -2560,12 +2560,14 @@ const recapRuntime = createRecapRuntime({
   onRecorded: () => settingsWindowRuntime.notifyRecapChanged(),
 });
 
+const codexProfiles = loadCodexProfiles({ logWarn: console.warn });
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get hitWin() { return hitWin; },
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
+  codexProfiles,
   recapSink: recapRuntime,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
   get deepseekBalanceCollectionEnabled() { return deepseekBalanceCollectionEnabled; },
@@ -3286,7 +3288,7 @@ agentRuntime = createAgentRuntimeMain({
   // not prove a Codex client has started again in this boot. Null means no
   // boundary (uptime unavailable) and must not block startup.
   localCodexBootTimeMs: estimateHostBootTimeMs(),
-  codexProfiles: loadCodexProfiles({ logWarn: (message) => sessionLog(message) }),
+  codexProfiles,
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,

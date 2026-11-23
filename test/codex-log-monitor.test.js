@@ -52,7 +52,7 @@ describe("CodexLogMonitor", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("reads only rollout logs, never auth files or tokens in multiple Codex homes", (t) => {
+  it("PR #1196 follow-up: reads rollouts from both Codex homes without opening auth or token files", (t) => {
     const companyHome = path.join(tmpDir, "company-home");
     const companySessions = path.join(companyHome, "sessions");
     const companyDay = new Date();
@@ -64,8 +64,8 @@ describe("CodexLogMonitor", () => {
     );
     fs.mkdirSync(companyDateDir, { recursive: true });
     const rollout = '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n';
-    fs.writeFileSync(path.join(dateDir, TEST_FILENAME), rollout);
-    fs.writeFileSync(path.join(companyDateDir, DESKTOP_TURN_FILENAME), rollout);
+    const rolloutPaths = [path.join(dateDir, TEST_FILENAME), path.join(companyDateDir, DESKTOP_TURN_FILENAME)];
+    for (const file of rolloutPaths) fs.writeFileSync(file, rollout);
     for (const home of [tmpDir, companyHome]) {
       fs.writeFileSync(path.join(home, "auth.json"), '{"access_token":"must-not-read"}');
       fs.writeFileSync(path.join(home, "tokens.json"), '{"secret":"must-not-read"}');
@@ -87,8 +87,7 @@ describe("CodexLogMonitor", () => {
     ];
     try {
       monitors.forEach((instance) => instance.start());
-      assert.ok(accessed.some((file) => file.endsWith(".jsonl")),
-        "the fixture must prove the scanner actually opened rollout data");
+      for (const file of rolloutPaths) assert.ok(accessed.includes(file), `rollout was not read: ${file}`);
       assert.equal(accessed.some((file) =>
         ["auth.json", "tokens.json"].includes(path.basename(file))), false,
       "neither profile scanner may open auth or token data");

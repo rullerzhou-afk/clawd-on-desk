@@ -3,7 +3,7 @@ const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
-const { codexProfileIdentity, resolveCodexProfile } = require("./codex-profiles");
+const { codexProfileIdentity, resolveExtraCodexHookProfile } = require("./codex-profiles");
 const { normalizeOpencodeAttachUrl } = require("./opencode-attach-target");
 const {
   assessSessionAutomationIdentity,
@@ -352,17 +352,7 @@ function handleStatePost(req, res, options) {
       const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
         ? remoteProfile.profileId
         : "local";
-      const shouldResolveLocalCodexProfile = agentId === "codex"
-        && trustedProfileId === "local"
-        && !remoteProfile
-        && !wslSourced
-        && !(typeof data.host === "string" && data.host.trim());
-      let codexProfile = null;
-      if (shouldResolveLocalCodexProfile) {
-        const profiles = typeof ctx.getCodexProfiles === "function" ? ctx.getCodexProfiles() : [];
-        const profile = resolveCodexProfile(data.transcript_path, profiles);
-        if (!profile.isDefault) codexProfile = profile;
-      }
+      const codexProfile = resolveExtraCodexHookProfile(ctx, data, { agentId, remoteProfile, wslSourced });
       const sessionAutomationIdentity = assessSessionAutomationIdentity({
         agentId,
         channel: "state",

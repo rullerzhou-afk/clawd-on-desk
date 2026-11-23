@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { StringDecoder } = require("string_decoder");
+const { isValidCodexProfileId } = require("./codex-profiles");
 const { createCanonicalRecapEvent } = require("./recap-event");
 const { getMetricSupport } = require("./recap-metrics");
 const {
@@ -138,7 +139,8 @@ function createRecapJournal(options = {}) {
     // HMACs, never the raw profile identifier.
     const localCodexProfileScope = canonical.agentId === "codex"
       && typeof identity.scopeId === "string"
-      && /^codex-profile:[a-z0-9][a-z0-9_-]{0,31}$/.test(identity.scopeId);
+      && identity.scopeId.startsWith("codex-profile:")
+      && isValidCodexProfileId(identity.scopeId.slice("codex-profile:".length));
     const scopeId = canonical.scope === "local"
       ? (localCodexProfileScope ? identity.scopeId : "local")
       : identity.scopeId || canonical.scope;

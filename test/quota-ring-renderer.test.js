@@ -302,7 +302,7 @@ describe("quota ring renderer model", () => {
     assert.strictEqual(readout.children[1].textContent, "7d");
   });
 
-  it("labels the default Codex quota separately from local profiles", () => {
+  it("PR #1196 follow-up: the ring labels default Codex by provider only alongside a displayed local profile", () => {
     const context = loadRenderer();
     const now = 1_000_000;
     const source = {
@@ -313,14 +313,19 @@ describe("quota ring renderer model", () => {
         lastSeenAt: now,
       },
     };
-    const model = modelFor(context, source, 2, now, true);
-    assert.equal(model.host, "Codex");
-    const company = modelFor(context, {
-      sourceKey: "codex-profile:company",
-      host: "Company",
-      codexQuota: source.codexQuota,
-    }, 2, now, true);
-    assert.equal(company.host, "Company");
+    const remote = { ...source, sourceKey: "remote:workbox", host: "workbox" };
+    const company = { ...source, sourceKey: "codex-profile:company", host: "Company" };
+    for (const [sources, labels] of [
+      [[source, remote], ["Local", "workbox"]],
+      [[source, company], ["Codex", "Company"]],
+      [[company], ["Company"]],
+      [[source, remote, { ...remote, sourceKey: "remote:lab", host: "lab" }, company], ["Local", "workbox", "lab"]],
+    ]) {
+      context.__sources = sources;
+      context.__now = now;
+      const markers = vm.runInContext("payload.accountQuota = __sources; collectCoins(__now).map(m => m.sourceMarker)", context);
+      assert.deepStrictEqual(Array.from(markers), labels);
+    }
   });
 
   it("shows an additional Codex profile label when it is the only quota source", () => {

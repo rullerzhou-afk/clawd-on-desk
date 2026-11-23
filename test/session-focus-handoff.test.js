@@ -289,6 +289,32 @@ describe("session focus handoff", () => {
     assert.deepStrictEqual(calls, [["publish", "session-approval"], ["open", "dsh://open"]]);
   });
 
+  it("PR #1196 follow-up: main blocks Codex focus from an extra profile's pending card alone", () => {
+    const main = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+    const pendingFocus = main.match(/^function getPendingPermissionFocusEntry\([\s\S]*?^}/m);
+    const dashboardFocus = main.match(/^function focusDashboardSession\([\s\S]*?^}/m);
+    assert.ok(pendingFocus && dashboardFocus);
+    const pendingPermissions = ["company", undefined].map((codexProfileId) => ({
+      sessionId: makeSessionKey({ rawSessionId: codexProfileId
+        ? "codex-profile:company:codex:fixture" : "codex:fixture" }),
+      agentId: "codex", sourcePid: 731, codexProfileId,
+    }));
+    const focused = [];
+    const context = vm.createContext({
+      sessions: new Map(), pendingPermissions, process: { platform: "darwin" },
+      mergeSessionFocusEntry, getSessionFocusTarget,
+      focusLog: () => {},
+      focusTerminalSession: (_entry, id) => { focused.push(id); return true; },
+    });
+    vm.runInContext(pendingFocus[0] + "\n" + dashboardFocus[0], context);
+    const focusFromCard = (sessionId) => context.focusDashboardSession(sessionId, {
+      fallbackEntry: context.getPendingPermissionFocusEntry(sessionId),
+    });
+    assert.strictEqual(focusFromCard(pendingPermissions[0].sessionId), false);
+    assert.strictEqual(focusFromCard(pendingPermissions[1].sessionId), true);
+    assert.deepStrictEqual(focused, [pendingPermissions[1].sessionId]);
+  });
+
   it("issue #1392: terminal focus drops a Claude Desktop WT handle but keeps a terminal one", () => {
     // Same VM technique as the dispatcher test above: execute the real
     // focusTerminalSession and inject the window layer plus the helper it calls.

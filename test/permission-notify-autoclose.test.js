@@ -301,7 +301,7 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(harness.focused[0][0], "codex-a");
   });
 
-  it("PR #1196 follow-up: an extra-profile question click cannot focus without a live row", (t) => {
+  it("PR #1196 follow-up: an extra-profile question card dismisses without requesting focus", (t) => {
     const harness = createPermissionHarness();
     const { api } = harness;
     const home = path.join(os.tmpdir(), "clawd-codex-question-profiles");
@@ -327,16 +327,19 @@ describe("permission passive notify auto-close refresh", () => {
         { sourcePid: 42 },
       );
       const entry = api.pendingPermissions[0];
+      const payload = api.buildPermissionBubblePayload(entry);
       api.handleDecide({ sender: { __window: entry.bubble } }, "codex-user-input-focus");
-      const [id, { fallbackEntry }] = harness.focused.pop();
-      const focus = getSessionFocusTarget(mergeSessionFocusEntry(null, fallbackEntry, id), { osPlatform: "darwin" });
+      assert.strictEqual(api.pendingPermissions.length, 0);
       if (profile.isDefault) {
+        assert.notStrictEqual(payload.nativeQuestionFocusUnavailable, true);
+        const [id, { fallbackEntry }] = harness.focused.pop();
+        const focus = getSessionFocusTarget(mergeSessionFocusEntry(null, fallbackEntry, id), { osPlatform: "darwin" });
         assert.strictEqual(Object.hasOwn(fallbackEntry, "codexProfileId"), false);
         assert.strictEqual(focus.type, "terminal");
       } else {
-        assert.strictEqual(fallbackEntry.codexProfileId, profile.id);
-        assert.strictEqual(focus.reason, "codex-profile-not-active");
-        assert.strictEqual(focus.canFocus, false);
+        assert.strictEqual(entry.codexProfileId, profile.id);
+        assert.strictEqual(payload.nativeQuestionFocusUnavailable, true);
+        assert.deepStrictEqual(harness.focused, []);
       }
     }
   });

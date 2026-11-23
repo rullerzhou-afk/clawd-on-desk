@@ -351,6 +351,21 @@ describe("permission bubble terminal fallback (issue #689)", () => {
 });
 
 describe("permission bubble compact/detail presentation", () => {
+  it("PR #1196 follow-up: an unfocusable local Codex question uses the remote acknowledgement label", () => {
+    for (const flags of [{ isRemote: true }, { nativeQuestionFocusUnavailable: true }, {}]) {
+      const harness = createHarness();
+      harness.show({
+        toolName: "CodexUserInput",
+        isCodexUserInputNotify: true,
+        toolInput: { questions: [{ id: "q", question: "Choose one", options: [] }] },
+        ...flags,
+      });
+      const label = Object.keys(flags).length ? "Got it" : "Go to Codex";
+      assert.strictEqual(harness.element("btnAllow").textContent, label);
+      assert.strictEqual(harness.element("card").getAttribute("aria-label"), label);
+    }
+  });
+
   it("keeps Codex native questions compact and sends the whole card back to Codex", () => {
     const harness = createHarness();
     harness.show({

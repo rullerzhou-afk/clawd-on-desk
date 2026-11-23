@@ -874,9 +874,11 @@ function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel, providerK
   const namedLocalCodex = typeof sourceEntry.sourceKey === "string"
     && sourceEntry.sourceKey.startsWith("codex-profile:");
   if (multiSource || namedLocalCodex) {
-    const localLabel = providerKey === "codexSparkQuota"
-      ? t("dashboardQuotaSectionCodexSpark")
-      : (providerKey === "codexQuota" ? t("dashboardQuotaSectionCodex") : t("dashboardQuotaSourceLocal"));
+    let localLabel = t("dashboardQuotaSourceLocal");
+    if (sourceEntry.hasExtraCodexProfile) {
+      if (providerKey === "codexQuota") localLabel = t("dashboardQuotaSectionCodex");
+      if (providerKey === "codexSparkQuota") localLabel = t("dashboardQuotaSectionCodexSpark");
+    }
     parts.push(sourceEntry.host || localLabel);
   }
   if (baseLabel) parts.push(baseLabel);
@@ -1023,7 +1025,9 @@ function renderQuotaSummary(snapshot) {
   kimiQuotaRefreshFeedbackEl = null;
 
   const multiSource = accountQuota.length > 1;
-  const sources = accountQuota.map((entry) => ({ ...entry, multiSource }));
+  const hasExtraCodexProfile = accountQuota.some((source) => typeof source.sourceKey === "string"
+    && source.sourceKey.startsWith("codex-profile:"));
+  const sources = accountQuota.map((entry) => ({ ...entry, multiSource, hasExtraCodexProfile }));
 
   const sections = [];
 

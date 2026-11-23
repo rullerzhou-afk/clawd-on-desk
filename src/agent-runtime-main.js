@@ -14,7 +14,6 @@ const {
   DEFAULT_CODEX_PROFILE_ID,
   codexProfileIdentity,
   normalizeCodexProfileConfig,
-  resolveCodexProfile,
 } = require("./codex-profiles");
 const { bareCodexSessionId } = require("../hooks/codex-session-index");
 const {
@@ -130,34 +129,17 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function scopeLocalCodexSession(sessionId, opts = {}) {
-    if (!isLocalCodexSessionRecord(opts)) return { accepted: true, sessionId, opts };
-    const explicitProfile = typeof opts.codexProfileId === "string"
-      ? codexProfilesById.get(opts.codexProfileId)
-      : null;
-    if (typeof opts.codexProfileId === "string" && !explicitProfile) {
-      return { accepted: false, sessionId, opts };
-    }
-    if (explicitProfile && explicitProfile.id === DEFAULT_CODEX_PROFILE_ID) {
+    if (!isLocalCodexSessionRecord(opts) || typeof opts.codexProfileId !== "string") {
       return { accepted: true, sessionId, opts };
     }
-    const rawSessionId = typeof opts.rawSessionId === "string" ? opts.rawSessionId.trim() : "";
-    if (!rawSessionId) {
-      const existing = getStateRuntime()?.sessions?.get?.(sessionId);
-      const existingProfile = codexProfilesById.get(existing?.codexProfileId);
-      if (existingProfile && existingProfile.id !== DEFAULT_CODEX_PROFILE_ID) {
-        return {
-          accepted: true,
-          sessionId,
-          opts: { ...opts, ...getCodexProfileSessionFields(existingProfile) },
-        };
-      }
-      // The caller may only have a canonical key. Never encode it again.
-      if (typeof sessionId === "string" && sessionId.startsWith("s1.")) {
-        return { accepted: true, sessionId, opts };
-      }
-    }
-    const profile = explicitProfile || resolveCodexProfile(opts.transcriptPath, codexProfiles);
+    const profile = codexProfilesById.get(opts.codexProfileId);
+    if (!profile) return { accepted: false, sessionId, opts };
     if (profile.id === DEFAULT_CODEX_PROFILE_ID) return { accepted: true, sessionId, opts };
+    const rawSessionId = typeof opts.rawSessionId === "string" ? opts.rawSessionId.trim() : "";
+    // The caller may only have a canonical key. Never encode it again.
+    if (!rawSessionId && typeof sessionId === "string" && sessionId.startsWith("s1.")) {
+      return { accepted: true, sessionId, opts };
+    }
     const identity = codexProfileIdentity(rawSessionId || sessionId, profile);
     return {
       accepted: true,
@@ -641,15 +623,11 @@ function createAgentRuntimeMain(options = {}) {
         && typeof options.codexArchiveOptions === "object"
         ? options.codexArchiveOptions
         : {};
-      const codexHome = profile.id === DEFAULT_CODEX_PROFILE_ID
-        && typeof trackerOptions.codexHome === "string"
-        ? trackerOptions.codexHome
-        : profile.home;
       const tracker = createTracker({
         debugLog,
         now,
         ...trackerOptions,
-        codexHome,
+        ...(!profile.isDefault ? { codexHome: profile.home } : {}),
         getLiveCandidateIds: () => collectLiveLocalCodexCandidates(profile.id),
         onArchiveConfirmed: (rawArchiveId) => handleCodexArchiveConfirmed(profile, rawArchiveId),
       });
@@ -1120,8 +1098,8 @@ function createAgentRuntimeMain(options = {}) {
     // decided to start; re-reading the persisted gate here races the settings
     // store write. Match the existing monitor.start() semantics.
     if (agentId !== "codex" || disposed) return;
-    if (!codexMonitors.size) for (const profile of codexProfiles) createCodexLogMonitor(profile);
-    for (const monitor of codexMonitors.values()) monitor.start();
+    for (const profile of codexProfiles) createCodexLogMonitor(profile);
+    startCodexMonitors();
     startCodexArchiveTracker();
   }
 
@@ -1465,8 +1443,7 @@ function createAgentRuntimeMain(options = {}) {
             }
             return;
           }
-          if (!isLocalCodexSessionRecord(session) || session.headless
-            || (session.codexProfileId || DEFAULT_CODEX_PROFILE_ID) !== profile.id) return;
+          if (!isLocalCodexSessionRecord(session) || session.headless) return;
           // This callback has already passed the monitor's child-own lifecycle
           // fence. It must never observe the child's turn under the parent id,
           // clear a parent bubble, or carry child plan/process/recap metadata.
@@ -1549,11 +1526,19 @@ function createAgentRuntimeMain(options = {}) {
     }
   }
 
+  function startCodexMonitors() {
+    for (const profile of codexProfiles) {
+      try {
+        codexMonitors.get(profile.id)?.start();
+      } catch (err) {
+        logWarn(`Clawd: ${profile.label} log monitor not started:`, err && err.message);
+      }
+    }
+  }
+
   function startCodexLogMonitor() {
     for (const profile of codexProfiles) createCodexLogMonitor(profile);
-    if (isAgentEnabled("codex")) {
-      for (const monitor of codexMonitors.values()) monitor.start();
-    }
+    if (isAgentEnabled("codex")) startCodexMonitors();
     // The archive observer is independent of the JSONL monitor, so it still
     // starts when the monitor is unavailable.
     if (isAgentEnabled("codex")) startCodexArchiveTracker();

@@ -56,7 +56,7 @@ const { createClaudeToolPhaseLedger } = require("./claude-tool-phase");
 const { classifyPermissionInteraction, INTERACTION_INTENT } = require("./permission-automation-policy");
 const { getStartupRecoveryProcessNames } = require("../agents/registry");
 const { normalizeCodexTurnId } = require("./codex-turn-id");
-const { DEFAULT_CODEX_PROFILE_ID, normalizeProfileLabel } = require("./codex-profiles");
+const { DEFAULT_CODEX_PROFILE_ID, isValidCodexProfileId, normalizeProfileLabel } = require("./codex-profiles");
 const { TERMINAL_EVENTS: CODEX_TERMINAL_EVENTS } = require("./codex-turn-fence");
 const { hasReusableDefaultIdentity, mapRecapMetrics } = require("./recap-metrics");
 const {
@@ -75,7 +75,6 @@ const recapSink = ctx.recapSink && typeof ctx.recapSink.record === "function"
   : NOOP_RECAP_SINK;
 const pendingClaudeRecapStarts = new Map();
 const MAX_PENDING_CLAUDE_RECAP_STARTS = 256;
-const CODEX_PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 const _getCursor = ctx.getCursorScreenPoint || (screen ? () => screen.getCursorScreenPoint() : null);
 const _kill = ctx.processKill || process.kill.bind(process);
@@ -95,9 +94,9 @@ function normalizeLocalCodexProfileFields(input = {}, existing = null) {
   const existingId = existing && typeof existing.codexProfileId === "string"
     ? existing.codexProfileId
     : "";
-  const profileId = CODEX_PROFILE_ID_RE.test(candidateId)
+  const profileId = isValidCodexProfileId(candidateId)
     ? candidateId
-    : (CODEX_PROFILE_ID_RE.test(existingId) ? existingId : DEFAULT_CODEX_PROFILE_ID);
+    : (isValidCodexProfileId(existingId) ? existingId : DEFAULT_CODEX_PROFILE_ID);
   if (profileId === DEFAULT_CODEX_PROFILE_ID) return {};
   const profileLabel = normalizeProfileLabel(input.codexProfileLabel)
     || normalizeProfileLabel(existing && existing.codexProfileLabel)
@@ -369,6 +368,7 @@ const claudeToolPhases = createClaudeToolPhaseLedger();
 // filesystem-free; main.js passes the real path.
 const accountQuota = createAccountQuotaStore({
   persistPath: ctx.accountQuotaPersistPath || null,
+  codexProfiles: ctx.codexProfiles,
   logWarn: console.warn,
 });
 // Upgrade cleanup: older builds retained the last local Claude quota even
@@ -3548,8 +3548,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   if (SESSION_END_EVENTS.has(event)) {
     const endingSession = sessions.get(sessionId);
     const deferredCueSessions = [];
-    if (srcAgentId === "codex" && srcHeadless && base.profileId === "local" && !srcHost && !srcWslDistro
-      && String(srcPlatform || "").trim().toLowerCase() !== "wsl") {
+    if (srcAgentId === "codex" && srcHeadless) {
       // Only children present before this SessionEnd can settle a deferred cue;
       // an unrelated child must not settle a parent whose evidence expired.
       const activeParents = [...deferredCodexCompletionCues].filter(id => codexSubagentPresentation.has(id));

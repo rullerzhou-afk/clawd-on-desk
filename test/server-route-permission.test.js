@@ -3173,6 +3173,28 @@ describe("server-route-permission local Codex profile routing", () => {
     assert.strictEqual(reviewed.ctx.pendingPermissions[0]?.sessionId,
       codexProfileIdentity(rawSessionId, profiles[1]).sessionId);
 
+    const invalidated = request(profiles[1], "user");
+    const transcript = JSON.parse(invalidated).transcript_path;
+    const latestTurnContext = JSON.stringify({ type: "turn_context", payload: {
+      turn_id: "A", approvals_reviewer: "auto_review", approval_policy: "on-request",
+    } }) + "\n";
+    const rechecked = await callPermissionPost(invalidated, {
+      ctx: {
+        ...ctx,
+        getPermissionAutomationMode: () => "auto-tools",
+        getPermissionReviewConfig: () => ({
+          command: [process.execPath, "-e",
+            `require("node:fs").appendFileSync(${JSON.stringify(transcript)}, ${JSON.stringify(latestTurnContext)})`],
+          timeoutMs: 5000,
+        }),
+      },
+    });
+    await waitForRoute(() => rechecked.ctx.pendingPermissions.length > 0 || rechecked.statusCode === 204,
+      "Codex review did not settle after the reviewer changed");
+    assert.ok(fs.readFileSync(transcript, "utf8").endsWith(latestTurnContext));
+    assert.strictEqual(rechecked.statusCode, 204);
+    assert.strictEqual(rechecked.ctx.pendingPermissions.length, 0);
+
     for (const [profile, reviewer] of [[profiles[0], "user"], [profiles[1], "auto_review"]]) {
       const native = await callPermissionPost(request(profile, reviewer), { ctx });
       assert.strictEqual(native.statusCode, 204);

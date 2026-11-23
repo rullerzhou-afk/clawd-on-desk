@@ -173,6 +173,13 @@ function createAccountQuotaStore(options = {}) {
   // options.persistPath: undefined -> default path, null -> in-memory only.
   const persistPath = options.persistPath === undefined ? DEFAULT_PERSIST_PATH : options.persistPath;
   const logWarn = typeof options.logWarn === "function" ? options.logWarn : () => {};
+  const codexProfileSources = Array.isArray(options.codexProfiles)
+    ? new Set(options.codexProfiles.map((profile) => profile.quotaSource))
+    : null;
+
+  function isQuotaSourceEnabled(sourceKey) {
+    return !codexProfileSources || !sourceKey?.startsWith("codex-profile:") || codexProfileSources.has(sourceKey);
+  }
 
   // Map<hostKey, { host, [providerKey]: { group, updatedAt, lastSeenAt } }>
   // ("" = local). updatedAt = last VALUE change (drives display of the
@@ -195,6 +202,7 @@ function createAccountQuotaStore(options = {}) {
     const persistVersion = Number(raw && raw.version);
     const preModelRoutingPersist = !Number.isFinite(persistVersion) || persistVersion < 6;
     const entries = raw && Array.isArray(raw.sources) ? raw.sources : [];
+    let droppedProfileSource = false;
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
       if (sources.size >= MAX_SOURCES) break;
@@ -202,6 +210,10 @@ function createAccountQuotaStore(options = {}) {
       const sourceKey = typeof entry.sourceKey === "string"
         ? normalizeSourceHost(entry.sourceKey)
         : host;
+      if (!isQuotaSourceEnabled(sourceKey)) {
+        droppedProfileSource = true;
+        continue;
+      }
       const record = { host };
       let hasAny = false;
       for (const providerKey of QUOTA_PROVIDER_KEYS) {
@@ -241,6 +253,7 @@ function createAccountQuotaStore(options = {}) {
       if (hasAny) sources.set(sourceKey || "", record);
     }
     pruneStale(nowMs);
+    if (droppedProfileSource) schedulePersist();
   }
 
   // Retire data nothing will ever refresh: buckets whose window reset long
@@ -325,6 +338,7 @@ function createAccountQuotaStore(options = {}) {
   function updateDetailed(source, quotas = {}) {
     const nowMs = now();
     const sourceKey = normalizeSourceHost(source);
+    if (!isQuotaSourceEnabled(sourceKey)) return { accepted: false, changed: false };
     const key = sourceKey || "";
     const requestedDisplayHost = Object.prototype.hasOwnProperty.call(quotas, "displayHost")
       ? normalizeSourceHost(quotas.displayHost)
