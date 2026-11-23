@@ -4,6 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { makeSessionKey, resolveSessionIdentity } = require("./session-key");
+const { normalizeTranscriptPath } = require("./transcript-path");
 
 const DEFAULT_CODEX_PROFILE_ID = "default";
 const CODEX_PROFILES_CONFIG_PATH = path.join(os.homedir(), ".clawd", "codex-profiles.json");
@@ -36,6 +37,10 @@ function pathContains(root, candidate) {
     && relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
+function pathsOverlap(a, b) {
+  return pathContains(a, b) || pathContains(b, a);
+}
+
 // Resolve existing symlinks (and junctions on Windows), even when a Codex
 // sessions directory or a future transcript does not exist yet. Never inspect
 // files inside the home: this only resolves directory identities.
@@ -53,6 +58,10 @@ function physicalPath(value) {
       current = parent;
     }
   }
+}
+
+function physicalSessionDirectories(home) {
+  return ["sessions", "archived_sessions"].map((dir) => physicalPath(path.join(home, dir))).filter(Boolean);
 }
 
 function normalizeCodexProfileConfig(config, options = {}) {
@@ -87,6 +96,16 @@ function normalizeCodexProfileConfig(config, options = {}) {
   const ids = new Set([DEFAULT_CODEX_PROFILE_ID]);
   const labels = new Set(["codex"]);
   const homes = [physicalPath(defaultHome) || defaultHome];
+  const sessionDirectories = [];
+  function addSessionDirectories(profileHome) {
+    for (const dir of physicalSessionDirectories(profileHome)) {
+      if (sessionDirectories.some((existing) => pathsOverlap(existing, dir))) return false;
+      sessionDirectories.push(dir);
+    }
+    return true;
+  }
+  if (!addSessionDirectories(defaultHome)) return failClosed();
+
   for (const entry of config.profiles) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)
       || Object.keys(entry).some((key) => !PROFILE_CONFIG_KEYS.has(key))) return failClosed();
@@ -98,8 +117,8 @@ function normalizeCodexProfileConfig(config, options = {}) {
       return failClosed();
     }
     const physicalHome = physicalPath(profileHome);
-    if (!physicalHome || homes.some((existing) =>
-      pathContains(existing, physicalHome) || pathContains(physicalHome, existing))) {
+    if (!physicalHome || homes.some((existing) => pathsOverlap(existing, physicalHome))
+      || !addSessionDirectories(profileHome)) {
       return failClosed();
     }
     ids.add(id);
@@ -141,22 +160,18 @@ function resolveCodexProfile(transcriptPath, profiles) {
   const configuredProfiles = Array.isArray(profiles) && profiles.length
     ? profiles
     : normalizeCodexProfileConfig(null);
-  if (typeof transcriptPath === "string" && transcriptPath.trim()) {
-    const normalizedTranscript = normalizeHomePath(transcriptPath, os.homedir());
-    if (!normalizedTranscript) return null;
-    const physicalTranscript = physicalPath(normalizedTranscript);
-    if (!physicalTranscript) return configuredProfiles.length === 1 ? configuredProfiles[0] : null;
-    const matches = configuredProfiles.filter((profile) => {
-      const home = physicalPath(profile.home);
-      return !!home && pathContains(home, physicalTranscript);
-    });
-    if (matches.length === 1) return matches[0];
-    return matches.length === 0 && configuredProfiles.length === 1
-      ? configuredProfiles[0]
-      : null;
-  }
-
-  return configuredProfiles.length === 1 ? configuredProfiles[0] : "ambiguous";
+  const defaultProfile = configuredProfiles.find((profile) => profile.id === DEFAULT_CODEX_PROFILE_ID)
+    || configuredProfiles[0];
+  const transcript = normalizeTranscriptPath(transcriptPath);
+  if (configuredProfiles.length === 1 || !transcript || !path.isAbsolute(transcript)) return defaultProfile;
+  const physicalTranscript = physicalPath(transcript);
+  if (!physicalTranscript) return defaultProfile;
+  // Hooks are installed in the default home. Only positive evidence from a
+  // single additional profile's rollout directories overrides that default.
+  const matches = configuredProfiles.filter((profile) => profile !== defaultProfile
+    && physicalSessionDirectories(profile.home).some((dir) => pathContains(dir, physicalTranscript)
+      && path.relative(dir, physicalTranscript) !== ""));
+  return matches.length === 1 ? matches[0] : defaultProfile;
 }
 
 function codexProfileIdentity(rawSessionId, profile, fallback = "default") {

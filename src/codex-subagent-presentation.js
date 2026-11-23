@@ -2,6 +2,7 @@
 
 const { normalizeDelegatedThread } = require("../agents/codex-delegated-child");
 const { normalizeCodexTurnId } = require("./codex-turn-id");
+const { DEFAULT_CODEX_PROFILE_ID } = require("./codex-profiles");
 const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: TTL } = require("./state-stale-cleanup");
 
 // Only objects built from admitted child activity may bypass process dedupe in
@@ -112,11 +113,13 @@ function createCodexSubagentPresentation(sessions, now = Date.now) {
       return changed;
     },
     resume: id => endedParents.delete(id),
-    endChild: rawId => {
+    endChild: (rawId, codexProfileId = DEFAULT_CODEX_PROFILE_ID) => {
       const childId = normalizeDelegatedThread(rawId);
       if (!childId) return false;
       let changed = false;
       for (const [parentId, membership] of admitted) {
+        const parent = sessions.get(parentId);
+        if ((parent?.codexProfileId || DEFAULT_CODEX_PROFILE_ID) !== codexProfileId) continue;
         membership.delete(childId);
         if (!membership.size) admitted.delete(parentId);
         const children = parents.get(parentId);

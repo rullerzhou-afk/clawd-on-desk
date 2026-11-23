@@ -2418,6 +2418,7 @@ function getPendingPermissionFocusEntry(sessionId) {
   if (entry.model) focusEntry.model = entry.model;
   if (entry.codexOriginator) focusEntry.codexOriginator = entry.codexOriginator;
   if (entry.codexSource) focusEntry.codexSource = entry.codexSource;
+  if (entry.codexProfileId) focusEntry.codexProfileId = entry.codexProfileId;
   return focusEntry;
 }
 

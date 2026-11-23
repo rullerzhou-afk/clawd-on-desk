@@ -3126,6 +3126,60 @@ describe("server-route-permission Windows B1a Codex metadata", () => {
 });
 
 describe("server-route-permission local Codex profile routing", () => {
+  it("PR #1196 follow-up: Auto checks the extra profile home before and after review", async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-auto-homes-"));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const savedHome = process.env.CODEX_HOME;
+    t.after(() => {
+      if (savedHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedHome;
+    });
+    process.env.CODEX_HOME = "relative-home";
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: process.env });
+    const uuid = "aaaaaaaa-1111-4111-8111-111111111111";
+    const rawSessionId = `codex:${uuid}`;
+    const request = (profile, reviewer) => {
+      const sessions = path.join(profile.home, "sessions");
+      fs.mkdirSync(sessions, { recursive: true });
+      const transcript = path.join(sessions, `rollout-${uuid}.jsonl`);
+      fs.writeFileSync(transcript, [
+        { type: "session_meta", payload: { id: uuid } },
+        { type: "turn_context", payload: { turn_id: "A", approvals_reviewer: reviewer, approval_policy: "on-request" } },
+      ].map((record) => JSON.stringify(record) + "\n").join(""));
+      return JSON.stringify({
+        agent_id: "codex", hook_source: "codex-official", session_id: rawSessionId,
+        turn_id: "A", transcript_path: transcript, permission_mode: "default",
+        tool_name: "Bash", tool_input: { command: "echo test" },
+      });
+    };
+    const ctx = { getCodexProfiles: () => profiles, getCodexPermissionMode: () => "auto" };
+    const marker = path.join(home, "reviewed");
+    const reviewed = await callPermissionPost(request(profiles[1], "user"), {
+      ctx: {
+        ...ctx,
+        getPermissionAutomationMode: () => "auto-tools",
+        getPermissionReviewConfig: () => ({
+          command: [process.execPath, "-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "done")`],
+          timeoutMs: 5000,
+        }),
+      },
+    });
+    assert.notStrictEqual(reviewed.statusCode, 204, "the extra profile's human reviewer can enter review");
+    await waitForRoute(() => reviewed.ctx.pendingPermissions.length > 0 || reviewed.statusCode === 204,
+      "Codex review did not settle");
+    assert.strictEqual(fs.existsSync(marker), true);
+    assert.strictEqual(reviewed.ctx.pendingPermissions[0]?.sessionId,
+      codexProfileIdentity(rawSessionId, profiles[1]).sessionId);
+
+    for (const [profile, reviewer] of [[profiles[0], "user"], [profiles[1], "auto_review"]]) {
+      const native = await callPermissionPost(request(profile, reviewer), { ctx });
+      assert.strictEqual(native.statusCode, 204);
+      assert.strictEqual(native.ctx.pendingPermissions.length, 0);
+    }
+  });
+
   it("retains native default permission handling when config is missing or invalid", async () => {
     const os = require("node:os");
     const path = require("node:path");
@@ -3155,7 +3209,7 @@ describe("server-route-permission local Codex profile routing", () => {
     }
   });
 
-  it("keeps Company permission state on the profile key and returns no-decision for ambiguous hooks", async () => {
+  it("PR #1196 follow-up: routes Codex permissions by rollout directory and defaults without one", async () => {
     const os = require("node:os");
     const path = require("node:path");
     const home = path.join(os.tmpdir(), "clawd-codex-permission-profiles");
@@ -3179,7 +3233,7 @@ describe("server-route-permission local Codex profile routing", () => {
       transcript_path: path.join(defaultHome, "sessions", "personal.jsonl"),
     }), { ctx: { getCodexProfiles: () => profiles } });
     assert.equal(personal.ctx.calls.updateSession[0][0], localSessionKey(rawSessionId));
-    assert.equal(personal.ctx.calls.updateSession[0][3].codexProfileId, "default");
+    assert.equal(Object.hasOwn(personal.ctx.calls.updateSession[0][3], "codexProfileId"), false);
 
     const company = await callPermissionPost(JSON.stringify(base), {
       ctx: { getCodexProfiles: () => profiles },
@@ -3190,13 +3244,16 @@ describe("server-route-permission local Codex profile routing", () => {
     assert.equal(company.ctx.calls.updateSession[0][3].codexProfileLabel, "Company");
     assert.equal(company.ctx.pendingPermissions[0].sessionId, companyId);
 
-    const ambiguous = await callPermissionPost(JSON.stringify({ ...base, transcript_path: undefined }), {
-      ctx: { getCodexProfiles: () => profiles },
-    });
-    assert.equal(ambiguous.statusCode, 204);
-    assert.equal(ambiguous.ctx.calls.updateSession.length, 0);
-    assert.equal(ambiguous.ctx.pendingPermissions.length, 0);
-    assert.equal(ambiguous.ctx.calls.sendPermissionResponse.length, 0);
+    for (const [configured, transcript] of [
+      [profiles, undefined], [profiles.slice(0, 1), undefined], [profiles.slice(0, 1), "relative.jsonl"],
+    ]) {
+      const result = await callPermissionPost(JSON.stringify({ ...base, transcript_path: transcript }), {
+        ctx: { getCodexProfiles: () => configured },
+      });
+      assert.equal(result.ctx.pendingPermissions[0].sessionId, localSessionKey(rawSessionId));
+      assert.equal(result.ctx.calls.updateSession[0][0], localSessionKey(rawSessionId));
+      assert.equal(Object.hasOwn(result.ctx.calls.updateSession[0][3], "codexProfileId"), false);
+    }
   });
 });
 

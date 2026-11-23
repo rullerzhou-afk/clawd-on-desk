@@ -40,6 +40,13 @@ function makeCtx(overrides = {}) {
 }
 
 describe("permission session-scoped archive retirement", () => {
+  it("PR #1196 follow-up: interactive Codex focus fallback keeps the trusted profile", () => {
+    const entry = { sessionId: "codex:fixture", agentId: "codex", sourcePid: 731 };
+    const { buildPermissionFocusEntry } = initPermission.__test;
+    assert.equal(Object.hasOwn(buildPermissionFocusEntry(entry), "codexProfileId"), false);
+    assert.equal(buildPermissionFocusEntry({ ...entry, codexProfileId: "company" }).codexProfileId, "company");
+  });
+
   it("keeps explicit ephemeral focus metadata on permission fallback entries", () => {
     const perm = initPermission(makeCtx());
     try {

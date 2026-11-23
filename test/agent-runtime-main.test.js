@@ -340,8 +340,10 @@ describe("agent-runtime-main", () => {
     const codexProfiles = normalizeCodexProfileConfig({
       profiles: [{ id: "company", label: "Company", home: companyHome }],
     }, { home, env: { CODEX_HOME: personalHome } });
+    const bootTimeMs = 1_700_000_000_000;
     const runtime = createAgentRuntimeMain({
       codexProfiles,
+      localCodexBootTimeMs: bootTimeMs,
       loadCodexLogMonitor: () => FakeMonitor,
       loadCodexAgent: () => ({ id: "codex", logConfig: { sessionDir: "~/.codex/sessions" } }),
       codexSubagentClassifier: {
@@ -357,6 +359,7 @@ describe("agent-runtime-main", () => {
     try {
       runtime.startCodexLogMonitor();
       assert.equal(instances.length, 2);
+      assert.deepEqual(instances.map((monitor) => monitor.options.bootTimeMs), [bootTimeMs, bootTimeMs]);
       assert.equal(instances[0].agent.logConfig.sessionDir, path.join(personalHome, "sessions"));
       assert.equal(instances[1].agent.logConfig.sessionDir, path.join(companyHome, "sessions"));
       assert.equal(instances[1].options.codexDir, companyHome);
@@ -388,6 +391,188 @@ describe("agent-runtime-main", () => {
       runtime.cleanup();
       harness.state.cleanup();
     }
+  });
+
+  it("PR #1196 follow-up: validates official hook keys against the configured Codex profile", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-official-profile-keys");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const { state } = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, getStateRuntime: () => state, updateSession: state.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const personalKey = localSessionKey(rawSessionId);
+    const companyKey = codexProfileIdentity(rawSessionId, codexProfiles[1]).sessionId;
+    const official = { agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId };
+    const prompt = (id, opts) => runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", opts);
+    assert.equal(prompt(personalKey, { ...official, codexProfileId: "unknown", turnId: "unknown" }), false);
+    assert.equal(prompt(personalKey, { ...official, codexProfileId: "company", turnId: "wrong-key" }), false);
+    assert.equal(prompt(companyKey, { ...official, turnId: "wrong-profile" }), false);
+    assert.equal(state.sessions.size, 0);
+    prompt(personalKey, { ...official, turnId: "personal" });
+    prompt(companyKey, { ...official, codexProfileId: "company", turnId: "company" });
+    assert.equal(state.sessions.get(personalKey)?.codexProfileId, undefined);
+    assert.equal(state.sessions.get(companyKey)?.codexProfileId, "company");
+    assert.equal(runtime.getCodexTurnFenceSnapshot(companyKey)?.currentTurnId, "company");
+  });
+
+  it("PR #1196 follow-up: restoring a retired Codex turn preserves its profile and focus restriction", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-exit-profile");
+    const companyHome = path.join(home, "company");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home, env: {} });
+    let alive = true;
+    const { state } = makeRealStateHarness({ ctxOverrides: {
+      processKill: () => {
+        if (alive) return true;
+        throw Object.assign(new Error("synthetic process exit"), { code: "ESRCH" });
+      },
+    } });
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      getStateRuntime: () => state, updateSession: state.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    runtime.startCodexLogMonitor();
+    const monitor = runtime.getCodexMonitors().get("company");
+    const rawId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const { sessionId } = codexProfileIdentity(rawId, codexProfiles[1]);
+    const transcriptPath = path.join(companyHome, "sessions", "rollout.jsonl");
+    const turn = { turnId: "A", transcriptPath };
+    monitor.emit(rawId, "thinking", "event_msg:task_started", {
+      ...turn, sourcePid: 42, agentPid: 42, codexOriginator: "Codex Desktop",
+    });
+    alive = false;
+    state.cleanStaleSessions();
+    assert.equal(state.sessions.has(sessionId), false);
+    assert.equal(state.hasRecoverableCodexProcessExit(sessionId, turn), true);
+    const refreshed = [];
+    for (const [profileId, activeMonitor] of runtime.getCodexMonitors()) {
+      activeMonitor.refreshSubagentsOfParent = (raw) => refreshed.push([profileId, raw]);
+    }
+    monitor.options.onActivity(rawId, "thinking", "event_msg:agent_reasoning", {
+      ...turn, recapOccurredAt: Date.now(),
+    });
+    const entry = state.buildSessionSnapshot().sessions.find((session) => session.id === sessionId);
+    assert.equal(entry?.codexProfileId, "company");
+    assert.equal(entry.codexProfileLabel, "Company");
+    assert.equal(entry.canFocus, false);
+    assert.deepEqual(refreshed, [["company", rawId]]);
+  });
+
+  it("PR #1196 follow-up: delegated activity and terminals stay with the owning profile", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-child-profiles");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const { state } = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      getStateRuntime: () => state, updateSession: state.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    runtime.startCodexLogMonitor();
+    const monitors = runtime.getCodexMonitors();
+    const parent = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const child = "codex:bbbbbbbb-1111-4111-8111-111111111111";
+    const identity = (raw, profile) => codexProfileIdentity(raw, profile).sessionId;
+    const count = (profile) => state.buildSessionSnapshot().sessions
+      .find((entry) => entry.id === identity(parent, profile))?.activeSubagentCount || 0;
+    const childStart = (profile, turnId) => monitors.get(profile.id).options.onSubagentActivity(parent, {
+      phase: "start", childId: child, turnId, occurredAt: Date.now(),
+    });
+    const childHook = (profile, event, turnId) => runtime.updateSessionFromServer(
+      identity(child, profile), event === "UserPromptSubmit" ? "thinking" : "idle", event, {
+        agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId: child,
+        codexProfileId: profile.id, headless: true, turnId,
+      });
+    const calls = [];
+    for (const [id, monitor] of monitors) {
+      monitor.endSubagentTurn = (...args) => calls.push([id, "turn", ...args]);
+      monitor.endSubagent = (raw) => calls.push([id, "child", raw]);
+      monitor.endSubagentsOfParent = (raw) => calls.push([id, "parent", raw]);
+    }
+    const [personal, company] = codexProfiles;
+    childStart(personal, "child");
+    childStart(company, "child");
+    childHook(company, "SessionEnd", "child");
+    for (const profile of codexProfiles) {
+      monitors.get(profile.id).emit(parent, "thinking", "event_msg:task_started", { turnId: "parent" });
+    }
+    assert.equal(count(personal), 1, "ending a child cannot remove another profile's pending child");
+    assert.equal(count(company), 0);
+    assert.deepEqual(calls.splice(0), [["company", "child", child], ["company", "parent", child]]);
+
+    childHook(company, "UserPromptSubmit", "next");
+    childHook(company, "Stop", "next");
+    childStart(company, "next");
+    assert.equal(count(company), 0, "the hook and rollout use the same child turn fence");
+    assert.deepEqual(calls.splice(0), [["company", "turn", child, "next"], ["company", "turn", child, "next"]]);
+
+    childStart(company, "new");
+    assert.equal(count(company), 1);
+    childHook(company, "SessionEnd", "new");
+    assert.equal(count(company), 0);
+    assert.equal(count(personal), 1, "ending a child cannot remove another profile's visible child");
+  });
+
+  it("PR #1196 follow-up: archive evidence revokes only the owning Codex profile's retired turn", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-retired-archive-profiles");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    let alive = true;
+    const { state } = makeRealStateHarness({ ctxOverrides: {
+      processKill: () => {
+        if (alive) return true;
+        throw Object.assign(new Error("synthetic process exit"), { code: "ESRCH" });
+      },
+    } });
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      getStateRuntime: () => state, updateSession: state.updateSession,
+      loadCodexArchiveTracker: () => (options) => options,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    runtime.startCodexLogMonitor();
+    const [personal, company] = codexProfiles;
+    const sharedId = "aaaaaaaa-1111-4111-8111-111111111111";
+    const companyOnlyId = "bbbbbbbb-1111-4111-8111-111111111111";
+    const start = (profile, id) => {
+      const rawId = `codex:${id}`;
+      const transcriptPath = path.join(profile.home, "sessions", `rollout-${id}.jsonl`);
+      const monitor = runtime.getCodexMonitors().get(profile.id);
+      monitor.emit(rawId, "thinking", "event_msg:task_started", {
+        turnId: "A", transcriptPath, agentPid: 42, sourcePid: 42,
+      });
+      return { monitor, rawId, transcriptPath, turnId: "A", ...codexProfileIdentity(rawId, profile) };
+    };
+    const personalTurn = start(personal, sharedId);
+    const companyTurn = start(company, sharedId);
+    start(company, companyOnlyId);
+    alive = false;
+    state.cleanStaleSessions();
+    assert.equal(state.sessions.size, 0);
+    const trackers = runtime.getCodexArchiveTrackers();
+    assert.deepEqual(trackers.get("default").getLiveCandidateIds(), [sharedId]);
+    assert.deepEqual(new Set(trackers.get("company").getLiveCandidateIds()), new Set([sharedId, companyOnlyId]));
+
+    assert.equal(trackers.get("company").onArchiveConfirmed(sharedId), true);
+    assert.equal(state.hasRecoverableCodexProcessExit(companyTurn.sessionId, companyTurn), false);
+    assert.equal(runtime.getCodexTurnFenceSnapshot(companyTurn.sessionId), null);
+    assert.equal(state.hasRecoverableCodexProcessExit(personalTurn.sessionId, personalTurn), true);
+    assert.equal(runtime.getCodexTurnFenceSnapshot(personalTurn.sessionId)?.currentTurnId, "A");
+    for (const turn of [companyTurn, personalTurn]) {
+      turn.monitor.options.onActivity(turn.rawId, "thinking", "event_msg:agent_reasoning", {
+        turnId: turn.turnId, transcriptPath: turn.transcriptPath, recapOccurredAt: Date.now(),
+      });
+    }
+    assert.equal(state.sessions.has(companyTurn.sessionId), false);
+    assert.equal(state.sessions.has(personalTurn.sessionId), true);
   });
 
   it("retires archived sessions only from the owning local Codex profile", () => {

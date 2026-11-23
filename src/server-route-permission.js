@@ -164,12 +164,13 @@ function shouldBypassDshBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("deepseek-harness");
 }
 
-function shouldInterceptCodexPermission(ctx, data) {
+function shouldInterceptCodexPermission(ctx, data, codexProfile) {
   if (typeof ctx.getCodexPermissionMode === "function") {
     const mode = ctx.getCodexPermissionMode();
     if (mode === "intercept") return true;
     if (mode !== "auto") return false;
-    return resolveCodexApprovalRoute(data).owner === "clawd";
+    const options = codexProfile && !codexProfile.isDefault ? { codexHome: codexProfile.home } : undefined;
+    return resolveCodexApprovalRoute(data, options).owner === "clawd";
   }
   // Old callers can still supply the explicit interception gate. With no
   // authoritative settings reader, preserve Codex ownership.
@@ -946,17 +947,10 @@ function handlePermissionPost(req, res, options) {
       && !wslSourced
       && !normalizeString(data.host);
     let codexProfile = null;
-    let localCodexProfileCount = 1;
     if (shouldResolveLocalCodexProfile) {
       const profiles = typeof ctx.getCodexProfiles === "function" ? ctx.getCodexProfiles() : [];
-      localCodexProfileCount = profiles.length || 1;
-      codexProfile = resolveCodexProfile(data.transcript_path, profiles);
-      if (!codexProfile || codexProfile === "ambiguous") {
-        recordRequestHookEvent.droppedUnsupported();
-        ctx.permLog("codex profile identity unresolved -> native prompt fallback");
-        sendCodexPermissionNoDecision(res);
-        return;
-      }
+      const profile = resolveCodexProfile(data.transcript_path, profiles);
+      if (!profile.isDefault) codexProfile = profile;
     }
     // Intentional exception to the WSL PID strip: per-session automation
     // eligibility only strips Remote SSH, never WSL, to preserve the pre-fix
@@ -988,12 +982,7 @@ function handlePermissionPost(req, res, options) {
     const trustedSessionFields = (sessionIdentity) => ({
       profileId: sessionIdentity.profileId,
       rawSessionId: sessionIdentity.rawSessionId,
-      ...(codexProfile && (!codexProfile.isDefault || localCodexProfileCount > 1)
-        ? {
-          codexProfileId: codexProfile.id,
-          ...(!codexProfile.isDefault ? { codexProfileLabel: codexProfile.label } : {}),
-        }
-        : {}),
+      ...(codexProfile ? { codexProfileId: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(trustedProfileId !== "local" && trustedDisplayHost ? { host: trustedDisplayHost } : {}),
     });
 
@@ -1646,7 +1635,7 @@ function handlePermissionPost(req, res, options) {
 
         const codexBubbleBypass = shouldBypassCodexBubble(ctx);
         const codexClaimShape = isCodexAutomationClaimShape(ctx, data);
-        if (!shouldInterceptCodexPermission(ctx, data) && (!codexClaimShape || codexBubbleBypass)) {
+        if (!shouldInterceptCodexPermission(ctx, data, codexProfile) && (!codexClaimShape || codexBubbleBypass)) {
           sendCodexNativePermissionFallback("native permission mode");
           return;
         }
@@ -1712,7 +1701,7 @@ function handlePermissionPost(req, res, options) {
         });
         if (codexAutomationClaim) {
           ctx.permLog(`codex auto mode: global automation claims delegated request (tool=${toolName})`);
-        } else if (!shouldInterceptCodexPermission(ctx, data)) {
+        } else if (!shouldInterceptCodexPermission(ctx, data, codexProfile)) {
           sendCodexNativePermissionFallback("native permission mode");
           return;
         }

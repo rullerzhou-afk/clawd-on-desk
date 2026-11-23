@@ -358,20 +358,10 @@ function handleStatePost(req, res, options) {
         && !wslSourced
         && !(typeof data.host === "string" && data.host.trim());
       let codexProfile = null;
-      let localCodexProfileCount = 1;
       if (shouldResolveLocalCodexProfile) {
         const profiles = typeof ctx.getCodexProfiles === "function" ? ctx.getCodexProfiles() : [];
-        localCodexProfileCount = profiles.length || 1;
-        codexProfile = resolveCodexProfile(data.transcript_path, profiles);
-        if (!codexProfile || codexProfile === "ambiguous") {
-          recordRequestHookEvent.droppedUnsupported();
-          if (typeof ctx.debugLog === "function") {
-            ctx.debugLog("codex profile identity unresolved; dropping local state event");
-          }
-          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
-          res.end();
-          return;
-        }
+        const profile = resolveCodexProfile(data.transcript_path, profiles);
+        if (!profile.isDefault) codexProfile = profile;
       }
       const sessionAutomationIdentity = assessSessionAutomationIdentity({
         agentId,
@@ -703,7 +693,7 @@ function handleStatePost(req, res, options) {
           claudeQuota: acceptedClaudeQuota,
           codexQuota,
           ...(codexSparkQuota ? { codexSparkQuota } : {}),
-          ...(codexProfile && !codexProfile.isDefault
+          ...(codexProfile
             ? { displayHost: codexProfile.label }
             : (trustedProfileId === "local" ? {} : { displayHost: host })),
         });
@@ -761,6 +751,7 @@ function handleStatePost(req, res, options) {
             host,
             codexOriginator,
             codexSource,
+            ...(codexProfile ? { codexProfileId: codexProfile.id } : {}),
           });
         if (!shown) {
           res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
@@ -1278,12 +1269,7 @@ function handleStatePost(req, res, options) {
             ...(recapBoundary ? { recapBoundary } : {}),
             ...((recapIsSubagent || codexHookState.headless === true) ? { recapIsSubagent: true } : {}),
             profileId: sessionIdentity.profileId,
-            ...(codexProfile && (!codexProfile.isDefault || localCodexProfileCount > 1)
-              ? {
-                codexProfileId: codexProfile.id,
-                ...(!codexProfile.isDefault ? { codexProfileLabel: codexProfile.label } : {}),
-              }
-              : {}),
+            ...(codexProfile ? { codexProfileId: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
             rawSessionId: rawStateSessionId,
             host,
             wslDistro,

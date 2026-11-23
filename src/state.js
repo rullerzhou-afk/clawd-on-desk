@@ -288,11 +288,13 @@ function hasRecoverableCodexProcessExit(sessionId, opts = {}) {
 // This prunes expired records first (without extending retention) and hands the
 // ids to archive scanning, so confirmed archive evidence revokes recovery;
 // otherwise unarchive could let the old turn restore its row.
-function listRecoverableCodexRawSessionIds() {
+function listRecoverableCodexRawSessionIds(codexProfileId = DEFAULT_CODEX_PROFILE_ID) {
   pruneCodexProcessExitRecovery();
   const ids = [];
   for (const entry of codexProcessExitRecovery.values()) {
-    const raw = entry && entry.metadata && entry.metadata.rawSessionId;
+    const metadata = entry?.metadata;
+    if ((metadata?.codexProfileId || DEFAULT_CODEX_PROFILE_ID) !== codexProfileId) continue;
+    const raw = metadata?.rawSessionId;
     if (typeof raw === "string" && raw) ids.push(raw);
   }
   return ids;
@@ -347,7 +349,8 @@ function rememberCodexProcessExit(sessionId, session) {
   pruneCodexProcessExitRecovery();
   const metadata = {};
   for (const key of ["agentId", "profileId", "rawSessionId", "cwd", "transcriptPath",
-    "platform", "provider", "model", "codexOriginator", "codexSource", "codexClientEphemeral"]) {
+    "platform", "provider", "model", "codexOriginator", "codexSource", "codexClientEphemeral",
+    "codexProfileId", "codexProfileLabel"]) {
     if (session[key] !== undefined) metadata[key] = session[key];
   }
   if (session.sessionTitleFromPrompt !== true) metadata.sessionTitle = session.sessionTitle || null;
@@ -3545,11 +3548,13 @@ function updateSession(sessionId, state, event, opts = {}) {
   if (SESSION_END_EVENTS.has(event)) {
     const endingSession = sessions.get(sessionId);
     const deferredCueSessions = [];
-    if (srcAgentId === "codex" && srcHeadless) {
+    if (srcAgentId === "codex" && srcHeadless && base.profileId === "local" && !srcHost && !srcWslDistro
+      && String(srcPlatform || "").trim().toLowerCase() !== "wsl") {
       // Only children present before this SessionEnd can settle a deferred cue;
       // an unrelated child must not settle a parent whose evidence expired.
       const activeParents = [...deferredCodexCompletionCues].filter(id => codexSubagentPresentation.has(id));
-      codexSubagentPresentation.endChild(rawSessionId || endingSession?.rawSessionId || sessionId);
+      codexSubagentPresentation.endChild(rawSessionId || endingSession?.rawSessionId || sessionId,
+        srcCodexProfile.codexProfileId);
       for (const id of activeParents) {
         if (codexSubagentPresentation.has(id)) continue;
         deferredCodexCompletionCues.delete(id);
