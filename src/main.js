@@ -213,6 +213,7 @@ const {
   getSessionFocusTarget,
   getSessionFocusWtHwnd,
   mergeSessionFocusEntry,
+  isKdeWaylandSession,
 } = require("./session-focus");
 const { focusCodexThreadTarget, focusDshDesktopTarget, focusCodeBuddyIdeTarget } = require("./session-focus-handoff");
 const { publishDshFocus } = require("./dsh-focus-stream");
@@ -2398,6 +2399,7 @@ const claudeTurnAskReminder = createClaudeTurnAskReminder({
   },
 });
 app.on("will-quit", () => claudeTurnAskReminder.dispose());
+app.on("will-quit", () => { if (_kwinCursor) _kwinCursor.disposeSync(); });
 
 function getPendingPermissionFocusEntry(sessionId) {
   const id = String(sessionId || "");
@@ -2907,6 +2909,32 @@ function getHitRectScreen(bounds) { return petWindowRuntime.getHitRectScreen(bou
 function getUpdateBubbleAnchorRect(bounds) { return petWindowRuntime.getUpdateBubbleAnchorRect(bounds); }
 function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHudAnchorRect(bounds); }
 
+// ── KDE Plasma Wayland eye follow (#1410) — src/linux-kwin-cursor.js ──
+// Under the XWayland relaunch the X11 cursor query freezes over native Wayland
+// windows; a KWin script pushes the global cursor to the local server instead.
+// Only eye follow and theme pointer payloads read it (tick.js).
+const _kwinCursorModule = require("./linux-kwin-cursor");
+const kwinCursorEligible = _kwinCursorModule.isLinuxKwinCursorEligible({
+  ozonePlatform: app.commandLine.getSwitchValue("ozone-platform"),
+  isKdeWaylandSession: isKdeWaylandSession(),
+});
+const _kwinCursor = kwinCursorEligible
+  ? _kwinCursorModule.createKwinCursorBridge({
+    kwinScripting: require("./kwin-scripting").createKwinScripting({ execFile: require("child_process").execFile }),
+    logWarn: (message) => console.warn(message),
+  })
+  : null;
+let kwinCursorStarted = false;
+// port: the local server's actual bound port, passed once it is listening.
+function syncKwinCursor(port) {
+  if (!_kwinCursor) return;
+  if (port !== undefined) kwinCursorStarted = true;
+  if (!kwinCursorStarted) return;
+  const enabled = eyeTrackingEnabledCached !== false;
+  if (!enabled && port !== undefined) _kwinCursor.unloadStale();
+  _kwinCursor.setEnabled(enabled, port);
+}
+
 // ── Main tick — delegated to src/tick.js ──
 const _tickCtx = {
   get theme() { return getActiveTheme(); },
@@ -2946,6 +2974,8 @@ const _tickCtx = {
   getObjRect,
   getHitRectScreen,
   getAssetPointerPayload,
+  // Eye follow / pointer payloads only; null → use the regular cursor query.
+  getVisualCursorPoint: _kwinCursor ? () => _kwinCursor.getPoint() : null,
   get roam() { return _roam; },
   get idleActivity() { return _idleActivity; },
 };
@@ -3308,6 +3338,7 @@ agentRuntime = createAgentRuntimeMain({
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
+  handleKwinCursorRequest: _kwinCursor ? (req, res) => _kwinCursor.handleRequest(req, res) : null,
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
@@ -5205,7 +5236,10 @@ const settingsEffectRouter = createSettingsEffectRouter({
   // #1276: the tick owns gaze dedup state, so it also owns the enable/disable
   // transition (resend on enable, park-at-center + pointer-bridge reset on
   // disable). Runs after the mirror above already updated eyeTrackingEnabledCached.
-  applyEyeTrackingEnabledChange: (enabled) => _tick.handleEyeTrackingPreferenceChange(enabled === true),
+  applyEyeTrackingEnabledChange: (enabled) => {
+    _tick.handleEyeTrackingPreferenceChange(enabled === true);
+    syncKwinCursor();
+  },
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),
@@ -5839,6 +5873,7 @@ function createWindow() {
   // never block startup.
   startHttpServer().then((port) => {
     if (port == null) return;
+    syncKwinCursor(port);
     const restoredSessionIds = restoreSessionsFromRecoveryLeases(_state, {
       isAgentEnabled: (agentId) => (
         _runtimeAgentGate.isAgentEnabled(agentId)

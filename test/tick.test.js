@@ -1919,3 +1919,81 @@ describe("tick conditional idle easter eggs", () => {
     assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
   });
 });
+
+// #1410: ctx.getVisualCursorPoint (KWin on Plasma Wayland) drives eye follow
+// and pointer payloads; hover keeps the regular cursor query.
+describe("tick visual cursor source", () => {
+  let cursor;
+  let visual;
+  let loader;
+  let tickApi;
+  let ctx;
+  let eyeMoves;
+  let pointers;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    // The regular query is frozen inside the pet's hit rect, as XWayland's
+    // last known position is when the cursor leaves for a Wayland window.
+    cursor = { x: 60, y: 60 };
+    visual = null;
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+    ctx = makeCtx(cloneTheme(_defaultTheme), []);
+    ctx.getVisualCursorPoint = () => (visual ? { ...visual } : null);
+    eyeMoves = [];
+    pointers = [];
+    ctx.getAssetPointerPayload = (_bounds, point) => ({ x: point.x, y: point.y, inside: true });
+    ctx.sendToRenderer = (channel, a, b) => {
+      if (channel === "eye-move") eyeMoves.push([a, b]);
+      if (channel === "cloudling-pointer") pointers.push(a);
+    };
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    if (loader) loader.restore();
+    mock.timers.reset();
+    tickApi = null;
+  });
+
+  function start() {
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(1);
+  }
+
+  it("follows the visual point while the regular query stays still", () => {
+    visual = { x: 60, y: 60 };
+    start();
+    assert.deepStrictEqual(eyeMoves, []);
+
+    visual = { x: -1000, y: 50 };
+    mock.timers.tick(300);
+    assert.strictEqual(eyeMoves.length, 1);
+    assert.ok(eyeMoves[0][0] < 0, `expected a left gaze, got ${eyeMoves[0]}`);
+    assert.deepStrictEqual(pointers[pointers.length - 1], { x: -1000, y: 50, inside: true });
+    // Hover still comes from the regular query.
+    assert.strictEqual(ctx.mouseOverPet, true);
+  });
+
+  it("keeps the fast idle tick while only the visual point moves", () => {
+    visual = { x: 60, y: 60 };
+    start();
+    mock.timers.tick(3000); // past RECENT_MOUSE_MS since idle entry
+    eyeMoves.length = 0;
+    visual = { x: 600, y: 60 };
+    mock.timers.tick(250);
+    const afterFirst = eyeMoves.length;
+    visual = { x: 600, y: 600 };
+    mock.timers.tick(100);
+    assert.ok(eyeMoves.length > afterFirst, "expected an eye update within the 100 ms boost tick");
+  });
+
+  it("uses the regular query when there is no visual point", () => {
+    start();
+    cursor = { x: -1000, y: 50 };
+    mock.timers.tick(300);
+    assert.strictEqual(eyeMoves.length, 1);
+    assert.ok(eyeMoves[0][0] < 0);
+  });
+});

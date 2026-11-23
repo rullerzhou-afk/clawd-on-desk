@@ -22,6 +22,7 @@ const {
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
 const { handleDshFocusStream } = require("./dsh-focus-stream");
+const { ROUTE: KWIN_CURSOR_ROUTE } = require("./linux-kwin-cursor");
 const {
   B1A_AGENT_IDS,
   createServerWindowsProcessMetadataResolver,
@@ -1324,6 +1325,12 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         recordWindowsProcessChainShadow: ctx.recordWindowsProcessChainShadow,
         remoteProfile,
       });
+    } else if (req.method === "POST" && req.url === KWIN_CURSOR_ROUTE && !remoteProfile
+      && typeof ctx.handleKwinCursorRequest === "function") {
+      // KDE Plasma Wayland eye follow (#1410): the KWin script posts the global
+      // cursor here. Local main server only; never a Remote SSH ingress.
+      if (rejectUnsafeLocalHookRequest(req, res, KWIN_CURSOR_ROUTE)) return;
+      ctx.handleKwinCursorRequest(req, res);
     } else {
       res.writeHead(404);
       res.end();

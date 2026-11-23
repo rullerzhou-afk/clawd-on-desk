@@ -10,6 +10,10 @@ const now = typeof ctx.now === "function" ? ctx.now : Date.now;
 
 // ── Mouse idle tracking ──
 let lastCursorX = null, lastCursorY = null;
+// #1410: eye follow can read a separate cursor source (ctx.getVisualCursorPoint,
+// KWin on Plasma Wayland). Without one these mirror lastCursorX/Y exactly.
+let lastEyeCursorX = null, lastEyeCursorY = null;
+let lastVisualMoveAt = 0;
 let mouseStillSince = Date.now();
 let isMouseIdle = false;       // showing idle-look
 let hasTriggeredYawn = false;  // 60s threshold already fired
@@ -184,6 +188,7 @@ function getBaseTickDelay(idleNow, miniIdleNow) {
   if (ctx.miniMode || miniIdleNow) return FAST_TICK_MS;
   if (idleNow) {
     if (Date.now() - mouseStillSince <= RECENT_MOUSE_MS) return BOOST_TICK_MS;
+    if (Date.now() - lastVisualMoveAt <= RECENT_MOUSE_MS) return BOOST_TICK_MS;
     return IDLE_TICK_MS;
   }
   if (ctx.idlePaused) return REACTION_TICK_MS;
@@ -326,6 +331,8 @@ function runMainTickOnce() {
         idleLookPlayed = false;
         lastCursorX = null;
         lastCursorY = null;
+        lastEyeCursorX = null;
+        lastEyeCursorY = null;
         mouseStillSince = Date.now();
         if (ctx.idleActivity) ctx.idleActivity.noteIdleEntered();
       }
@@ -350,14 +357,28 @@ function runMainTickOnce() {
     lastCursorX = cursor.x;
     lastCursorY = cursor.y;
 
+    // #1410: eye follow and theme pointer payloads prefer the visual source,
+    // which also sees the cursor over native Wayland windows. Hover, mini
+    // peek, roam cancel and idle timing below keep the regular query.
+    const visualCursor = typeof ctx.getVisualCursorPoint === "function"
+      ? ctx.getVisualCursorPoint()
+      : null;
+    const eyeCursor = visualCursor || cursor;
+    const eyeMoved = lastEyeCursorX !== null
+      && (eyeCursor.x !== lastEyeCursorX || eyeCursor.y !== lastEyeCursorY);
+    lastEyeCursorX = eyeCursor.x;
+    lastEyeCursorY = eyeCursor.y;
+    if (visualCursor && eyeMoved) lastVisualMoveAt = Date.now();
+
     // ── Cursor-over-pet tracking (for mini peek + eye tracking, NOT for input routing) ──
     const pointerBridgeKey = getPointerBridgeKey();
     const suppressPassiveIpc = shouldSuppressPassiveIpc();
     const needsPointerBridgeBounds = eyeTrackingEnabled
       && !!pointerBridgeKey
       && !suppressPassiveIpc
-      && (moved || ctx.forceEyeResend || pointerBridgeKey !== lastPointerBridgeKey);
-    const needsBounds = ctx.miniMode || moved || ctx.forceEyeResend || miniIdleNow || needsPointerBridgeBounds;
+      && (eyeMoved || ctx.forceEyeResend || pointerBridgeKey !== lastPointerBridgeKey);
+    const needsBounds = ctx.miniMode || moved || eyeMoved || ctx.forceEyeResend || miniIdleNow
+      || needsPointerBridgeBounds;
     let bounds = null;
     if (needsBounds) {
       bounds = typeof ctx.getPetWindowBounds === "function"
@@ -398,7 +419,7 @@ function runMainTickOnce() {
       }
     }
 
-    if (eyeTrackingEnabled) sendPointerBridge(cursor, bounds);
+    if (eyeTrackingEnabled) sendPointerBridge(eyeCursor, bounds);
 
     if (!idleNow && !miniIdleNow && !roamNow) return nextDelay();
 
@@ -543,7 +564,7 @@ function runMainTickOnce() {
       if (idleNow && !isMouseIdle && ctx.forceEyeResend) ctx.forceEyeResend = false;
       return nextDelay();
     }
-    if (shouldSuppressPassiveIpc() && !moved) {
+    if (shouldSuppressPassiveIpc() && !eyeMoved) {
       if (ctx.forceEyeResend) ctx.forceEyeResend = false;
       return nextDelay();
     }
@@ -551,10 +572,10 @@ function runMainTickOnce() {
       if (Date.now() < ctx.eyePauseUntil) return nextDelay();
       ctx.eyePauseUntil = null;
     }
-    if (!moved && !ctx.forceEyeResend) return nextDelay();
+    if (!eyeMoved && !ctx.forceEyeResend) return nextDelay();
 
     // ── Eye position calculation (shared by idle and mini-idle) ──
-    const skipDedup = ctx.forceEyeResend || (ctx.lowPowerIdlePaused && moved);
+    const skipDedup = ctx.forceEyeResend || (ctx.lowPowerIdlePaused && eyeMoved);
     ctx.forceEyeResend = false;
 
     if (!bounds) {
@@ -567,8 +588,8 @@ function runMainTickOnce() {
     const eyeScreenX = obj.x + obj.w * theme.eyeTracking.eyeRatioX;
     const eyeScreenY = obj.y + obj.h * theme.eyeTracking.eyeRatioY;
 
-    const relX = cursor.x - eyeScreenX;
-    const relY = cursor.y - eyeScreenY;
+    const relX = eyeCursor.x - eyeScreenX;
+    const relY = eyeCursor.y - eyeScreenY;
 
     const MAX_OFFSET = theme.eyeTracking.maxOffset;
     const dist = Math.sqrt(relX * relX + relY * relY);
@@ -605,7 +626,7 @@ function runMainTickOnce() {
     // resets on a pause, or when the cursor is too close to the eye-tracking origin (where
     // the angle is dominated by sub-pixel jitter), instead of decaying every tick — so a
     // genuine two-circle gesture reaches ±SPIN_THRESHOLD precisely.
-    if (idleNow && !miniIdleNow && !isMouseIdle && moved && THEME_SUPPORTS_DIZZY) {
+    if (idleNow && !miniIdleNow && !isMouseIdle && eyeMoved && THEME_SUPPORTS_DIZZY) {
       const now = Date.now();
 
       if (dist < SPIN_MIN_RADIUS) {
@@ -681,6 +702,9 @@ function cleanup() {
   if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
   lastCursorX = null;
   lastCursorY = null;
+  lastEyeCursorX = null;
+  lastEyeCursorY = null;
+  lastVisualMoveAt = 0;
   isMouseIdle = false;
   hasTriggeredYawn = false;
   idleLookPlayed = false;
