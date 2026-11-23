@@ -589,6 +589,8 @@ module.exports = function initMenu(ctx) {
     ctx.syncHitWin();
     ctx.repositionBubbles();
     ctx.flushRuntimeStateToPrefs();
+    // Gravity on: the centered pet drops to the floor of that display.
+    if (typeof ctx.startGravityFall === "function") ctx.startGravityFall();
   }
 
   function buildContextMenu() {

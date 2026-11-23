@@ -1619,7 +1619,10 @@ function bringPetToPrimaryDisplay() {
     meetingMode.noteUserOverride("pet-shown");
   }
   prepManualPetVisibility();
-  return petWindowRuntime.bringPetToPrimaryDisplay();
+  const result = petWindowRuntime.bringPetToPrimaryDisplay();
+  // Gravity on: the centered pet drops to the floor of the primary display.
+  _gravity.startFall();
+  return result;
 }
 
 function sendRawToRenderer(channel, ...args) {
@@ -4983,6 +4986,7 @@ const _menuCtx = {
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
   getGravityMenuItem: () => _gravity.buildMenuItem(),
+  startGravityFall: () => _gravity.startFall(),
   openDashboard: () => showDashboard(),
   launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
   newSessionWithFolder: async (t) => {

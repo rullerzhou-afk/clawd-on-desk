@@ -253,6 +253,45 @@ describe("menu send-to-display", () => {
       height: 120,
     });
   });
+
+  it("asks gravity to drop the pet once it is placed on the other display", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: { buildFromTemplate(template) { return { template }; } },
+      Tray: function Tray() {},
+      nativeImage: {
+        createFromPath() {
+          return { resize() { return this; }, setTemplateImage() {} };
+        },
+      },
+      screen: {
+        getAllDisplays: () => ([
+          { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } },
+          { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1040 } },
+        ]),
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+    const order = [];
+
+    const ctx = buildBaseCtx({
+      applyPetWindowBounds: () => order.push("applyBounds"),
+      flushRuntimeStateToPrefs: () => order.push("flush"),
+      startGravityFall: () => order.push("gravityFall"),
+    });
+
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+
+    const sendToDisplay = ctx.contextMenu.template.find((item) => item.label === "Send to Display");
+    sendToDisplay.submenu[1].click();
+
+    // The display center is in mid-air; with gravity on the pet falls from there.
+    assert.deepStrictEqual(order, ["applyBounds", "flush", "gravityFall"]);
+  });
 });
 
 describe("menu send-to-display stranded drag-lock release (#997 / #998)", () => {
