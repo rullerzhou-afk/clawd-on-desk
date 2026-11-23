@@ -79,6 +79,12 @@ function registerPetInteractionIpc(options = {}) {
   // while a drag is in flight; drag-lock release must re-run the sync so the
   // state the drag ended in (overlapping or not) gets applied.
   const syncImeEditingPetDodge = options.syncImeEditingPetDodge || (() => {});
+  // Gravity: a drag released in mid-air falls to the floor.
+  const startGravityFall = options.startGravityFall || (() => false);
+  const beginGravityDrag = options.beginGravityDrag || (() => {});
+  const isGravityFalling = options.isGravityFalling || (() => false);
+  const setGravityFloorHere = options.setGravityFloorHere || (() => false);
+  const setGravityFallEndHandler = options.setGravityFallEndHandler || (() => {});
   const statPath = requiredDependency(options.statPath, "statPath");
   const openTerminalAt = requiredDependency(options.openTerminalAt, "openTerminalAt");
   const dropLog = options.dropLog || (() => {});
@@ -86,6 +92,26 @@ function registerPetInteractionIpc(options = {}) {
     ? !!options.isMacPlatform
     : process.platform === "darwin";
   const disposers = [];
+
+  // The pet keeps its drag pose while falling: the hit window's
+  // end-drag-reaction is held until the fall ends (landed or caught mid-air).
+  let dragReactionEndHeld = false;
+  function finishGravityFall(landed, landing) {
+    if (landed) {
+      if (landing && landing.intensity > 0) sendToRenderer("gravity-landed", landing.intensity);
+      flushRuntimeStateToPrefs();
+      reassertWinTopmost();
+      scheduleHwndRecovery();
+      syncHitWin();
+      syncDisplayedVisualGeometry();
+      repositionFloatingBubbles();
+    }
+    if (!dragReactionEndHeld) return;
+    dragReactionEndHeld = false;
+    sendToRenderer("end-drag-reaction");
+  }
+  // Falls started outside a drag (floor reset from the menu) end here too.
+  setGravityFallEndHandler(finishGravityFall);
 
   function on(channel, listener) {
     ipcMain.on(channel, listener);
@@ -120,6 +146,7 @@ function registerPetInteractionIpc(options = {}) {
     if (locked) {
       setMouseOverPet(true);
       cancelRoam();
+      beginGravityDrag();
       beginDragSnapshot();
     } else {
       clearDragSnapshot();
@@ -134,13 +161,19 @@ function registerPetInteractionIpc(options = {}) {
     if (requestDragReaction) requestDragReaction(normalized);
     else sendToRenderer("start-drag-reaction", normalized);
   });
-  on("end-drag-reaction", () => sendToRenderer("end-drag-reaction"));
+  on("end-drag-reaction", () => {
+    if (isGravityFalling()) {
+      dragReactionEndHeld = true;
+      return;
+    }
+    sendToRenderer("end-drag-reaction");
+  });
   on("play-click-reaction", (_event, svg, duration) => {
     if (requestClickReaction) requestClickReaction(svg, duration);
     else sendToRenderer("play-click-reaction", svg, duration);
   });
 
-  on("drag-end", () => {
+  on("drag-end", (_event, setFloor) => {
     try {
       if (!isMiniMode() && !isMiniTransitioning()) {
         if (!getDisableMiniMode()) checkMiniModeSnap();
@@ -159,6 +192,12 @@ function registerPetInteractionIpc(options = {}) {
           syncDisplayedVisualGeometry();
           repositionFloatingBubbles();
           refreshIdleVisualAfterDrag();
+          // Shift on release: this height becomes the floor; a light squash confirms it.
+          if (setFloor === true) {
+            if (setGravityFloorHere()) sendToRenderer("gravity-landed", 0.35);
+          } else {
+            startGravityFall(finishGravityFall);
+          }
         }
       }
     } finally {

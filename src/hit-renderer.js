@@ -114,14 +114,15 @@ document.addEventListener("pointermove", (e) => {
   }
 });
 
-function stopDrag() {
+function stopDrag(release) {
   if (!isDragging) return;
   clearQueuedDragMove();
   isDragging = false;
   window.hitAPI.dragLock(false);
   area.classList.remove("dragging");
   if (didDrag) {
-    window.hitAPI.dragEnd();
+    // Gravity: Shift on release marks this height as the floor.
+    window.hitAPI.dragEnd(!!(release && release.shiftKey));
   }
   // A state-change cancel can arrive after pointer movement and clear the
   // input window's local reaction flag. The render window may already have
@@ -133,7 +134,7 @@ function stopDrag() {
 document.addEventListener("pointerup", (e) => {
   if (e.button !== 0) return;
   const wasDrag = didDrag;
-  stopDrag();
+  stopDrag({ shiftKey: e.shiftKey });
   if (wasDrag) return;
 
   // macOS Ctrl-click is the system right-click gesture. Let the OS / our

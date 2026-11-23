@@ -1282,7 +1282,7 @@ const petWindowRuntime = createPetWindowRuntime({
   // Issue #690 plan §4.3.10's fourth reconcile protection period (lazy-bound
   // like isMiniAnimating above — _roam is constructed after petWindowRuntime,
   // but this closure isn't invoked until well after module load finishes).
-  isRoamAnimating: () => _roam.isRoamAnimating(),
+  isRoamAnimating: () => _roam.isRoamAnimating() || _gravity.isFalling(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
@@ -4982,6 +4982,7 @@ const _menuCtx = {
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
+  getGravityMenuItem: () => _gravity.buildMenuItem(),
   openDashboard: () => showDashboard(),
   launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
   newSessionWithFolder: async (t) => {
@@ -5781,6 +5782,11 @@ function createWindow() {
     },
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
     cancelRoam: () => _roam.cancelRoam(),
+    startGravityFall: (onEnd) => _gravity.release(onEnd),
+    beginGravityDrag: () => _gravity.beginDrag(),
+    isGravityFalling: () => _gravity.isFalling(),
+    setGravityFloorHere: () => _gravity.setFloorHere(),
+    setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
@@ -6137,6 +6143,10 @@ const _roamCtx = {
   roamFence: roamFenceLoader,
 };
 const _roam = require("./roam")(_roamCtx);
+// Gravity: the fall reuses roam's window context.
+const _gravity = require("./gravity")(_roamCtx, {
+  t: (key) => translate(key),
+});
 // #810: resolve the fence's initial status right away so the first roam
 // round doesn't have to hold on an UNKNOWN state (get() === null) when a
 // fence file exists — or confirm quickly that none does.
