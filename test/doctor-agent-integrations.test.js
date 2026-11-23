@@ -218,7 +218,11 @@ function managedFileDescriptor(agentId, dirName) {
 }
 
 function qoderDescriptor() {
-  return managedFileDescriptor("qoder", ".qoder");
+  const descriptor = managedFileDescriptor("qoder", ".qoder");
+  descriptor.configTargets = require("../hooks/qoder-install").resolveQoderConfigTargets({
+    homeDir: path.dirname(descriptor.parentDir), env: {},
+  });
+  return descriptor;
 }
 
 function nestedHooksConfig(events, marker, commandForEvent = (event) => `"/node" "/app/hooks/${marker}" ${event}`) {
@@ -235,6 +239,53 @@ function nestedHooksConfig(events, marker, commandForEvent = (event) => `"/node"
 function qoderHooksConfig(commandForEvent) {
   return nestedHooksConfig(QODER_HOOK_EVENTS, "qoder-hook.js", commandForEvent);
 }
+
+describe("Qoder CN Doctor coverage", () => {
+  it("offers CN repair even when international hooks were deliberately disabled", () => {
+    const descriptor = qoderDescriptor();
+    writeJson(descriptor.configPath, {
+      hooks: qoderHooksConfig(), hooksConfig: { disabled: ["clawd"] },
+    });
+    writeJson(descriptor.configTargets[1].configPath, { language: "zh-CN" });
+    assert.deepStrictEqual(runOne(descriptor).fixAction, { type: "agent-integration", agentId: "qoder" });
+  });
+
+  it("does not let healthy international hooks hide missing CN hooks", () => {
+    const descriptor = qoderDescriptor();
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig() });
+    const cnPath = descriptor.configTargets[1].configPath;
+    writeJson(cnPath, { language: "zh-CN" });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.configPath, cnPath);
+    assert.deepStrictEqual(detail.configTargets.map((target) => target.status), ["ok", "not-connected"]);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "qoder" });
+  });
+
+  it("validates CN-only hooks and reports a corrupt CN config even with healthy international hooks", () => {
+    const descriptor = qoderDescriptor();
+    const cnPath = descriptor.configTargets[1].configPath;
+    writeJson(cnPath, { hooks: qoderHooksConfig() });
+    assert.strictEqual(runOne(descriptor).status, "ok");
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig() });
+    writeText(cnPath, "{");
+    assert.strictEqual(runOne(descriptor).status, "config-corrupt");
+  });
+
+  it("preserves the CN disabled-hook setting without offering a futile repair", () => {
+    const descriptor = qoderDescriptor();
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig() });
+    writeJson(descriptor.configTargets[1].configPath, {
+      hooks: qoderHooksConfig(), hooksConfig: { disabled: ["clawd"] },
+    });
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.supplementary.value, "disabled-clawd");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+});
 
 function reasonixDescriptor() {
   const descriptor = managedFileDescriptor("reasonix", ".reasonix");
@@ -603,6 +654,44 @@ describe("checkAgentIntegrations", () => {
     assert.match(detail.detail, /paused automatic Claude hook repair/);
     assert.strictEqual(detail.claudeHookGuard.type, "suspicious-shrink");
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "claude-code" });
+  });
+
+  it("checks every extra Claude config folder inside the one Claude row (#1250)", () => {
+    const descriptor = baseDescriptor({
+      agentId: "claude-code",
+      agentName: "Claude Code",
+      marker: "clawd-hook.js",
+      nested: true,
+    });
+    const healthy = {
+      hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: '"/node" "/app/hooks/clawd-hook.js" Stop' }] }] },
+    };
+    writeJson(descriptor.configPath, healthy);
+    const workDir = path.join(path.dirname(descriptor.parentDir), ".claude-work");
+    fs.mkdirSync(workDir, { recursive: true });
+    writeJson(path.join(workDir, "settings.json"), { hooks: {} });
+    const prefs = {
+      agents: { "claude-code": { integrationInstalled: true, enabled: true, configDirs: [{ dir: workDir, label: "" }] } },
+    };
+    const validateCommand = () => ({ ok: true, nodeBin: "/node", scriptPath: "/app/hooks/clawd-hook.js" });
+
+    const primaryOnly = runOne(descriptor, { validateCommand });
+    assert.strictEqual(primaryOnly.configDirs, undefined);
+
+    const broken = runOne(descriptor, { prefs, validateCommand });
+    assert.strictEqual(broken.status, "not-connected");
+    assert.strictEqual(broken.level, "warning");
+    assert.match(broken.detail, /^work: /);
+    assert.deepStrictEqual(broken.configDirs.map((entry) => [entry.dir, entry.status]), [
+      [descriptor.parentDir, primaryOnly.status],
+      [workDir, "not-connected"],
+    ]);
+    assert.deepStrictEqual(broken.fixAction, { type: "agent-integration", agentId: "claude-code" });
+
+    writeJson(path.join(workDir, "settings.json"), healthy);
+    const fixed = runOne(descriptor, { prefs, validateCommand });
+    assert.strictEqual(fixed.status, primaryOnly.status);
+    assert.strictEqual(fixed.configDirs[1].status, primaryOnly.status);
   });
 
   it("does not show the Claude guard notice for other agents", () => {

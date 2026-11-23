@@ -18,7 +18,8 @@ function makeFakeHttp() {
   function createHttpServer(handler) {
     capturedHandler = handler;
     const server = new EventEmitter();
-    server.listen = function () { this.emit("listening"); };
+    server.listen = function (port) { this.boundPort = port; this.emit("listening"); };
+    server.address = function () { return { port: this.boundPort }; };
     server.close = function () {};
     return server;
   }
@@ -119,6 +120,24 @@ function startServer(overrides = {}) {
 }
 
 describe("Codex official /permission path", () => {
+  it("preserves ephemeral focus metadata on a permission-first entry without changing its no-decision fallback", async () => {
+    const body = buildPermissionBody({ hook_event_name: "PermissionRequest", session_id: "ephemeral-permission-first",
+      tool_name: "Bash", tool_input: { command: "echo fixture" } },
+    () => ({ stablePid: 731, agentPid: 732 }), {
+      env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "Codex Desktop" }, platform: "win32", allowDesktopEnvOriginator: true,
+    });
+    assert.strictEqual(body.codex_client_ephemeral, true);
+    let captured;
+    const server = startServer({ showPermissionBubble: (entry) => {
+      captured = entry; entry.res.writeHead(204); entry.res.end();
+    } });
+    const response = await callPermission(server.handler, body);
+    assert.strictEqual(response.statusCode, 204);
+    assert.strictEqual(response.body, "");
+    assert.strictEqual(captured.codexClientEphemeral, true);
+    assert.strictEqual(server.updates[0][3].codexClientEphemeral, true);
+  });
+
   it("Auto delegates unknown and MCP requests before bubble or automation creation", async () => {
     const { handler, pendingPermissions, shown } = startServer({
       getCodexPermissionMode: () => "auto",

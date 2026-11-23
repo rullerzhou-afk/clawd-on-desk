@@ -19,6 +19,7 @@ const initPermission = require("../src/permission");
 const {
   classifyPermissionInteraction,
 } = require("../src/permission-automation-policy");
+const { preparePermissionReminder } = require("../src/permission-reminder");
 const { createSessionAutomationStore } = require("../src/session-automation-store");
 const { createSessionAutomationCoordinator } = require("../src/session-automation-coordinator");
 
@@ -627,5 +628,56 @@ describe("unattended: per-agent allow wire formats", () => {
     assert.equal(received.body.request_id, "per_test_123");
     assert.equal(received.body.reply, "once");
     assert.equal(received.auth, "Bearer tok_test");
+  });
+});
+
+describe("permission automation: Codex Auto claim (#1186)", () => {
+  function codexEntry(overrides = {}) {
+    return makePermEntry({
+      agentId: "codex",
+      isCodex: true,
+      codexAutoManual: true,
+      toolInput: { command: "ssh box uptime" },
+      ...overrides,
+    });
+  }
+
+  it("answers true only when global automation would allow at once", () => {
+    const on = initPermission(makeCtx({ getPermissionAutomationMode: () => "auto-tools" }));
+    assert.equal(on.wouldAutoAllowPermission(codexEntry()), true);
+    const off = initPermission(makeCtx({ getPermissionAutomationMode: () => "off" }));
+    assert.equal(off.wouldAutoAllowPermission(codexEntry()), false);
+  });
+
+  it("leaves a destructive-reminder hold with Codex", () => {
+    const perm = initPermission(makeCtx({
+      getPermissionAutomationMode: () => "auto-tools",
+      isDestructiveReminderEnabled: () => true,
+    }));
+    const toolInput = { command: "rm -rf /" };
+    const entry = codexEntry({ toolInput, ...preparePermissionReminder("Bash", toolInput) });
+    assert.equal(perm.wouldAutoAllowPermission(entry), false);
+  });
+
+  it("leaves session overrides and interactive subagents with Codex", () => {
+    const override = initPermission(makeCtx({
+      getPermissionAutomationMode: () => "auto-tools",
+      hasSessionAutomationOverride: () => true,
+    }));
+    assert.equal(override.wouldAutoAllowPermission(codexEntry()), false);
+    const perm = initPermission(makeCtx({ getPermissionAutomationMode: () => "auto-tools" }));
+    assert.equal(perm.wouldAutoAllowPermission(codexEntry({ codexInteractiveSubagent: true })), false);
+  });
+
+  it("returns a claimed request to Codex instead of opening a bubble", () => {
+    const ctx = makeCtx({ getPermissionAutomationMode: () => "off" });
+    const perm = initPermission(ctx);
+    const permEntry = codexEntry({ codexAutomationClaim: true });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.showPermissionBubble(permEntry);
+
+    assert.equal(permEntry.bubble, null, "no BrowserWindow should be created");
+    assert.equal(perm.pendingPermissions.indexOf(permEntry), -1);
   });
 });

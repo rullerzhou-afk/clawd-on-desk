@@ -6,8 +6,8 @@ example the bottom-right quarter of the screen, or a strip above the dock.
 
 ## Choose an area in Settings
 
-Open **Settings → General → Behavior & position → Free roam**, expand the
-section, then choose **Activity area → Choose area…**. Clawd opens an overlay
+Open **Settings → Pet → Movement & position → When idle → Free roam**,
+then choose **Activity area → Choose area…**. Clawd opens an overlay
 on the display where the pet currently sits. Drag a rectangle and confirm it;
 the change applies without restarting Clawd.
 

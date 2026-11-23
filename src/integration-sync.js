@@ -108,12 +108,16 @@ function createIntegrationSyncRuntime(options = {}) {
     const automatic = options.automatic !== false;
     try {
       if (typeof ctx.syncClawdHooksImpl === "function") {
-        return ctx.syncClawdHooksImpl({
+        const implOptions = {
           autoStart: ctx.autoStartWithClaude,
           port: getHookServerPort(),
           source,
           automatic,
-        });
+        };
+        // Settings passes the folder list it is about to commit, so the
+        // install covers the same extra Claude folders prefs will record.
+        if (Array.isArray(options.claudeConfigDirs)) implOptions.claudeConfigDirs = options.claudeConfigDirs;
+        return ctx.syncClawdHooksImpl(implOptions);
       }
       const {
         registerHooks,
@@ -212,10 +216,10 @@ function createIntegrationSyncRuntime(options = {}) {
       const permissionTarget = options.permissionTarget && typeof options.permissionTarget === "object"
         ? options.permissionTarget
         : { mode: "local" };
-      const syncOptions = { ...options, permissionTarget };
+      const syncOptions = { ...options, permissionTarget, port: getHookServerPort() };
       if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl(syncOptions);
       const { registerCodeBuddyHooks } = require("../hooks/codebuddy-install.js");
-      const result = registerCodeBuddyHooks({ silent: true, permissionTarget });
+      const result = registerCodeBuddyHooks({ ...syncOptions, silent: true });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced CodeBuddy hooks (added ${result.added}, updated ${result.updated})`);
       }
@@ -275,6 +279,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncKiroDesktopHooks() {
+    try {
+      if (typeof ctx.syncKiroDesktopHooksImpl === "function") return ctx.syncKiroDesktopHooksImpl();
+      const { registerKiroDesktopHooks } = require("../hooks/kiro-desktop-install.js");
+      const result = registerKiroDesktopHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced Kiro IDE hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "Kiro IDE", "kiro-desktop-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync Kiro IDE hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Kiro IDE hooks" };
+    }
+  }
+
   function syncMinimaxHooks() {
     try {
       if (typeof ctx.syncMinimaxHooksImpl === "function") return ctx.syncMinimaxHooksImpl();
@@ -305,11 +324,16 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncKiroCrewHooks() {
+  function syncKiroCrewHooks(options = {}) {
+    const syncOptions = options && typeof options === "object" ? options : {};
+    const registrationOptions = {
+      silent: true,
+      preserveDisabled: syncOptions.automatic !== false,
+    };
     try {
-      if (typeof ctx.syncKiroCrewHooksImpl === "function") return ctx.syncKiroCrewHooksImpl();
+      if (typeof ctx.syncKiroCrewHooksImpl === "function") return ctx.syncKiroCrewHooksImpl(registrationOptions);
       const { registerKiroCrewHooks } = require("../hooks/kirocrew-install.js");
-      const result = registerKiroCrewHooks({ silent: true });
+      const result = registerKiroCrewHooks(registrationOptions);
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced KiroCrew hooks (added ${result.added}, updated ${result.updated})`);
       }
@@ -318,6 +342,10 @@ function createIntegrationSyncRuntime(options = {}) {
       console.warn("Clawd: failed to sync KiroCrew hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync KiroCrew hooks" };
     }
+  }
+
+  function repairKiroCrewHooks(options = {}) {
+    return syncKiroCrewHooks({ ...options, automatic: false });
   }
 
   function syncKimiHooks() {
@@ -703,6 +731,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "grok-build": syncGrokBuildHooks,
     "kiro-cli": syncKiroHooks,
     kirocrew: syncKiroCrewHooks,
+    "kiro-desktop": syncKiroDesktopHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
     zcode: syncZcodeHooks,
@@ -728,6 +757,7 @@ function createIntegrationSyncRuntime(options = {}) {
     codex: repairCodexHooks,
     "deepseek-harness": repairDeepSeekHarnessPlugin,
     openclaw: repairOpenClawPlugin,
+    kirocrew: repairKiroCrewHooks,
   });
 
   function isClaudeSyncErrorResult(result) {
@@ -866,6 +896,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncCodeBuddyHooks,
     syncWorkBuddyHooks,
     syncKiroHooks,
+    syncKiroDesktopHooks,
     syncKimiHooks,
     syncQwenHooks,
     syncZcodeHooks,

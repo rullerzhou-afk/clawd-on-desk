@@ -7,6 +7,8 @@ const os = require("os");
 const crypto = require("crypto");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
+const { quotePowerShellSingleArg } = require("../hooks/json-utils");
+const { isKdeWaylandSession } = require("./session-focus");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -136,8 +138,10 @@ public class WinFocus {
         // Console shells such as powershell.exe / pwsh.exe can have
         // MainWindowHandle == 0 because the visible HWND belongs to the
         // console host. Attaching briefly lets us retrieve that HWND.
-        // The helper uses stdin/stdout pipes, so detaching from a console does
-        // not break the IPC channel back to Electron.
+        // A helper that has called FreeConsole exits after it finishes the
+        // current batch of stdin, taking any queued commands with it. So the
+        // generated script only probes when no other branch found a window, and
+        // Node replaces the helper after it exits.
         FreeConsole();
         if (!AttachConsole(targetPid)) return IntPtr.Zero;
         IntPtr hWnd = GetConsoleWindow();
@@ -239,7 +243,7 @@ function normalizeHwndString(value) {
 }
 
 function psSingleQuotedString(value) {
-  return `'${String(value || "").replace(/'/g, "''")}'`;
+  return quotePowerShellSingleArg(value || "");
 }
 
 function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates, orcaHosted = false) {
@@ -386,6 +390,10 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
     }` : `
     $reason = 'no-parent-window-no-title'`;
 
+  // `powershell -Command -` runs a multi-line structure as one batch up to the
+  // next blank line. A blank line inside this script would therefore cut the
+  // batch short and drop the result line once FindConsoleWindowForPid detaches
+  // the console. Tests assert the generated text stays free of blank lines.
   return `
 $focusToken = ${tokenLiteral}
 $titleNames = ${titleNames}
@@ -500,6 +508,20 @@ $reason = 'no-parent-window'
 $selectedTargetHwnd = [IntPtr]::Zero
 $pendingConsoleHwnd = [IntPtr]::Zero
 $consoleShimSkipped = $false
+$consoleProbePids = @()
+$consoleRecoveryReasons = @(
+    'no-parent-window'
+    'no-parent-window-no-title'
+    'wt-parent-title-ambiguous'
+    'wt-parent-pid-window-ambiguous'
+    'wt-parent-no-pid-window'
+    'wt-title-ambiguous'
+    'wt-title-mismatch-pid-window-ambiguous'
+    'wt-title-mismatch-single-wt-window-ambiguous'
+    'wt-title-mismatch-no-pid-window'
+    'orca-window-missing'
+    'orca-window-ambiguous'
+)
 $wtHwndFromHookInvalid = $false
 # Orca runs every terminal under a detached daemon whose own parent is already
 # dead, and Orca.exe itself descends from explorer — so it is NEVER an ancestor
@@ -566,16 +588,7 @@ for ($i = 0; $i -lt 8; $i++) {
     }
     if ($proc.MainWindowHandle -ne 0) {${parentWindowBlock}
     }
-    $consoleHwnd = [WinFocus]::FindConsoleWindowForPid([uint32]$curPid)
-    if ($consoleHwnd -ne [IntPtr]::Zero -and [WinFocus]::IsWindowVisible($consoleHwnd)) {
-        if ([WinFocus]::IsLegacyConsoleWindow($consoleHwnd)) {
-          if ($pendingConsoleHwnd -eq [IntPtr]::Zero) {
-            $pendingConsoleHwnd = $consoleHwnd
-          }
-        } else {
-          $consoleShimSkipped = $true
-        }
-    }
+    $consoleProbePids += [int]$curPid
     $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$curPid" -OperationTimeoutSec 2 -ErrorAction SilentlyContinue
     if (-not $cim -or $cim.ParentProcessId -eq 0 -or $cim.ParentProcessId -eq $curPid) { break }
     $curPid = $cim.ParentProcessId
@@ -583,18 +596,24 @@ for ($i = 0; $i -lt 8; $i++) {
 }
 if (-not $focused -and $reason -eq 'no-parent-window') {${wtTitleMatch}
 }
+# Probing a console detaches the helper from its own console, and the host exits
+# once this batch finishes. Run it only when every other branch came up empty.
+if (-not $focused -and $consoleRecoveryReasons -contains $reason) {
+    foreach ($probePid in $consoleProbePids) {
+        $consoleHwnd = [WinFocus]::FindConsoleWindowForPid([uint32]$probePid)
+        if ($consoleHwnd -ne [IntPtr]::Zero -and [WinFocus]::IsWindowVisible($consoleHwnd)) {
+            if ([WinFocus]::IsLegacyConsoleWindow($consoleHwnd)) {
+                if ($pendingConsoleHwnd -eq [IntPtr]::Zero) {
+                    $pendingConsoleHwnd = $consoleHwnd
+                }
+            } else {
+                $consoleShimSkipped = $true
+            }
+        }
+    }
+}
 if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
-    if ($reason -eq 'no-parent-window' -or
-        $reason -eq 'no-parent-window-no-title' -or
-        $reason -eq 'wt-parent-title-ambiguous' -or
-        $reason -eq 'wt-parent-pid-window-ambiguous' -or
-        $reason -eq 'wt-parent-no-pid-window' -or
-        $reason -eq 'wt-title-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-no-pid-window' -or
-        $reason -eq 'orca-window-missing' -or
-        $reason -eq 'orca-window-ambiguous') {
+    if ($consoleRecoveryReasons -contains $reason) {
         [WinFocus]::Focus($pendingConsoleHwnd)
         $selectedTargetHwnd = $pendingConsoleHwnd
         $focused = $true
@@ -602,17 +621,7 @@ if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
     }
 }
 if (-not $focused -and $consoleShimSkipped) {
-    if ($reason -eq 'no-parent-window' -or
-        $reason -eq 'no-parent-window-no-title' -or
-        $reason -eq 'wt-parent-title-ambiguous' -or
-        $reason -eq 'wt-parent-pid-window-ambiguous' -or
-        $reason -eq 'wt-parent-no-pid-window' -or
-        $reason -eq 'wt-title-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-no-pid-window' -or
-        $reason -eq 'orca-window-missing' -or
-        $reason -eq 'orca-window-ambiguous') {
+    if ($consoleRecoveryReasons -contains $reason) {
         $reason = 'console-window-shim-skip'
     }
 }
@@ -631,6 +640,10 @@ Write-ClawdFocusResult $focusToken $reason $selectedTargetHwnd $foregroundHwnd $
 
 // Persistent PowerShell process — warm at startup, reused for all focus calls
 let psProc = null;
+// Incremented by every explicit stop. A helper created before the newest stop
+// must not refill when its late close arrives, no matter which helper is
+// current by then.
+let focusHelperStopGeneration = 0;
 // macOS Accessibility/System Events calls can pile up fast, so serialize focus attempts.
 const MAC_FOCUS_THROTTLE_MS = 1500;
 const MAC_FOCUS_TIMEOUT_MS = 1500;
@@ -645,6 +658,10 @@ const MAC_OPEN_TIMEOUT_MS = 3000;
 const GHOSTTY_STEP_SETTLE_MS = 600;
 const WINDOWS_FOCUS_DEDUP_MS = 400;
 const WINDOWS_FOCUS_RESULT_TIMEOUT_MS = 3000;
+// A helper that detaches its console exits once it drains the current batch.
+// Resending much later would steal the foreground long after the click, so a
+// request older than this is reported as failed instead of retried.
+const WINDOWS_FOCUS_REDISPATCH_MAX_AGE_MS = 1500;
 // Editor PID-window fallbacks only raise an app. Keep them unconfirmed even
 // when the helper observes the target HWND in front: Direct Send needs more.
 const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
@@ -663,7 +680,9 @@ let macQueuedFocusRequest = null;
 let macFocusCooldownTimer = null;
 let windowsFocusLastRunAt = 0;
 let windowsFocusLastRequestKey = null;
-let psStdoutBuffer = "";
+// Monotonic dispatch order. A closed helper only resends the newest request;
+// older ones would fight the click that arrived later.
+let windowsFocusDispatchSeq = 0;
 const windowsFocusPending = new Map();
 
 function normalizePid(value) {
@@ -879,7 +898,7 @@ function completeWindowsFocusRequest(token, result) {
   return true;
 }
 
-function createPendingWindowsFocusRequest(token) {
+function createPendingWindowsFocusRequest(token, meta = {}) {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
   const timer = setTimeout(() => {
@@ -893,7 +912,17 @@ function createPendingWindowsFocusRequest(token) {
     completeWindowsFocusRequest(token, timeoutResult);
   }, WINDOWS_FOCUS_RESULT_TIMEOUT_MS);
   if (typeof timer.unref === "function") timer.unref();
-  windowsFocusPending.set(token, { resolve, timer });
+  windowsFocusPending.set(token, {
+    resolve,
+    timer,
+    seq: Number.isFinite(meta.seq) ? meta.seq : 0,
+    dispatchedAt: Number.isFinite(meta.dispatchedAt) ? meta.dispatchedAt : Date.now(),
+    // The child process the command was written to, filled in by
+    // focusTerminalWindowLegacy. One-shot fallbacks intentionally leave it null.
+    helperProc: null,
+    command: null,
+    retried: false,
+  });
   return promise;
 }
 
@@ -935,7 +964,7 @@ function logFocusResult(reason) {
   focusLog(`focus result ${reason}`);
 }
 
-function handleFocusHelperLine(line) {
+function handleFocusHelperLine(line, helper) {
   const text = String(line || "").trim();
   if (!text.startsWith(FOCUS_RESULT_PREFIX)) return;
   const result = parseFocusHelperResult(text.slice(FOCUS_RESULT_PREFIX.length));
@@ -947,15 +976,20 @@ function handleFocusHelperLine(line) {
     `targetHwnd=${safeLogValue(result.targetHwnd)}`,
     `foregroundHwnd=${safeLogValue(result.foregroundHwnd)}`,
   ].join(" "));
-  if (result.token) completeWindowsFocusRequest(result.token, result);
+  if (result.token) {
+    // Even an unconfirmed result proves this helper ran a command, so it is
+    // worth replacing after it exits.
+    if (helper) helper.sawResult = true;
+    completeWindowsFocusRequest(result.token, result);
+  }
 }
 
-function handleFocusHelperOutput(chunk) {
-  psStdoutBuffer += String(chunk || "");
-  const lines = psStdoutBuffer.split(/\r?\n/);
-  psStdoutBuffer = lines.pop() || "";
-  for (const line of lines) handleFocusHelperLine(line);
-  if (psStdoutBuffer.length > 8192) psStdoutBuffer = psStdoutBuffer.slice(-4096);
+function handleFocusHelperOutput(helper, chunk) {
+  helper.stdoutBuffer += String(chunk || "");
+  const lines = helper.stdoutBuffer.split(/\r?\n/);
+  helper.stdoutBuffer = lines.pop() || "";
+  for (const line of lines) handleFocusHelperLine(line, helper);
+  if (helper.stdoutBuffer.length > 8192) helper.stdoutBuffer = helper.stdoutBuffer.slice(-4096);
 }
 
 function handleFocusHelperCompleteOutput(output) {
@@ -963,31 +997,107 @@ function handleFocusHelperCompleteOutput(output) {
   for (const line of lines) handleFocusHelperLine(line);
 }
 
+function focusHelperAcceptsInput(proc) {
+  return !!(proc && proc.stdin && proc.stdin.writable);
+}
+
+// A closed helper may still have requests that were written to it but never
+// answered. Retry only the newest one, and only while there is a warm helper
+// to take it; everything else fails now instead of waiting for the timeout.
+function handleFocusHelperClose(helper) {
+  try {
+    if (helper.stopGeneration === focusHelperStopGeneration &&
+      helper.exitedOnItsOwn && helper.sawResult && !psProc) {
+      try {
+        initFocusHelper();
+      } catch (err) {
+        psProc = null;
+        focusLog(`focus helper restart failed error=${safeLogValue(err && err.message)}`);
+      }
+    }
+    const replacement = psProc;
+    const canRedispatch = focusHelperAcceptsInput(replacement);
+    for (const [token, pending] of [...windowsFocusPending]) {
+      if (pending.helperProc !== helper.proc) continue;
+      const isLatest = pending.seq === windowsFocusDispatchSeq;
+      const age = Date.now() - pending.dispatchedAt;
+      if (!pending.retried && isLatest && pending.command &&
+        age <= WINDOWS_FOCUS_REDISPATCH_MAX_AGE_MS && canRedispatch) {
+        pending.retried = true;
+        pending.helperProc = replacement;
+        if (ctx._allowSetForeground && replacement.pid) {
+          try { ctx._allowSetForeground(replacement.pid); } catch {}
+        }
+        try {
+          replacement.stdin.write(pending.command + "\n");
+          logFocusResult(`branch=windows-redispatched token=${safeLogValue(token)}`);
+          continue;
+        } catch (err) {
+          focusLog(`focus helper redispatch failed token=${safeLogValue(token)} error=${safeLogValue(err && err.message)}`);
+        }
+      }
+      logFocusResult(`branch=windows-helper reason=focus-helper-exited status=unconfirmed token=${safeLogValue(token)}`);
+      completeWindowsFocusRequest(token, {
+        token,
+        reason: "focus-helper-exited",
+        targetHwnd: null,
+        foregroundHwnd: null,
+      });
+    }
+  } catch (err) {
+    focusLog(`focus helper close failed error=${safeLogValue(err && err.message)}`);
+  }
+}
+
 function initFocusHelper() {
   if (!isWin || psProc) return;
-  psProc = spawn("powershell.exe", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "-"], {
+  const proc = spawn("powershell.exe", ["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "-"], {
     windowsHide: true,
     stdio: ["pipe", "pipe", "ignore"],
   });
+  const helper = {
+    proc,
+    stdoutBuffer: "",
+    sawResult: false,
+    exitedOnItsOwn: false,
+    stopGeneration: focusHelperStopGeneration,
+  };
+  psProc = proc;
   // Set UTF-8 input encoding so Chinese/CJK window titles match correctly,
   // then pre-compile the C# type (once, ~500ms, non-blocking)
-  psProc.on("error", () => { psProc = null; }); // Spawn failure (powershell.exe not found, etc.)
-  psProc.stdin.on("error", () => {}); // Suppress EPIPE if process exits unexpectedly
-  if (psProc.stdout && typeof psProc.stdout.on === "function") {
-    if (typeof psProc.stdout.setEncoding === "function") psProc.stdout.setEncoding("utf8");
-    psProc.stdout.on("data", handleFocusHelperOutput);
-    psProc.stdout.on("error", () => {});
-    if (typeof psProc.stdout.unref === "function") psProc.stdout.unref();
+  proc.on("error", () => {
+    // Spawn failure (powershell.exe not found, etc.) emits error then close,
+    // with no exit, so this is not treated as the helper exiting on its own.
+    if (psProc === proc) psProc = null;
+  });
+  proc.stdin.on("error", () => {}); // Suppress EPIPE if process exits unexpectedly
+  if (proc.stdout && typeof proc.stdout.on === "function") {
+    if (typeof proc.stdout.setEncoding === "function") proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (chunk) => handleFocusHelperOutput(helper, chunk));
+    proc.stdout.on("error", () => {});
+    if (typeof proc.stdout.unref === "function") proc.stdout.unref();
   }
-  psProc.stdin.write("[Console]::InputEncoding = [System.Text.Encoding]::UTF8\n");
-  psProc.stdin.write(PS_FOCUS_ADDTYPE + "\n");
-  psProc.on("exit", () => { psProc = null; psStdoutBuffer = ""; });
-  psProc.unref(); // Don't keep the app alive for this
+  proc.stdin.write("[Console]::InputEncoding = [System.Text.Encoding]::UTF8\n");
+  proc.stdin.write(PS_FOCUS_ADDTYPE + "\n");
+  proc.on("exit", () => {
+    if (psProc !== proc) return;
+    psProc = null;
+    helper.exitedOnItsOwn = true;
+  });
+  // Decide refill and retry on close, not exit: the last result line can be
+  // read from stdout after exit, and only close proves stdout is drained.
+  proc.on("close", () => handleFocusHelperClose(helper));
+  proc.unref(); // Don't keep the app alive for this
 }
 
 function killFocusHelper() {
   clearWindowsFocusPending();
-  if (psProc) { psProc.kill(); psProc = null; }
+  focusHelperStopGeneration += 1;
+  if (psProc) {
+    const proc = psProc;
+    psProc = null;
+    try { proc.kill(); } catch {}
+  }
 }
 
 function scheduleTerminalTabFocus(editor, pidChain) {
@@ -1247,6 +1357,7 @@ function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
 }
 
 const HERDR_CLI_TIMEOUT_MS = 3000;
+const KDE_DBUS_TIMEOUT_MS = 1500;
 
 function herdrCliCandidates() {
   // Same reason as orcaCliCandidates: a Finder-launched app only has launchd's
@@ -1756,9 +1867,12 @@ function scheduleTmuxPaneFocus(pidChain, tmuxSocket, tmuxClient) {
     if (err || !stdout) return;
     const tmuxPids = new Set();
     for (const line of stdout.trim().split("\n")) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length >= 2 && path.basename(parts[parts.length - 1]).toLowerCase() === "tmux") {
-        tmuxPids.add(parseInt(parts[0], 10));
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      // Linux comm is "tmux: server", so keep the whole comm instead of its last word.
+      const comm = match[2];
+      if (path.basename(comm).toLowerCase() === "tmux" || comm.startsWith("tmux: ")) {
+        tmuxPids.add(parseInt(match[1], 10));
       }
     }
     if (!tmuxPids.size) return;
@@ -1925,7 +2039,10 @@ function requestWindowsFocus(request) {
   windowsFocusLastRunAt = now;
   const token = createWindowsFocusToken();
   request.focusToken = token;
-  const promise = createPendingWindowsFocusRequest(token);
+  const promise = createPendingWindowsFocusRequest(token, {
+    seq: ++windowsFocusDispatchSeq,
+    dispatchedAt: now,
+  });
 
   // Grant PowerShell helper permission to call SetForegroundWindow.
   // This must happen HERE — Electron just received user input (click/hotkey),
@@ -2318,6 +2435,172 @@ function focusMacAppViaSystemEvents(pidCandidates, onDone) {
   });
 }
 
+// KDE Plasma on Wayland (#1001): wmctrl and xdotool only see X11 windows, so
+// they cannot find a native Wayland terminal at all. KWin exposes window
+// activation to scripts loaded over D-Bus, which is what kdotool wraps; doing
+// the same here avoids depending on a tool distributions do not package.
+function gdbusCall(dest, objectPath, method, args, callback) {
+  execFile("gdbus", [
+    "call", "--session", "--dest", dest, "--object-path", objectPath, "--method", method, ...args,
+  ], { timeout: KDE_DBUS_TIMEOUT_MS, encoding: "utf8" }, callback);
+}
+
+// gdbus prints a reply as a GVariant tuple, e.g. `(uint32 4633,)` or `(0,)`.
+function parseGdbusInteger(stdout) {
+  const match = String(stdout || "").trim().match(/^\((?:[a-z]+\d*\s+)?(-?\d+),\)$/);
+  return match ? Number(match[1]) : null;
+}
+
+// e.g. `('~ : claude',)`; GVariant switches to double quotes when the string
+// itself holds a single quote.
+function parseGdbusString(stdout) {
+  const match = String(stdout || "").trim().match(/^\((['"])(.*)\1,\)$/s);
+  return match ? match[2].replace(/\\(.)/g, "$1") : null;
+}
+
+function readProcEnviron(pid) {
+  try {
+    const env = {};
+    for (const entry of fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1);
+    }
+    return env;
+  } catch {
+    return null;
+  }
+}
+
+// Konsole serves every window and tab from one process, so the source PID
+// names the application, not the tab. Konsole does export the D-Bus address of
+// each tab into the environment of the shell running in it.
+function findKonsoleSession(pids) {
+  for (const pid of pids) {
+    const env = readProcEnviron(pid);
+    if (!env) continue;
+    const service = env.KONSOLE_DBUS_SERVICE;
+    const windowPath = env.KONSOLE_DBUS_WINDOW;
+    const sessionMatch = /^\/Sessions\/(\d+)$/.exec(env.KONSOLE_DBUS_SESSION || "");
+    if (service && /^\/Windows\/\d+$/.test(windowPath || "") && sessionMatch) {
+      return { service, windowPath, sessionPath: env.KONSOLE_DBUS_SESSION, sessionId: sessionMatch[1] };
+    }
+  }
+  return null;
+}
+
+// Programs started from a Konsole tab (an IDE, another terminal) inherit its
+// KONSOLE_DBUS_* variables. Only trust them when the Konsole process that owns
+// the D-Bus name is an ancestor of the session.
+function selectKonsoleTab(pids, callback) {
+  const konsole = findKonsoleSession(pids);
+  if (!konsole) return callback({ reason: "no-konsole-session" });
+  gdbusCall("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.GetConnectionUnixProcessID",
+    [konsole.service], (ownerErr, ownerOut) => {
+      const ownerPid = ownerErr ? null : parseGdbusInteger(ownerOut);
+      if (!ownerPid || !pids.includes(ownerPid)) return callback({ reason: "konsole-not-in-pid-chain" });
+      gdbusCall(konsole.service, konsole.windowPath, "org.kde.konsole.Window.setCurrentSession",
+        [konsole.sessionId], (selectErr) => {
+          if (selectErr) return callback({ reason: "konsole-tab-select-failed", konsolePid: ownerPid });
+          // With the tab selected, the window caption starts with that tab's
+          // title, which tells several Konsole windows apart.
+          gdbusCall(konsole.service, konsole.sessionPath, "org.kde.konsole.Session.title", ["1"],
+            (titleErr, titleOut) => callback({
+              reason: "konsole-tab-selected",
+              konsolePid: ownerPid,
+              caption: titleErr ? null : parseGdbusString(titleOut),
+            }));
+        });
+    });
+}
+
+function buildKwinActivateScript(pid, captionPrefix) {
+  return [
+    `const pid = ${JSON.stringify(pid)};`,
+    `const captionPrefix = ${JSON.stringify(captionPrefix || "")};`,
+    "const windows = workspace.windowList().filter((w) => w.pid === pid && w.normalWindow);",
+    "const target = windows.find((w) => captionPrefix && w.caption.startsWith(captionPrefix)) || windows[0];",
+    "if (target) {",
+    "  target.minimized = false;",
+    "  workspace.activeWindow = target;",
+    "}",
+    "",
+  ].join("\n");
+}
+
+// KWin runs the script inside the compositor, so the activation is not subject
+// to focus-stealing prevention. The script cannot report back over D-Bus,
+// which is why success here means "KWin ran it", not "a window matched".
+function activateKwinWindow(pid, captionPrefix, callback) {
+  const pluginName = `clawd-focus-${crypto.randomBytes(6).toString("hex")}`;
+  const scriptPath = path.join(os.tmpdir(), `${pluginName}.js`);
+  const finish = (reason) => {
+    fs.unlink(scriptPath, () => {});
+    callback(reason);
+  };
+  fs.writeFile(scriptPath, buildKwinActivateScript(pid, captionPrefix), "utf8", (writeErr) => {
+    if (writeErr) return finish("kwin-script-write-failed");
+    gdbusCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", [scriptPath, pluginName],
+      (loadErr, loadOut) => {
+        const scriptId = loadErr ? null : parseGdbusInteger(loadOut);
+        if (scriptId === null || scriptId < 0) return finish("kwin-script-load-failed");
+        gdbusCall("org.kde.KWin", `/Scripting/Script${scriptId}`, "org.kde.kwin.Script.run", [], (runErr) => {
+          gdbusCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", [pluginName], () => {
+            finish(runErr ? "kwin-script-run-failed" : "kwin-activate-requested");
+          });
+        });
+      });
+  });
+}
+
+function focusX11Window(request, onDone) {
+  const { sourcePid } = request;
+  // Linux: try wmctrl (lookup by PID), then xdotool.
+  // Missing tools fail quietly so hooks never block the app, but the outcome
+  // is logged: on a desktop neither tool can see, nothing else would tell.
+  const finish = (reason) => {
+    logFocusResult(`branch=linux-x11 reason=${reason}`);
+    if (onDone) onDone();
+  };
+  const tryXdoTool = () => {
+    execFile("xdotool", ["search", "--pid", String(sourcePid), "windowactivate", "--sync"], {
+      timeout: 1200,
+    }, (xdoErr) => {
+      if (!xdoErr) return finish("xdotool-activated");
+      finish(xdoErr.code === "ENOENT" ? "no-window-tool" : "no-window-found");
+    });
+  };
+  execFile("wmctrl", ["-lp"], { timeout: 1000 }, (err, stdout) => {
+    if (err || !stdout) return tryXdoTool();
+    const lines = String(stdout).split(/\r?\n/);
+    const match = lines.find((line) => {
+      const parts = line.trim().split(/\s+/);
+      return parts.length >= 3 && Number(parts[2]) === Number(sourcePid);
+    });
+    if (!match) return tryXdoTool();
+    const winId = match.trim().split(/\s+/)[0];
+    if (!winId) return tryXdoTool();
+    execFile("wmctrl", ["-i", "-a", winId], { timeout: 1000 }, (activateErr) => {
+      if (activateErr) return tryXdoTool();
+      finish("wmctrl-activated");
+    });
+  });
+}
+
+// Selects the Konsole tab first, so the raised window already shows it and its
+// caption can pick the right window. Other terminals are raised by source PID.
+function focusKdeWaylandWindow(request, onDone) {
+  const pids = [...(request.pidChain || []), request.sourcePid]
+    .filter((pid, index, arr) => pid && arr.indexOf(pid) === index);
+  selectKonsoleTab(pids, (konsole) => {
+    activateKwinWindow(konsole.konsolePid || request.sourcePid, konsole.caption, (raiseReason) => {
+      logFocusResult(`branch=linux-kwin reason=${raiseReason} konsole=${konsole.reason}`);
+      // KWin only confirms execution, not a window match, so submission alone does not trigger a retry.
+      if (raiseReason !== "kwin-activate-requested") return focusX11Window(request, onDone);
+      if (onDone) onDone();
+    });
+  });
+}
+
 function focusTerminalWindowLegacy(request, onDone) {
   const { sourcePid } = request;
   const cwd = request.cwd;
@@ -2359,30 +2642,11 @@ function focusTerminalWindowLegacy(request, onDone) {
   }
 
   if (isLinux) {
-    // Linux: try wmctrl (lookup by PID), then xdotool.
-    // Missing tools fail quietly so hooks never block the app.
-    const tryXdoTool = () => {
-      execFile("xdotool", ["search", "--pid", String(sourcePid), "windowactivate", "--sync"], {
-        timeout: 1200,
-      }, () => {
-        if (onDone) onDone();
-      });
-    };
-    execFile("wmctrl", ["-lp"], { timeout: 1000 }, (err, stdout) => {
-      if (err || !stdout) return tryXdoTool();
-      const lines = String(stdout).split(/\r?\n/);
-      const match = lines.find((line) => {
-        const parts = line.trim().split(/\s+/);
-        return parts.length >= 3 && Number(parts[2]) === Number(sourcePid);
-      });
-      if (!match) return tryXdoTool();
-      const winId = match.trim().split(/\s+/)[0];
-      if (!winId) return tryXdoTool();
-      execFile("wmctrl", ["-i", "-a", winId], { timeout: 1000 }, (activateErr) => {
-        if (activateErr) return tryXdoTool();
-        if (onDone) onDone();
-      });
-    });
+    if (isKdeWaylandSession()) {
+      focusKdeWaylandWindow(request, onDone);
+      return true;
+    }
+    focusX11Window(request, onDone);
     return true;
   }
 
@@ -2406,12 +2670,21 @@ function focusTerminalWindowLegacy(request, onDone) {
   // Windows: send command to persistent PowerShell process (near-instant)
   const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
   const cmd = makeFocusCmd(sourcePid || 0, titleCandidates, buildFocusCacheKey(request), request.wtHwnd, request.focusToken, cwdCandidates, !!request.orcaPaneKey);
+  const pending = request.focusToken ? windowsFocusPending.get(request.focusToken) : null;
   if (psProc && psProc.stdin.writable) {
+    if (pending) {
+      pending.helperProc = psProc;
+      pending.command = cmd;
+    }
     psProc.stdin.write(cmd + "\n");
     return true;
   } else {
+    // Drop a live-but-unwritable helper. Clearing psProc first makes its late
+    // exit stop counting as a self-exit, so its close cannot refill. A helper
+    // already cleared by its own exit keeps its state: its close still has to
+    // settle the requests that went into it.
+    if (psProc) psProc = null;
     // Fallback: one-shot PowerShell if persistent process died
-    psProc = null;
     execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
       PS_FOCUS_ADDTYPE + cmd],
       { windowsHide: true, timeout: 5000, encoding: "utf8" },
@@ -2440,6 +2713,21 @@ return {
   initFocusHelper,
   killFocusHelper,
   focusTerminalWindow,
+  focusProcessAppWindow: request => require("./process-app-focus").focusProcessAppWindow(request, {
+    execFile, platform: process.platform, windowsActivationCode: PS_FOCUS_ADDTYPE,
+  }),
+  findCodeBuddyMacApp: pids => require("./process-app-focus").findCodeBuddyMacApp(pids, {
+    execFile, fs,
+  }),
+  findCodeBuddyWindowsApp: pids => {
+    const processAppFocus = require("./process-app-focus");
+    return processAppFocus.findCodeBuddyWindowsApp(pids, {
+      execFile, fs, readImagePath: processAppFocus.getWindowsImagePathReader(),
+    });
+  },
+  openCodeBuddyMacApp: bundlePath => require("./process-app-focus").openCodeBuddyMacApp(bundlePath, {
+    execFile,
+  }),
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
   cleanup,
@@ -2483,6 +2771,9 @@ return {
     buildGhosttyCwdProbeAndStoneScript,
     buildGhosttyStoneAndFocusScript,
     GHOSTTY_STEP_SETTLE_MS,
+    parseGdbusInteger,
+    parseGdbusString,
+    buildKwinActivateScript,
   },
 };
 

@@ -4,6 +4,8 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const net = require("node:net");
+const fs = require("node:fs");
+const vm = require("node:vm");
 const { postPermissionToPort, postStateToPort } = require("../hooks/server-config");
 const { runCodexHook } = require("../hooks/codex-hook");
 const { requestQwenPermission } = require("../hooks/qwen-code-hook");
@@ -16,6 +18,46 @@ async function setup(t) {
   t.after(() => harness.close());
   return harness;
 }
+
+test("SSH ingress does not expose the desktop focus stream", async (t) => {
+  const h = await setup(t);
+  const nonce = "a".repeat(32);
+  const ingress = h.api.openRemoteSshIngress({
+    remoteProfile: { profileId: "fixture-remote", displayHost: "fixture-host" },
+    getAcceptedNonces: () => [nonce],
+  });
+  const port = await ingress.start();
+  t.after(() => ingress.close());
+  const result = await postPermission(port, "", {
+    Origin: "dsh-app://app", "x-clawd-routing-nonce": nonce,
+  }, "/dsh/focus-stream", "GET").response;
+  assert.equal(result.status, 404);
+  assert.equal(result.headers["access-control-allow-origin"], undefined);
+});
+
+test("the server dispatcher keeps focus streams local even with a remote profile", () => {
+  // Ingress also filters paths; exercise the inner dispatcher so its own
+  // remote-profile guard cannot disappear behind that earlier protection.
+  const code = fs.readFileSync(require.resolve("../src/server"), "utf8");
+  const begin = code.indexOf("function routeHttpRequest(");
+  const end = code.indexOf("function openRemoteSshIngress(", begin);
+  assert.ok(begin >= 0 && end > begin);
+  let subscriptions = 0;
+  const context = {
+    ROUTING_NONCE_HEADER: "x-clawd-routing-nonce",
+    handleDshFocusStream(_req, res) { subscriptions += 1; res.writeHead(200); res.end(); },
+  };
+  vm.createContext(context);
+  vm.runInContext(code.slice(begin, end), context);
+  const req = { method: "GET", url: "/dsh/focus-stream", headers: {} };
+  const res = { writeHead(status) { this.status = status; }, end() {} };
+  context.routeHttpRequest(req, res, { profileId: "remote" });
+  assert.equal(res.status, 404);
+  assert.equal(subscriptions, 0);
+  context.routeHttpRequest(req, res);
+  assert.equal(res.status, 200);
+  assert.equal(subscriptions, 1);
+});
 
 test("local permission rejects browser requests before parsing or recording", async (t) => {
   const h = await setup(t);
@@ -32,7 +74,7 @@ test("local permission rejects browser requests before parsing or recording", as
 
 test("local state and permission share the native hook transport guard", async (t) => {
   const h = await setup(t);
-  for (const path of ["/state", "/permission"]) {
+  for (const path of ["/state", "/permission", "/permission/clawd-on-desk"]) {
     for (const [headers, status] of [
       [{ Origin: "https://untrusted.example" }, 403],
       [{ Host: "rebound.example" }, 403],

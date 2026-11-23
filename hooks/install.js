@@ -9,10 +9,9 @@ const os = require("os");
 const childProcess = require("child_process");
 const {
   buildPermissionUrl,
-  DEFAULT_SERVER_PORT,
   isManagedPermissionUrl,
   PERMISSION_PATH,
-  readRuntimePort,
+  resolveInstallServerPort,
   readRemoteIdentity,
   resolveRemoteIdentityPath,
   resolveSshSecureMarkerPath,
@@ -20,6 +19,7 @@ const {
   resolveNodeBin,
   resolveNodeBinAsync,
   SERVER_PORTS,
+  ROUTING_NONCE_RE,
 } = require("./server-config");
 const {
   readJsonFile,
@@ -34,8 +34,15 @@ const {
   asarUnpackedPath,
   buildPortableStatuslineCommand,
   classifyManagedClaudeStateHookCommand,
+  getClaudeHookCommand,
+  claudeHookHasMarker,
   extractExistingNodeBin,
   findManagedClaudeEnvNodeBinCandidates,
+  quotePowerShellSingleArg,
+  parsePowerShellEnvCommand,
+  normalizeHookScriptPath,
+  remoteHookScriptKey,
+  getCliOptionValue,
 } = require("./json-utils");
 const {
   planAppImageHookBundle,
@@ -99,6 +106,10 @@ const VERSIONED_HOOKS = [
   // Conservative supported baseline, not the first release of this event.
   { event: "PostToolBatch", minVersion: "2.1.280" },
 ];
+
+// Lowest Claude Code version verified with exec form on Windows; the docs
+// advertise args support starting in 2.1.139.
+const CLAUDE_EXEC_FORM_MIN_VERSION = "2.1.160";
 
 const CLAUDE_VERSION_PATTERN = /(\d+\.\d+\.\d+)/;
 const CLAUDE_PACKAGE_JSON_SEGMENTS = ["node_modules", "@anthropic-ai", "claude-code", "package.json"];
@@ -780,8 +791,36 @@ function preflightClaudeRuntime(options = {}) {
   return resolved;
 }
 
+function shouldUseClaudeExecForm(nodeBin, settings, versionInfo, options) {
+  if (options.platform !== "win32" || options.wslDistro) return false;
+  if (
+    typeof nodeBin !== "string" || !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(nodeBin)
+    || !/\.exe$/i.test(nodeBin)
+  ) return false;
+  const env = options.env || process.env;
+  const grokHome = typeof env.GROK_HOME === "string" ? env.GROK_HOME.trim() : "";
+  // Grok 1.0.30 reads Claude hooks but drops args, so exec form would leave a
+  // failing bare Node command in its scrollback. Keep PowerShell when present.
+  if ((grokHome && fs.existsSync(grokHome))
+    || fs.existsSync(path.join(options.homeDir || os.homedir(), ".grok"))) return false;
+  // The async probe caches known versions until Clawd restarts, so runtime downgrades need a restart.
+  if (versionInfo.status === "known") {
+    return !versionLessThan(versionInfo.version, CLAUDE_EXEC_FORM_MIN_VERSION);
+  }
+  // A transient detection failure must not flip an installed exec hook back
+  // to PowerShell. New hooks keep the legacy form until the version is known.
+  let existingExec = false;
+  for (const entries of Object.values(settings.hooks || {})) {
+    forEachCommandHook(entries, (hook) => {
+      if (Array.isArray(hook.args) && getClaudeHookCommand(hook) !== null) existingExec = true;
+    });
+  }
+  return existingExec;
+}
+
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
+  if (options.remote && platform === "win32") requireRemoteInstallIdentity(options);
   const argSuffix = args ? ` ${args}` : "";
   // Shell-quoted form: used for PowerShell (& operator), remote POSIX (env-prefix
   // syntax is shell syntax), and native macOS/Linux (paths may contain spaces in
@@ -805,10 +844,9 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
     return hook;
   };
 
-  // Remote hook deployment targets POSIX shells over SSH and relies on bash-style
-  // env-prefix syntax (`CLAWD_REMOTE=1 cmd`). Keep that legacy form even if tests
-  // force win32 here; Windows + remote is not a supported deployment target.
-  if (options.remote) {
+  // POSIX remotes retain their shell env prefix. Windows remotes use the same
+  // exec/PowerShell forms as local Windows, with an explicit secure remote flag.
+  if (options.remote && platform !== "win32") {
     return withHookOptions({
       type: "command",
       command: `${buildRemoteHookEnvPrefix(options)} ${shellQuotedCommand}`,
@@ -816,10 +854,29 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   }
 
   if (platform === "win32") {
+    // Prefer direct Node execution to avoid a PowerShell startup per event.
+    // Older/unknown hosts, Grok installs and Node shims retain the #147
+    // PowerShell fallback, which avoids Claude's Windows bash path failures.
+    if (options.execForm) {
+      return withHookOptions({
+        type: "command",
+        command: nodeBin,
+        args: [scriptPath, ...(args ? [args] : []), ...(options.remote ? ["--clawd-ssh-remote"] : [])],
+      });
+    }
+    if (options.remote) {
+      for (const hookPath of [nodeBin, scriptPath]) {
+        if (/[$`"\u201C\u201D\u201E]/.test(hookPath)) {
+          throw new Error(`Windows remote PowerShell hooks cannot use paths containing $, backtick or double quotes: ${hookPath}`);
+        }
+      }
+    }
     return withHookOptions({
       type: "command",
       shell: "powershell",
-      command: `& ${shellQuotedCommand}`,
+      command: options.remote
+        ? `${buildRemotePowerShellEnvPrefix(options)}; & "${nodeBin}" "${scriptPath}" "${args}" "--clawd-ssh-remote"`
+        : `& ${shellQuotedCommand}`,
     });
   }
 
@@ -853,32 +910,49 @@ function isSshSecureRemoteInstall(options = {}) {
     && (options.sshRemote === true || env.CLAWD_SSH_REMOTE === "1");
 }
 
-function buildRemoteHookEnvPrefix(options = {}) {
-  if (!isSshSecureRemoteInstall(options)) return "CLAWD_REMOTE=1";
+function resolveRemoteHookEnvironment(options = {}) {
   const identityPath = resolveRemoteIdentityPath(options);
   const markerPath = resolveSshSecureMarkerPath(options);
+  const pathApi = options.platform === "win32" ? path.win32 : path;
   const hostPrefixPath = options.hostPrefixPath
     || (options.env || process.env).CLAWD_HOST_PREFIX_PATH
-    || path.join(path.dirname(identityPath), "clawd-host-prefix");
+    || pathApi.join(pathApi.dirname(identityPath), "clawd-host-prefix");
   const remoteLastLogPath = options.remoteLastLogPath
     || (options.env || process.env).CLAWD_REMOTE_LAST_LOG_PATH
-    || path.join(path.dirname(identityPath), "clawd-remote-last-error.log");
+    || pathApi.join(pathApi.dirname(identityPath), "clawd-remote-last-error.log");
   const statuslineSidecarPath = options.statuslineSidecarPath
     || (options.env || process.env).CLAWD_STATUSLINE_SIDECAR_PATH
-    || path.join(path.dirname(identityPath), "clawd-statusline-chain.json");
-  return [
-    "CLAWD_REMOTE=1",
-    "CLAWD_SSH_REMOTE=1",
-    `CLAWD_REMOTE_IDENTITY_PATH=${quotePosixEnvValue(identityPath)}`,
-    `CLAWD_SSH_SECURE_MARKER_PATH=${quotePosixEnvValue(markerPath)}`,
-    `CLAWD_HOST_PREFIX_PATH=${quotePosixEnvValue(hostPrefixPath)}`,
-    `CLAWD_REMOTE_LAST_LOG_PATH=${quotePosixEnvValue(remoteLastLogPath)}`,
-    `CLAWD_STATUSLINE_SIDECAR_PATH=${quotePosixEnvValue(statuslineSidecarPath)}`,
-  ].join(" ");
+    || pathApi.join(pathApi.dirname(identityPath), "clawd-statusline-chain.json");
+  return {
+    CLAWD_REMOTE: "1",
+    CLAWD_SSH_REMOTE: "1",
+    CLAWD_REMOTE_IDENTITY_PATH: identityPath,
+    CLAWD_SSH_SECURE_MARKER_PATH: markerPath,
+    CLAWD_HOST_PREFIX_PATH: hostPrefixPath,
+    CLAWD_REMOTE_LAST_LOG_PATH: remoteLastLogPath,
+    CLAWD_STATUSLINE_SIDECAR_PATH: statuslineSidecarPath,
+  };
+}
+
+function buildRemoteHookEnvPrefix(options = {}) {
+  if (!isSshSecureRemoteInstall(options)) return "CLAWD_REMOTE=1";
+  return Object.entries(resolveRemoteHookEnvironment(options)).map(([key, value]) =>
+    `${key}=${key === "CLAWD_REMOTE" || key === "CLAWD_SSH_REMOTE" ? value : quotePosixEnvValue(value)}`
+  ).join(" ");
+}
+
+function buildRemotePowerShellEnvPrefix(options = {}) {
+  return Object.entries(resolveRemoteHookEnvironment(options)).map(([key, value]) =>
+    `$env:${key}=${quotePowerShellSingleArg(value)}`
+  ).join("; ");
 }
 
 function requireRemoteInstallIdentity(options = {}) {
-  if (!isSshSecureRemoteInstall(options)) return null;
+  const sshSecure = isSshSecureRemoteInstall(options);
+  if (options.remote && (options.platform || process.platform) === "win32" && !sshSecure) {
+    throw new Error("Windows remote hooks require an SSH secure installation");
+  }
+  if (!sshSecure) return null;
   const identity = options.remoteIdentity && options.remoteIdentity.ok !== undefined
     ? options.remoteIdentity
     : readRemoteIdentity(options);
@@ -925,13 +999,13 @@ function syncCommandHook(entries, marker, expectedHook) {
       changed = true;
       return;
     }
-    if (hook[field] === expectedHook[field]) return;
+    if (hookFieldEquals(hook[field], expectedHook[field])) return;
     hook[field] = expectedHook[field];
     changed = true;
   };
 
   forEachCommandHook(entries, (hook) => {
-    if (!hook.command.includes(marker)) return;
+    if (!claudeHookHasMarker(hook, marker)) return;
     found = true;
     syncField(hook, "type");
     if (hook.command !== expectedHook.command) {
@@ -939,20 +1013,29 @@ function syncCommandHook(entries, marker, expectedHook) {
       changed = true;
     }
     syncField(hook, "shell");
+    syncField(hook, "args");
     syncField(hook, "async");
     syncField(hook, "timeout");
   });
   return { found, changed };
 }
 
-const STATE_HOOK_SYNC_FIELDS = Object.freeze(["type", "command", "shell", "async", "timeout"]);
+const STATE_HOOK_SYNC_FIELDS = Object.freeze(["type", "command", "args", "shell", "async", "timeout"]);
+
+function hookFieldEquals(current, expected) {
+  if (Array.isArray(expected)) {
+    return Array.isArray(current) && current.length === expected.length
+      && current.every((value, index) => value === expected[index]);
+  }
+  return current === expected;
+}
 
 function commandHookMatchesExpected(hook, expectedHook) {
   if (!hook || !expectedHook) return false;
   return STATE_HOOK_SYNC_FIELDS.every((field) => {
     const hasExpected = Object.prototype.hasOwnProperty.call(expectedHook, field);
     const hasCurrent = Object.prototype.hasOwnProperty.call(hook, field);
-    return hasExpected === hasCurrent && (!hasExpected || hook[field] === expectedHook[field]);
+    return hasExpected === hasCurrent && (!hasExpected || hookFieldEquals(hook[field], expectedHook[field]));
   });
 }
 
@@ -968,7 +1051,7 @@ function syncCommandHookFields(hook, expectedHook) {
       }
       continue;
     }
-    if (hook[field] !== expectedHook[field]) {
+    if (!hookFieldEquals(hook[field], expectedHook[field])) {
       hook[field] = expectedHook[field];
       changed = true;
     }
@@ -983,14 +1066,14 @@ function collectManagedStateHookRecords(entries, settings, event) {
     const entry = entries[entryIndex];
     if (!entry || typeof entry !== "object") continue;
     if (typeof entry.command === "string") {
-      const kind = classifyManagedClaudeStateHookCommand(entry.command, settings, event);
+      const kind = classifyManagedClaudeStateHookCommand(getClaudeHookCommand(entry, MARKER), settings, event);
       if (kind) records.push({ entryIndex, hookIndex: null, hook: entry, kind });
     }
     if (!Array.isArray(entry.hooks)) continue;
     for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
       const hook = entry.hooks[hookIndex];
       if (!hook || typeof hook !== "object" || typeof hook.command !== "string") continue;
-      const kind = classifyManagedClaudeStateHookCommand(hook.command, settings, event);
+      const kind = classifyManagedClaudeStateHookCommand(getClaudeHookCommand(hook, MARKER), settings, event);
       if (kind) records.push({ entryIndex, hookIndex, hook, kind });
     }
   }
@@ -1092,9 +1175,14 @@ function isClawdPermissionHook(entry) {
     && isClawdPermissionUrl(entry.url);
 }
 
-function removeMatchingCommandHooks(entries, predicate) {
+function removeMatchingCommandHooks(entries, predicate, options = {}) {
   if (!Array.isArray(entries)) return { entries, removed: 0, changed: false };
 
+  const matches = (hook) => {
+    if (options.matchHook) return options.matchHook(hook);
+    const command = getClaudeHookCommand(hook);
+    return typeof command === "string" && predicate(command);
+  };
   let removed = 0;
   let changed = false;
   const nextEntries = [];
@@ -1105,7 +1193,7 @@ function removeMatchingCommandHooks(entries, predicate) {
       continue;
     }
 
-    if (typeof entry.command === "string" && predicate(entry.command)) {
+    if (matches(entry)) {
       removed++;
       changed = true;
       continue;
@@ -1117,8 +1205,7 @@ function removeMatchingCommandHooks(entries, predicate) {
     }
 
     const nextHooks = entry.hooks.filter((hook) => {
-      if (!hook || typeof hook !== "object" || typeof hook.command !== "string") return true;
-      if (!predicate(hook.command)) return true;
+      if (!matches(hook)) return true;
       removed++;
       changed = true;
       return false;
@@ -1213,7 +1300,7 @@ function syncHttpHook(entries, expectedUrl) {
 }
 
 function getHookServerPort(explicitPort) {
-  return Number.isInteger(explicitPort) ? explicitPort : (readRuntimePort() || DEFAULT_SERVER_PORT);
+  return resolveInstallServerPort(explicitPort);
 }
 
 // HTTP hooks: PermissionRequest uses bidirectional HTTP hook for permission decisions.
@@ -1364,7 +1451,7 @@ function resolveConfiguredNodeBinSync(options, settings) {
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   if (typeof resolved === "string" && resolved) return configuredNodeResolution(resolved);
 
-  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true, claude: true });
   if (existing) return configuredNodeResolution(existing);
 
   const envCandidate = validateEnvNodeCandidatesSync(
@@ -1435,6 +1522,9 @@ function registerHooks(options = {}) {
 
   // Detect CC version for versioned hooks filtering
   const versionInfo = options.claudeVersionInfo || getClaudeVersion();
+  const execForm = shouldUseClaudeExecForm(nodeBin, settings, versionInfo, {
+    platform, remote: options.remote, wslDistro, env: options.env, homeDir: options.homeDir,
+  });
   const { supported: supportedVersionedHooks, unsupported: unsupportedVersionedHooks } =
     getSupportedVersionedHooks(versionInfo);
   const supportedVersionedEvents = new Set(supportedVersionedHooks.map((hook) => hook.event));
@@ -1473,19 +1563,25 @@ function registerHooks(options = {}) {
       changed = true;  // format was normalized, need to persist
     }
 
-    // Local Windows hooks must use explicit PowerShell invocation because Claude
-    // Code defaults command hooks to bash on Windows. Remote hooks stay on the
-    // legacy POSIX/bash-compatible form; see buildCommandHookSpec().
+    // Local Windows uses exec form on verified hosts to skip shell startup;
+    // the #147 PowerShell fallback and POSIX/remote/WSL forms remain available.
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
       sshRemote: options.sshRemote,
       wslDistro,
+      execForm,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
       remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
       secureMarkerPath: options.secureMarkerPath,
       hostPrefixPath: options.hostPrefixPath,
+      ...(options.remote && platform === "win32" ? {
+        remoteIdentity,
+        env: options.env,
+        remoteLastLogPath: options.remoteLastLogPath,
+        statuslineSidecarPath: options.statuslineSidecarPath,
+      } : {}),
     });
     const commandSync = foldManagedStateHooks(
       settings.hooks[event],
@@ -1526,6 +1622,7 @@ function registerHooks(options = {}) {
     const autoStartHook = buildCommandHookSpec(nodeBin, autoStartScript, "", {
       platform,
       wslDistro,
+      execForm,
       async: true,
       timeout: AUTO_START_HOOK_TIMEOUT_SECONDS,
     });
@@ -1690,7 +1787,7 @@ async function resolveConfiguredNodeBinAsync(options, settings) {
     return configuredNodeResolution(options.nodeBin);
   }
 
-  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true, claude: true });
   if (existing) {
     const access = options.access || fs.promises.access.bind(fs.promises);
     // Match the doctor validator and resolver: POSIX requires the execute
@@ -1768,6 +1865,9 @@ async function registerHooksAsync(options = {}) {
   let changed = false;
 
   const versionInfo = options.claudeVersionInfo || await getClaudeVersionAsync(options);
+  const execForm = shouldUseClaudeExecForm(nodeBin, settings, versionInfo, {
+    platform, remote: options.remote, wslDistro, env: options.env, homeDir: options.homeDir,
+  });
   const { supported: supportedVersionedHooks, unsupported: unsupportedVersionedHooks } =
     getSupportedVersionedHooks(versionInfo);
   const supportedVersionedEvents = new Set(supportedVersionedHooks.map((hook) => hook.event));
@@ -1807,11 +1907,18 @@ async function registerHooksAsync(options = {}) {
       remote: options.remote,
       sshRemote: options.sshRemote,
       wslDistro,
+      execForm,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
       remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
       secureMarkerPath: options.secureMarkerPath,
       hostPrefixPath: options.hostPrefixPath,
+      ...(options.remote && platform === "win32" ? {
+        remoteIdentity,
+        env: options.env,
+        remoteLastLogPath: options.remoteLastLogPath,
+        statuslineSidecarPath: options.statuslineSidecarPath,
+      } : {}),
     });
     const commandSync = foldManagedStateHooks(
       settings.hooks[event],
@@ -1850,6 +1957,7 @@ async function registerHooksAsync(options = {}) {
     const autoStartHook = buildCommandHookSpec(nodeBin, autoStartScript, "", {
       platform,
       wslDistro,
+      execForm,
       async: true,
       timeout: AUTO_START_HOOK_TIMEOUT_SECONDS,
     });
@@ -1993,6 +2101,53 @@ async function registerHooksAsync(options = {}) {
   };
 }
 
+function unregisterRemoteOwnedHooks(options = {}) {
+  const { hooksDir, routingNonce } = options;
+  if (typeof hooksDir !== "string" || !hooksDir || typeof routingNonce !== "string" || !ROUTING_NONCE_RE.test(routingNonce)) {
+    throw new Error("Remote owned uninstall requires --hooks-dir and --routing-nonce");
+  }
+  const platform = options.platform || process.platform;
+  const script = remoteHookScriptKey(hooksDir, "clawd-hook.js", platform);
+  const ownsCommand = (hook) => {
+    if (!hook || hook.type !== "command" || typeof hook.command !== "string") return false;
+    if (Array.isArray(hook.args)) {
+      return normalizeHookScriptPath(hook.args[0], platform) === script
+        && hook.args.slice(1).includes("--clawd-ssh-remote");
+    }
+    if (hook.shell !== "powershell") return false;
+    const parsed = parsePowerShellEnvCommand(hook.command);
+    return !!parsed && parsed.args.length === 4
+      && normalizeHookScriptPath(parsed.args[1], platform) === script
+      && parsed.args[3] === "--clawd-ssh-remote";
+  };
+  const ownsHttp = (hook) => {
+    try {
+      const url = new URL(hook.url);
+      const nonce = url.pathname === "/permission"
+        ? url.searchParams.get("nonce")
+        : url.pathname.split("/").pop();
+      return nonce === routingNonce;
+    } catch { return false; }
+  };
+  const settingsPath = resolveClaudeSettingsPath(options);
+  let settings;
+  try { settings = readJsonFile(settingsPath); } catch (err) {
+    if (err.code === "ENOENT") return { removed: 0, changed: false };
+    throw new Error(`Failed to read settings.json: ${err.message}`);
+  }
+  let removed = 0;
+  for (const [event, entries] of Object.entries(settings.hooks || {})) {
+    const commandResult = removeMatchingCommandHooks(entries, null, { matchHook: ownsCommand });
+    const httpResult = removeMatchingHttpHooks(commandResult.entries, ownsHttp);
+    if (!commandResult.changed && !httpResult.changed) continue;
+    removed += commandResult.removed + httpResult.removed;
+    if (httpResult.entries.length) settings.hooks[event] = httpResult.entries;
+    else delete settings.hooks[event];
+  }
+  if (removed) writeJsonAtomicWithBackup(resolveWritePath(settingsPath), settings, options);
+  return { removed, changed: removed > 0 };
+}
+
 function unregisterHooks(options = {}) {
   const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
@@ -2134,9 +2289,9 @@ function isAutoStartRegistered(options = {}) {
     if (!Array.isArray(arr)) return false;
     return arr.some((entry) => {
       if (!entry || typeof entry !== "object") return false;
-      if (typeof entry.command === "string" && entry.command.includes(AUTO_START_MARKER)) return true;
+      if (claudeHookHasMarker(entry, AUTO_START_MARKER)) return true;
       if (Array.isArray(entry.hooks)) {
-        return entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(AUTO_START_MARKER));
+        return entry.hooks.some((h) => claudeHookHasMarker(h, AUTO_START_MARKER));
       }
       return false;
     });
@@ -2695,7 +2850,7 @@ function unregisterClaudeStatusline(options = {}) {
   return result;
 }
 
-function parseClaudeInstallCliOptions(argv = []) {
+function parseClaudeInstallCliOptions(argv = [], platform = process.platform) {
   const args = Array.isArray(argv) ? argv : [];
   const remote = args.includes("--remote");
   return {
@@ -2705,7 +2860,7 @@ function parseClaudeInstallCliOptions(argv = []) {
     // installing/reinstalling command hooks must not silently opt the user into
     // the visible single-slot statusLine; Settings owns that preference unless
     // the debug CLI receives an explicit --statusline.
-    installStatusline: remote || args.includes("--statusline"),
+    installStatusline: !(remote && platform === "win32") && (remote || args.includes("--statusline")),
   };
 }
 
@@ -2728,6 +2883,7 @@ module.exports = {
   registerHooks,
   registerHooksAsync,
   unregisterHooks,
+  unregisterRemoteOwnedHooks,
   unregisterHooksAsync,
   unregisterAutoStart,
   isAutoStartRegistered,
@@ -2757,6 +2913,7 @@ module.exports = {
     reconcileVersionedHooks,
     shouldReconcileVersionedHooks,
     buildCommandHookSpec,
+    shouldUseClaudeExecForm,
     buildRemoteHookEnvPrefix,
     isSshSecureRemoteInstall,
     parseClaudeInstallCliOptions,
@@ -2777,22 +2934,33 @@ Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
 // CLI: run directly with `node hooks/install.js [--remote] [--statusline]`
 if (require.main === module) {
   try {
-    const { remote, chainExisting, installStatusline } =
-      parseClaudeInstallCliOptions(process.argv.slice(2));
-    // Check only what this invocation requests. auto-start.js is opt-in and
-    // is not registered by this CLI, so it must not become a prerequisite.
-    const entryPoints = ["clawd-hook.js"];
-    if (installStatusline) entryPoints.push("claude-statusline.js");
-    const missingDeps = findMissingHookDependencies(entryPoints);
-    if (missingDeps.length) {
-      console.error(formatMissingHookDependencies(missingDeps));
-      process.exitCode = 1;
+    if (process.argv.includes("--remote-uninstall-owned")) {
+      unregisterRemoteOwnedHooks({
+        hooksDir: getCliOptionValue(process.argv, "--hooks-dir"),
+        routingNonce: getCliOptionValue(process.argv, "--routing-nonce"),
+      });
     } else {
-      registerHooks({ remote });
-      if (installStatusline) {
-        // Remote installs also register statusline. Local commands opt in
-        // only with --statusline and otherwise preserve the visible slot.
-        registerClaudeStatusline({ remote, chainExisting });
+      const { remote, chainExisting, installStatusline } =
+        parseClaudeInstallCliOptions(process.argv.slice(2), process.platform);
+      // Check only what this invocation requests. auto-start.js is opt-in and
+      // is not registered by this CLI, so it must not become a prerequisite.
+      const entryPoints = ["clawd-hook.js"];
+      if (installStatusline) entryPoints.push("claude-statusline.js");
+      const missingDeps = findMissingHookDependencies(entryPoints);
+      if (missingDeps.length) {
+        console.error(formatMissingHookDependencies(missingDeps));
+        process.exitCode = 1;
+      } else {
+        registerHooks({ remote });
+        if (remote && process.platform === "win32") {
+          unregisterAutoStart();
+          console.log("  Removed Clawd auto-start hooks for Windows remote mode.");
+        }
+        if (installStatusline) {
+          // POSIX remote installs collect quota; local commands opt in only
+          // with --statusline and otherwise preserve the visible slot.
+          registerClaudeStatusline({ remote, chainExisting });
+        }
       }
     }
   } catch (err) {

@@ -166,6 +166,8 @@
     for (const key of [
       "officialTheme",
       "managedOfficialTheme",
+      "officialThemeCategory",
+      "officialThemeAuthor",
       "officialThemeState",
       "officialThemeVersion",
       "officialThemeInstalledVersion",
@@ -185,7 +187,8 @@
     const officialIds = new Set(officialThemes.map((theme) => theme && theme.id).filter(Boolean));
     const groups = {
       builtin: [],
-      official: officialThemes,
+      official: officialThemes.filter((theme) => theme.officialThemeCategory !== "community"),
+      community: officialThemes.filter((theme) => theme.officialThemeCategory === "community"),
       importedCodexPets: [],
       user: [],
     };
@@ -207,6 +210,7 @@
     return [
       { id: "builtin", title: t("themeGroupBuiltIn"), themes: groups.builtin },
       { id: "official", title: t("themeGroupOfficialThemes"), themes: groups.official },
+      { id: "community", title: t("themeGroupCommunityThemes"), themes: groups.community },
       { id: "imported-codex-pets", title: t("themeGroupImportedCodexPets"), themes: groups.importedCodexPets },
       { id: "user", title: t("themeGroupUserThemes"), themes: groups.user },
     ].filter((section) => section.themes.length > 0
@@ -406,6 +410,7 @@
       caps.petTint === true
       || caps.accessories === true
       || caps.mouthAccessories === true
+      || caps.darkAppearance === true
     ));
   }
 
@@ -496,6 +501,7 @@
   function renderThemeDetail(parent, theme) {
     mountedCustomizationControls = {
       themeId: theme.id,
+      themeAppearance: null,
       petTint: null,
       petAccessory: null,
       petMouthAccessory: null,
@@ -541,6 +547,7 @@
     title.textContent = t("themeAppearanceTitle");
     section.appendChild(title);
     const caps = theme.capabilities || {};
+    if (caps.darkAppearance === true) section.appendChild(buildThemeAppearanceRow(theme));
     if (caps.petTint === true) section.appendChild(buildThemeTintRow(theme));
     if (caps.accessories === true) section.appendChild(buildThemeAccessoryRow(theme));
     if (caps.mouthAccessories === true) section.appendChild(buildThemeMouthAccessoryRow(theme));
@@ -606,6 +613,84 @@
       ? selections[themeId]
       : null;
     return options.some((entry) => entry.id === value) ? value : "none";
+  }
+
+  // "system" is the UI-only value for "no entry in themeAppearance". A missing
+  // key is the default (follow the system), so there is no reason to persist a
+  // literal "system" value in the map.
+  function getThemeAppearanceValue(themeId) {
+    const selections = state.snapshot && state.snapshot.themeAppearance;
+    const value = selections && typeof selections === "object" && !Array.isArray(selections)
+      ? selections[themeId]
+      : null;
+    return value === "light" || value === "dark" ? value : "system";
+  }
+
+  function buildThemeAppearanceRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowThemeAppearance");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themeAppearanceDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeAppearanceValue(theme.id),
+      options: [
+        { value: "system", label: t("themeAppearanceFollowSystem") },
+        { value: "light", label: t("themeAppearanceLight") },
+        { value: "dark", label: t("themeAppearanceDark") },
+      ],
+      ariaLabel: t("rowThemeAppearance"),
+      className: "theme-appearance-select",
+      viewportPlacement: "down",
+      onChange(next) {
+        const committed = getThemeAppearanceValue(theme.id);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.themeAppearance;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "system") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("themeAppearance", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
+    });
+
+    function syncFromSnapshot() {
+      picker.setValue(getThemeAppearanceValue(theme.id));
+      picker.setPending(false);
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.themeAppearance = syncFromSnapshot;
+    }
+
+    control.appendChild(picker.element);
+    row.appendChild(text);
+    row.appendChild(control);
+    syncFromSnapshot();
+    return row;
   }
 
   function buildThemeTintRow(theme) {
@@ -907,6 +992,7 @@
 
     const keys = Object.keys(changes);
     const customizationKeys = new Set([
+      "themeAppearance",
       "petTint",
       "petAccessory",
       "petMouthAccessory",
@@ -1452,12 +1538,19 @@
     if (theme.officialTheme) {
       const badge = document.createElement("span");
       badge.className = "theme-card-badge accent";
-      badge.textContent = t("themeBadgeOfficial");
+      badge.textContent = t(theme.officialThemeCategory === "community" ? "themeBadgeCommunity" : "themeBadgeOfficial");
       name.appendChild(badge);
     }
     card.appendChild(name);
 
     if (theme.officialTheme) {
+      if (theme.officialThemeAuthor) {
+        const author = document.createElement("div");
+        author.className = "theme-card-author";
+        author.textContent = t("themeAuthor")(theme.officialThemeAuthor);
+        author.title = author.textContent;
+        card.appendChild(author);
+      }
       const descriptionText = localizeField(theme.officialThemeDescription || theme.description);
       if (descriptionText) {
         const description = document.createElement("div");

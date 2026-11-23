@@ -23,7 +23,8 @@ const deploy = __test.legacyDeploy;
 const startCodexMonitor = __test.legacyStartCodexMonitor;
 const stopCodexMonitor = __test.legacyStopCodexMonitor;
 const uninstallRemoteIntegrations = __test.legacyUninstallRemoteIntegrations;
-const { clearRemoteNodeCache } = require("../src/remote-ssh-node");
+const { clearRemoteNodeCache, buildRemoteNodeEvalCommand } = require("../src/remote-ssh-node");
+const { decodeSshCommandArguments } = require("../src/remote-ssh-command");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
@@ -286,6 +287,7 @@ test("secure deploy holds a fenced lease, verifies every component, and never pu
   assert.equal(result.ok, true);
   assert.equal(result.secure, true);
   assert.equal(result.transactionReady, true);
+  assert.equal(result.tunnelMode, undefined);
   assert.deepEqual(stepUpdates.map(([name]) => name), [
     "identity",
     "secureMarker",
@@ -320,6 +322,10 @@ test("secure deploy holds a fenced lease, verifies every component, and never pu
     assert.match(command, /runtimeKey/);
   }
 });
+
+
+
+
 
 test("secure deploy only stops a prior Codex monitor after matching its command line", async () => {
   const fixture = secureFixture({
@@ -374,6 +380,7 @@ test("secure deploy lock contention exits before every live mutation", async () 
 test("known lock contention restores the managed stage, while an ambiguous acquire quarantines", async () => {
   const fixture = secureFixture();
   const layout = {
+    platform: "posix",
     deployLockDir: "/home/remote/.clawd/deploy.lock",
     runtimeKey: fixture.profile.runtimeKey,
     layoutVersion: fixture.profile.layoutVersion,
@@ -461,6 +468,7 @@ test("verified deploy-lock release resets the managed lock stage", async () => {
   const pending = __test.releaseDeployLock({
     profile: secureFixture().profile,
     layout: {
+      platform: "posix",
       deployLockDir: "/home/remote/.clawd/deploy.lock",
       runtimeKey: "account-default",
       layoutVersion: 1,
@@ -493,6 +501,7 @@ test("deploy-lock release close 255 is a recovery error, never success", async (
   const pending = __test.releaseDeployLock({
     profile: secureFixture().profile,
     layout: {
+      platform: "posix",
       deployLockDir: "/home/remote/.clawd/deploy.lock",
       runtimeKey: "account-default",
       layoutVersion: 1,
@@ -551,6 +560,28 @@ test("a lock-release unknown result preserves the primary secure operation failu
   assert.equal(result.reason, "ownership_conflict");
   assert.equal(result.recoveryCode, "manual_lock_inspection_required");
   assert.match(result.recoveryError, /manual inspection/i);
+});
+
+test("PR #1366 follow-up: jump host wraps multiline SSH scripts without consuming stdin", async () => {
+  const child = makeFakeChild();
+  const calls = [];
+  const spawn = (_tool, args) => {
+    calls.push(args);
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  const script = "payload=$(cat)\nprintf '%s\\n' \"$payload\"\n";
+
+  const result = await __test.spawnAndWait(spawn, "ssh", ["remote.example.test", script], {
+    stdin: "stdin-frame",
+    profile: { tunnelMode: "stdio" },
+    platform: "linux",
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].at(-1), /[\r\n]/);
+  assert.equal(child._stdin, "stdin-frame");
 });
 
 test("owned monitor cleanup preserves its known failure when lock release is unknown", async () => {
@@ -900,6 +931,58 @@ function deployDeps(extra = {}) {
     ...extra,
   };
 }
+
+test("issue #1316: secure deployment with a Windows snapshot starts a framed native lock operation", async () => {
+  const runtime = makeRuntimeStub();
+  const recorder = makeRecordingSpawn([{ code: 0, stdout: '{"ok":false,"reason":"lock_busy"}\n' }]);
+  const remoteNode = { ok: true, nodeBin: "C:\\Node\\node.exe", version: "v20.0.0", source: "platform-probe" };
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime, platformSnapshot: {
+    ok: true, remotePlatform: "win32", shell: { shell: "windows-cmd", os: "windows" },
+    node: { platform: "win32", homedir: "C:\\Users\\remote", execPath: remoteNode.nodeBin, version: remoteNode.version },
+    remoteNode,
+  }, deps: deployDeps({ spawn: recorder.spawn, detectRemoteShell: () => assert.fail("snapshot must be reused") }) });
+  assert.equal(recorder.calls.length, 1);
+  assert.equal(recorder.calls[0].command, "ssh");
+  assert.equal(lastArg(recorder.calls[0]), require("../src/remote-ssh-node-launch").REMOTE_NODE_LAUNCH_COMMAND);
+  const frame = JSON.parse(recorder.calls[0].child._stdin);
+  assert.equal(frame.args.operation, "acquireLock");
+  assert.equal(frame.args.layout.platform, "win32");
+  assert.equal(frame.args.layout.remoteHome, "C:\\Users\\remote");
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "lock_busy");
+});
+
+test("issue #1316: direct unknown-shell Windows deployment requires a platform snapshot before taking a lock", async () => {
+  const recorder = secureHappySpawn({ responses: { 2: { code: 0, stdout: "win32\n" } } });
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime: makeRuntimeStub(), deps: deployDeps({
+    spawn: recorder.spawn, detectRemoteShell: async () => ({ shell: "unknown" }),
+  }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "windows_platform_snapshot_required");
+  assert.equal(recorder.calls.length, 3);
+  assert.equal(recorder.calls.some((call) => lastArg(call).startsWith("umask")), false);
+  assert.deepEqual(recorder.calls.map((call) => call.command), ["ssh", "ssh", "ssh"]);
+  assert.ok(lastArg(recorder.calls[0]).startsWith("printf"));
+  assert.equal(lastArg(recorder.calls[1]), require("../src/remote-ssh-node").buildRemoteNodeProbeCommand());
+  assert.ok(lastArg(recorder.calls[2]).includes("console.log(process.platform)"));
+});
+
+test("issue #1316: ambiguous-shell deployment uses the Node from its trusted platform snapshot", async () => {
+  const recorder = makeRecordingSpawn((child, meta) => {
+    const command = String(meta.args.at(-1));
+    const response = command.startsWith("printf")
+      ? { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/remote\n" }
+      : { code: 73, stdout: "other-owner" };
+    queueMicrotask(() => { child.stdout.emit("data", Buffer.from(response.stdout)); child.emit("close", response.code, null); });
+  });
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime: makeRuntimeStub(), platformSnapshot: {
+    ok: true, remotePlatform: "posix", shell: { shell: "unknown" },
+    remoteNode: { ok: true, nodeBin: "/opt/probed/node", version: "v20.0.0", source: "platform-probe" },
+  }, deps: deployDeps({ spawn: recorder.spawn, detectRemoteShell: () => assert.fail("snapshot must be reused") }) });
+  assert.equal(result.reason, "lock_busy");
+  assert.equal(recorder.calls.length, 2);
+  assert.equal(recorder.calls.some((call) => lastArg(call).startsWith("sh -c")), false);
+});
 
 function lastArg(call) {
   return String(call.args.at(-1));
@@ -1750,6 +1833,7 @@ function localEnableHarness({ agents = { hermes: { integrationInstalled: false, 
     commandCalls,
     agents: () => state.agents,
     register: (deployResult) => require("../src/remote-ssh-ipc").registerRemoteSshIpc({
+      probeRemotePlatformFn: async () => ({ ok: true, remotePlatform: "posix", shell: { shell: "posix", os: "Linux" } }),
       ipcMain,
       settingsController,
       remoteSshRuntime: runtime,
@@ -2150,6 +2234,154 @@ test("installer verification reads back the secure managed command shape", {
   }
 });
 
+const foreignPermissionHook = { type: "http", url: "http://127.0.0.1:8080/approve" };
+function managedPermissionHook(transport = "path", nonce = "c".repeat(32)) {
+  return transport === "query"
+    ? { type: "http", url: `http://127.0.0.1:23333/permission?nonce=${nonce}` }
+    : { type: "http", url: `http://127.0.0.1:23333/permission/${nonce}` };
+}
+function permissionReadback(t, entries, { serverConfig = "real" } = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-permission-readback-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: temp,
+  });
+  fs.mkdirSync(path.dirname(layout.claudeSettingsFile), { recursive: true });
+  fs.mkdirSync(path.dirname(layout.identityFile), { recursive: true });
+  fs.mkdirSync(layout.claudeHooksDir, { recursive: true });
+  fs.writeFileSync(layout.claudeSettingsFile, JSON.stringify({ hooks: { PermissionRequest: entries } }));
+  fs.writeFileSync(layout.identityFile, JSON.stringify({ routingNonce: "c".repeat(32) }));
+  if (serverConfig === "real") {
+    fs.copyFileSync(path.join(REPO_ROOT, "hooks", "server-config.js"), path.join(layout.claudeHooksDir, "server-config.js"));
+  } else if (serverConfig === "empty") {
+    fs.writeFileSync(path.join(layout.claudeHooksDir, "server-config.js"), "module.exports = {};");
+  }
+  const script = __test.buildClaudePermissionVerifyScript({
+    platform: "posix",
+    claudeSettingsFile: layout.claudeSettingsFile,
+    identityFile: layout.identityFile,
+    claudeHooksDir: layout.claudeHooksDir,
+  });
+  return { run: () => childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }) };
+}
+
+test("remote SSH permission readback: POSIX selects Clawd's hook ahead of a foreign loopback hook", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [foreignPermissionHook, managedPermissionHook()]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "managed");
+});
+
+// Ordering-only control: this passes both before and after the fix because the
+// foreign entry is nested after Clawd's and is never selected first.
+test("remote SSH permission readback: POSIX selects Clawd's query hook before a foreign nested hook", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [
+    { hooks: [managedPermissionHook("query")] },
+    { hooks: [foreignPermissionHook] },
+  ]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "managed");
+});
+
+test("remote SSH permission readback: POSIX reports native when only a foreign loopback hook exists", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [foreignPermissionHook]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "native");
+});
+
+test("remote SSH permission readback: POSIX keeps the nonce check when a foreign hook comes first", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [foreignPermissionHook, managedPermissionHook("path", "d".repeat(32))]);
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX ignores a command entry with a Clawd-shaped url", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [
+    { type: "command", command: "approve-tool", url: `http://127.0.0.1:23333/permission/${"d".repeat(32)}` },
+    managedPermissionHook(),
+  ]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "managed");
+});
+
+test("remote SSH permission readback: POSIX fails closed when server-config.js is missing", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [managedPermissionHook()], { serverConfig: null });
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX fails closed when server-config.js lacks the ownership export", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [], { serverConfig: "empty" });
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX treats a legacy nonce-less Clawd URL as a mismatch", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [{ type: "http", url: "http://127.0.0.1:23333/permission/clawd-on-desk" }]);
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX deploy runs the shared readback script against a foreign hook ahead of Clawd's", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, async (t) => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn();
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async () => {},
+    },
+  });
+  assert.equal(result.ok, true, result.stderr || result.reason);
+
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: "/home/remote-user",
+  });
+  const expectedScript = __test.buildClaudePermissionVerifyScript(layout);
+  const command = String(recorder.calls[14].args.at(-1));
+  const marker = "&& (\n";
+  const start = command.indexOf(marker);
+  assert.notEqual(start, -1, "claude-permission call must be fenced");
+  const verifySegment = command.slice(start + marker.length).replace(/\n\)$/, "");
+  assert.equal(
+    verifySegment,
+    buildRemoteNodeEvalCommand("/usr/bin/node", expectedScript),
+    "deploy must embed the shared builder's script verbatim",
+  );
+
+  // Run those exact bytes offline: a foreign loopback hook listed first must
+  // not be mistaken for Clawd's entry.
+  const r = permissionReadback(t, [foreignPermissionHook, managedPermissionHook()]);
+  const executed = r.run();
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.equal(executed.stdout.trim(), "managed");
+});
+
 test("secure scp target is one raw argv token without literal shell quotes", () => {
   assert.equal(
     __test.buildScpRemoteTarget(
@@ -2163,6 +2395,10 @@ test("secure scp target is one raw argv token without literal shell quotes", () 
     "user@example.test:/home/user/staging/",
   );
 });
+
+
+
+
 
 test("monitor verification requires a live PID with the exact layout script path", {
   skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
@@ -2649,9 +2885,10 @@ function makeFakeChild() {
 
 function makeRecordingSpawn(handlers) {
   const calls = [];
-  const spawn = (command, args, opts) => {
+  const spawn = (command, rawArgs, opts) => {
     const child = makeFakeChild();
-    calls.push({ command, args, opts, child });
+    const args = decodeSshCommandArguments(command, rawArgs);
+    calls.push({ command, args, rawArgs, opts, child });
     // Look up handler by index (first call → handler[0], etc.)
     const idx = calls.length - 1;
     const handler = Array.isArray(handlers) ? handlers[idx] : handlers;
@@ -3220,4 +3457,269 @@ test("deploy: unknown remote shell does not block deploy", async () => {
     },
   });
   assert.equal(result.ok, true);
+});
+
+test("issue #1316: POSIX platform snapshot overrides a previously deployed Windows Node resolver", async () => {
+  const f = secureFixture({ profile: { remotePlatform: "win32", detectedRemoteNodeBin: "C:\\Node\\node.exe", detectedRemoteNodeVersion: "v22.0.0" } });
+  const recorded = secureHappySpawn();
+  const result = await __test.secureDeploy({ ...f, runtime: makeRuntimeStub(),
+    platformSnapshot: { ok: true, remotePlatform: "posix", shell: { shell: "posix", os: "Linux" } },
+    deps: deployDeps({ spawn: recorded.spawn }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.layout.platform, "posix");
+  assert.equal(recorded.calls[1].args.at(-1), require("../src/remote-ssh-node").buildRemoteNodeProbeCommand());
+});
+
+test("issue #1316: POSIX node_unavailable failure never acquires a Windows hint", async () => {
+  const recorded = secureHappySpawn({ preflightFailure: { code: 1, stdout: JSON.stringify({ ok: false, reason: "node_unavailable" }) } });
+  const runtime = makeRuntimeStub();
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime, deps: deployDeps({ spawn: recorded.spawn }) });
+  assert.equal(result.reason, "node_unavailable");
+  assert.equal(result.hint, undefined);
+  assert.equal(runtime.events.find(({ payload }) => payload.status === "fail").payload.hint, null);
+});
+
+for (const mode of ["error event", "synchronous throw"]) {
+  for (const mutation of [false, true]) {
+    test(`issue #1316: deployment stdin ${mode} is contained for ${mutation ? "mutation" : "read-only"} input`, async () => {
+      const { Writable } = require("node:stream");
+      const child = makeFakeChild(); let killed = 0;
+      child.stdin = new Writable({ write(_data, _encoding, callback) {
+        callback(Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+      } });
+      if (mode === "synchronous throw") child.stdin.end = () => { throw Object.assign(new Error("stream destroyed"), { code: "ERR_STREAM_DESTROYED" }); };
+      child.kill = () => { killed++; queueMicrotask(() => child.emit("close", 0, null)); };
+      const pending = __test.spawnAndWait(() => child, "ssh", ["host", "program"], { stdin: "input", mutation });
+      if (mutation) await assert.rejects(pending, { code: "transport_unknown_result", recoveryCode: "manual_lock_inspection_required", drainVerified: true });
+      else {
+        const result = await pending;
+        assert.equal(result.code, -1);
+        assert.equal(result.stdinError, true);
+        assert.match(result.stderr, /EPIPE|ERR_STREAM_DESTROYED/);
+      }
+      assert.equal(killed, 1);
+    });
+  }
+}
+
+test("issue #1316: managed deployment stdin errors retain the mutation until close", async () => {
+  const { Writable } = require("node:stream");
+  const child = makeFakeChild(); let killed = 0, invalidated = 0;
+  child.stdin = new Writable({ write(_data, _encoding, callback) {
+    callback(Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+  } });
+  child.kill = () => { killed++; };
+  const pending = __test.spawnAndWait(null, "ssh", ["host", "mutate"], { stdin: "input", mutation: true,
+    runtime: { spawnManagedTransportChild: () => child, invalidateManagedOperation: () => { invalidated++; } } });
+  let settled = false; pending.catch(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.emit("exit", 255, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(killed, 0);
+  child.emit("close", 255, null);
+  await assert.rejects(pending, { code: "transport_unknown_result", recoveryCode: "manual_lock_inspection_required", drainVerified: true });
+  assert.equal(invalidated, 1);
+});
+
+for (const present of [false, true]) {
+  test(`issue #1316: successful POSIX deployment reports actual Codex installer run ${present}`, async () => {
+    const recorded = secureHappySpawn({ preflight: { ok: true, identity: true, claudePresent: false, codexPresent: present, copilotPresent: false } });
+    const result = await __test.secureDeploy({ ...secureFixture(), runtime: makeRuntimeStub(), deps: deployDeps({ spawn: recorded.spawn }) });
+    assert.equal(result.ok, true);
+    assert.equal(result.codexHooksInstalled, present);
+  });
+}
+
+function jumpHostSpawn(recorder) {
+  return (tool, args, options) => {
+    if (tool === "ssh" && /[\r\n]/.test(args.at(-1))) {
+      const child = makeFakeChild();
+      queueMicrotask(() => {
+        child.stderr.emit("data", Buffer.from("gateway rejected a multiline command"));
+        child.emit("exit", 1, null);
+        child.emit("close", 1, null);
+      });
+      return child;
+    }
+    return recorder.spawn(tool, args, options);
+  };
+}
+
+test("PR #1366 follow-up: jump host deployment wraps every command including isolated and Hermes phases", async () => {
+  for (const isolated of [false, true]) {
+    const fixture = secureFixture({ profile: {
+      tunnelMode: "stdio",
+      ...(isolated ? { runtimeMode: "profile-isolated", runtimeKey: "rt_profile_a" } : {}),
+    } });
+    const recorder = isolated ? secureIsolatedHappySpawn() : secureHappySpawn({ hermes: { present: true } });
+    const result = await secureDeploy({
+      ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder) }),
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.tunnelMode, undefined);
+    assert.equal(recorder.calls.some((call) => call.rawArgs.includes("-R")), false);
+    for (const call of recorder.calls.filter((call) => call.command === "ssh")) {
+      assert.doesNotMatch(call.rawArgs.at(-1), /[\r\n]/);
+    }
+    assert.ok(recorder.calls.some((call) => String(call.child._stdin).includes('"routingNonce"')));
+  }
+});
+
+test("PR #1366 follow-up: jump host monitor, uninstall, retirement and bootstrap retain explicit mode", async () => {
+  const profile = {
+    ...secureFixture().profile, tunnelMode: "stdio", runtimeMode: "profile-isolated", runtimeKey: "runtime_a",
+    installId: "c".repeat(64), remoteHome: "/home/shared",
+  };
+  for (const operation of [secureStartCodexMonitor, secureStopCodexMonitor, secureUninstallRemoteIntegrations,
+    require("../src/remote-ssh-deploy").finalizeRetiredRemoteLayout]) {
+    const recorder = makeRecordingSpawn((child, { args }) => {
+      const stdout = args.at(-1).includes("legacyTraces:")
+        ? '{"ok":true,"identity":true,"legacyTraces":0}' : "";
+      if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+    });
+    const result = await operation({ profile, runtime: makeRuntimeStub(), deps: {
+      spawn: jumpHostSpawn(recorder), nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xab), now: () => 123,
+    } });
+    assert.equal(result.ok, true, `${operation.name}: ${JSON.stringify(result)}`);
+    assert.ok(recorder.calls.length >= 3);
+  }
+  const recorder = makeRecordingSpawn([
+    { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/shared\n" },
+    { code: 0, stdout: nodeProbeStdout() }, { code: 0 }, { code: 0 }, { code: 0 },
+  ]);
+  const created = await require("../src/remote-ssh-deploy").bootstrapIsolatedRuntime({
+    profile, installId: profile.installId, runtimeKey: "runtime_b", runtime: makeRuntimeStub(),
+    deps: { spawn: jumpHostSpawn(recorder), randomBytes: () => Buffer.alloc(16, 0xab) },
+  });
+  assert.equal(created.ok, true, JSON.stringify(created));
+  assert.equal(recorder.calls.length, 5);
+});
+
+test("PR #1366 follow-up: decode and Windows length failures produce readable errors before mutation", async () => {
+  const fixture = secureFixture({ profile: { tunnelMode: "stdio" } });
+  const recorder = secureHappySpawn({ lockFailure: { code: 125, stderr: "Clawd: cannot decode remote command" } });
+  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: recorder.spawn }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "remote_base64_unavailable");
+  assert.match(result.message, /base64 is unavailable/);
+  assert.equal(recorder.calls.length, 3);
+  let spawns = 0;
+  const long = await __test.spawnAndWait(() => { spawns++; }, "ssh", ["host", "x".repeat(25000) + "\necho done"], {
+    profile: fixture.profile, platform: "win32",
+  });
+  assert.equal(spawns, 0);
+  assert.match(long.stderr, /Windows SSH command length/);
+});
+
+test("PR #1366 follow-up: jump host failures still wrap stage cleanup and release the lease", async () => {
+  const recorder = secureHappySpawn({ hermes: {
+    present: true,
+    installer: { code: 1, stdout: hermesInstallerStdout({ status: "error", message: "Hermes enable failed" }) },
+  } });
+  const result = await secureDeploy({ ...secureFixture({ profile: { tunnelMode: "stdio" } }), runtime: makeRuntimeStub(),
+    deps: deployDeps({ spawn: jumpHostSpawn(recorder) }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "hermes_install_failed");
+  assert.ok(recorder.calls.some((call) => /rmdir.*-hermes/.test(call.args.at(-1))));
+  assert.match(recorder.calls.at(-1).args.at(-1), /leaseId/);
+  assert.doesNotMatch(recorder.calls.at(-1).rawArgs.at(-1), /[\r\n]/);
+});
+
+test("PR #1366 follow-up: a 255 character remote home exceeds Windows argv limits without spawning", async () => {
+  const home = "/" + ["x".repeat(127), "x".repeat(126)].join("/");
+  assert.equal(home.length, 255);
+  const fixture = secureFixture({ profile: { tunnelMode: "stdio" } });
+  const recorder = secureHappySpawn({ responses: { 0: { code: 0, stdout: `CLAWD_REMOTE_HOME=${home}\n` } } });
+  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder) }) });
+  const sshCalls = recorder.calls.filter((call) => call.command === "ssh");
+  // Windows enforces its argv limit during deployment, before the oversized command can spawn.
+  if (process.platform === "win32") {
+    assert.equal(result.ok, false);
+    assert.match(result.message, /shorter remote home path/);
+    assert.ok(sshCalls.every((call) => call.rawArgs.at(-1).length <= 32000));
+    return;
+  }
+  assert.equal(result.ok, true);
+  const largest = sshCalls
+    .sort((a, b) => b.rawArgs.at(-1).length - a.rawArgs.at(-1).length)[0];
+  assert.ok(largest.rawArgs.at(-1).length > 32000);
+  let spawns = 0;
+  const checked = await __test.spawnAndWait(() => { spawns++; }, "ssh", largest.args, {
+    profile: fixture.profile, platform: "win32",
+  });
+  assert.equal(spawns, 0);
+  assert.match(checked.stderr, /shorter remote home path/);
+});
+
+test("PR #1366 follow-up: deploy Node failures preserve conditional gateway guidance", async () => {
+  const cases = [
+    { label: "gateway rejection", code: 19, stderr: "gateway rejects multiline commands", expected: null, helpHint: "remoteSshGatewayHelp" },
+    { label: "Node missing", code: 127, stderr: "", message: "Remote Node.js not found (ssh exited 127)", expected: null },
+    { label: "authentication", stderr: "Permission denied (publickey)", expected: null },
+    { label: "network", stderr: "Connection timed out", expected: null },
+    { label: "jump host selected", stderr: "gateway rejects multiline commands", tunnelMode: "stdio", expected: null },
+    { label: "existing hint", stderr: "gateway rejects multiline commands", hint: "remoteSshProbeNodeMissing", expected: "remoteSshProbeNodeMissing" },
+    { label: "authentication behind a friendly message", stderr: "Permission denied (publickey)", message: "Remote discovery failed", expected: null },
+  ];
+  for (const item of cases) {
+    const fixture = secureFixture({ profile: { tunnelMode: item.tunnelMode || "reverse" } });
+    const recorder = makeRecordingSpawn({ code: 0, stdout: "CLAWD_REMOTE_HOME=/home/remote-user\n" });
+    const runtime = makeRuntimeStub();
+    const result = await secureDeploy({
+      ...fixture, runtime,
+      platformSnapshot: {
+        remotePlatform: "posix", shell: { shell: "posix", os: "Linux" },
+        remoteNode: {
+          ok: false, code: item.code, message: item.message || item.stderr, stderr: item.stderr,
+          ...(item.hint ? { hint: item.hint } : {}),
+        },
+      },
+      deps: deployDeps({ spawn: recorder.spawn }),
+    });
+    assert.equal(result.ok, false, item.label);
+    assert.equal(result.step, "check-node", item.label);
+    assert.equal(result.hint || null, item.expected, item.label);
+    assert.equal(result.helpHint, item.helpHint, item.label);
+    assert.equal(runtime.events.at(-1).payload.helpHint, item.helpHint, item.label);
+    assert.equal(result.message, item.message || item.stderr, item.label);
+    assert.equal(runtime.events.at(-1).payload.hint, item.expected, item.label);
+    assert.equal(recorder.calls.length, 1, "only the read-only home discovery may run");
+  }
+});
+
+
+test("PR #1366 follow-up: exit 125 preserves stderr unless this SSH command was wrapped", async () => {
+  const stderr = "Clawd: cannot decode remote command (base64 -d/-D/--decode)\nremote detail\n";
+  for (const item of [
+    { tool: "ssh", script: "echo first\necho second", profile: { tunnelMode: "reverse" }, wrapped: false },
+    { tool: "ssh", script: "echo first\necho second", profile: { tunnelMode: "stdio" }, wrapped: true },
+    { tool: "ssh", script: "echo single", profile: { tunnelMode: "stdio" }, wrapped: false },
+    { tool: "ssh", script: "echo first\necho second", profile: { tunnelMode: "stdio", remotePlatform: "win32" }, wrapped: false },
+    { tool: "scp", script: "file\nname", profile: { tunnelMode: "stdio" }, wrapped: false },
+  ]) {
+    const recorder = makeRecordingSpawn({ code: 125, stderr });
+    const result = await __test.spawnAndWait(recorder.spawn, item.tool, ["remote", item.script], {
+      profile: item.profile, platform: "linux",
+    });
+    assert.equal(result.code, 125);
+    if (item.wrapped) {
+      assert.match(result.stderr, /base64 is unavailable/);
+      assert.ok(result.stderr.endsWith(stderr));
+    } else {
+      assert.equal(result.stderr, stderr);
+    }
+  }
+});
+
+test("PR #1366 follow-up: reverse lock exit 125 retains the original unknown acquisition handling", async () => {
+  const recorder = secureHappySpawn({ lockFailure: { code: 125, stderr: "ordinary remote error" } });
+  await assert.rejects(secureDeploy({
+    ...secureFixture({ profile: { tunnelMode: "reverse" } }), runtime: makeRuntimeStub(),
+    deps: deployDeps({ spawn: recorder.spawn }),
+  }), (error) => error.code === "lock_acquire_unknown" && error.recoveryCode === "manual_lock_inspection_required");
 });

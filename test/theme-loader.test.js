@@ -717,7 +717,7 @@ describe("theme-loader external SVG sanitization", () => {
     assert.ok(sanitized.includes("<image"), "safe local image element should survive sanitization");
     assert.strictEqual(fs.readFileSync(cachedWebp, "utf8"), "fake-webp");
     assert.strictEqual(fs.readFileSync(cachedPng, "utf8"), "fake-png");
-    assert.strictEqual(cacheMeta.version, 3);
+    assert.strictEqual(cacheMeta.version, 4);
     assert.ok(cacheMeta.svgs["idle.svg"]);
     assert.ok(cacheMeta.rasters["spritesheet.webp"]);
     assert.ok(cacheMeta.rasters["nested/sheet.png"]);
@@ -799,7 +799,7 @@ describe("theme-loader external SVG sanitization", () => {
     const sanitized = fs.readFileSync(contextFor(theme).resolveAssetPath("idle.svg"), "utf8");
     const cacheMeta = JSON.parse(fs.readFileSync(path.join(cacheRoot, ".cache-meta.json"), "utf8"));
 
-    assert.strictEqual(cacheMeta.version, 3);
+    assert.strictEqual(cacheMeta.version, 4);
     assert.ok(cacheMeta.svgs["idle.svg"]);
     assert.ok(cacheMeta.rasters["spritesheet.webp"]);
     assert.ok(sanitized.includes("<image"));
@@ -893,6 +893,7 @@ describe("theme-loader capability metadata", () => {
       petTint: false,
       accessories: false,
       mouthAccessories: false,
+      darkAppearance: false,
     });
   });
 
@@ -911,6 +912,7 @@ describe("theme-loader capability metadata", () => {
       petTint: false,
       accessories: false,
       mouthAccessories: false,
+      darkAppearance: false,
     });
 
     const listed = themeLoader.listThemesWithMetadata().find((theme) => theme.id === "capTheme");
@@ -1276,5 +1278,345 @@ describe("theme-loader variant loading", () => {
     assert.deepStrictEqual(theme._bindingBase.jugglingTiers, [
       { minSessions: 1, originalFile: "pose-b.svg" },
     ]);
+  });
+});
+
+// Startup read retries (#1295): theme files can be briefly unreadable after
+// an update; the exact trigger is unconfirmed. Only main.js opts into retries.
+// Other callers keep a single probe, with diagnostics for real read failures.
+describe("startup read retries (#1295)", () => {
+  // src/theme-loader.js does `require("fs")`, which is the same built-in
+  // module singleton as this file's require("node:fs") — patching
+  // fs.readFileSync here is visible to the loader. Non-matching paths are
+  // delegated untouched; only built-in probes are counted (the user-themes
+  // probe under <tmp>/userData is excluded).
+  function interceptBuiltinReads(themeId, { failFirst = 2, truncatedJson = false } = {}) {
+    const suffix = path.join("themes", themeId, "theme.json");
+    const busyErr = new Error("EBUSY: resource busy or locked, open");
+    busyErr.code = "EBUSY";
+    const realRead = fs.readFileSync.bind(fs);
+    let builtinAttempts = 0;
+    const mockFn = mock.method(fs, "readFileSync", (p, ...rest) => {
+      const file = String(p);
+      if (file.endsWith(suffix) && !file.includes("userData")) {
+        builtinAttempts += 1;
+        if (builtinAttempts <= failFirst) {
+          if (truncatedJson) return '{"schemaVersion":';
+          throw busyErr;
+        }
+      }
+      return realRead(p, ...rest);
+    });
+    return {
+      stop: () => mockFn.mock.restore(),
+      attempts: () => builtinAttempts,
+    };
+  }
+
+  it("recovers from a transiently unreadable built-in theme", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: 2 });
+    try {
+      const theme = themeLoader.loadTheme("clawd", { readAttempts: 5, retryDelaysMs: [0, 0, 0, 0] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("fatal default-theme error carries the underlying OS error after exhausting retries", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: Number.POSITIVE_INFINITY });
+    try {
+      assert.throws(
+        () => themeLoader.loadTheme("clawd", { readAttempts: 5, retryDelaysMs: [0, 0, 0, 0] }),
+        (err) => {
+          assert.match(err.message, /Default theme 'clawd' not found/);
+          assert.match(err.message, /EBUSY/);
+          return true;
+        }
+      );
+      assert.strictEqual(intercept.attempts(), 5);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("strict mode reports the OS error too", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: Number.POSITIVE_INFINITY });
+    try {
+      assert.throws(
+        () => themeLoader.loadTheme("clawd", { strict: true, readAttempts: 2, retryDelaysMs: [0] }),
+        (err) => {
+          assert.match(err.message, /Theme "clawd" not found/);
+          assert.match(err.message, /EBUSY/);
+          return true;
+        }
+      );
+      assert.strictEqual(intercept.attempts(), 2);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("lenient fallback to clawd forwards the retry budget", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: 2 });
+    const wait = mock.method(Atomics, "wait", () => "timed-out");
+    try {
+      const theme = themeLoader.loadTheme("missing-theme", { readAttempts: 3, retryDelaysMs: [11, 23] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+      assert.deepStrictEqual(wait.mock.calls.map((call) => call.arguments[3]), [11, 23, 11, 23]);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("default opts probe an unreadable theme once without waiting", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: Infinity });
+    const wait = mock.method(Atomics, "wait", () => "timed-out");
+    try {
+      assert.throws(() => themeLoader.loadTheme("clawd"), /EBUSY/);
+      assert.strictEqual(intercept.attempts(), 1);
+      assert.strictEqual(wait.mock.callCount(), 0);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("waits for the configured backoff delays before recovering", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd");
+    const wait = mock.method(Atomics, "wait", () => "timed-out");
+    try {
+      const theme = themeLoader.loadTheme("clawd", { readAttempts: 5, retryDelaysMs: [100, 250, 500, 1000] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+      assert.deepStrictEqual(wait.mock.calls.map((call) => call.arguments[3]), [100, 250]);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("busy-waits and recovers when Atomics.wait throws", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: 1 });
+    const wait = mock.method(Atomics, "wait", () => { throw new Error("unavailable"); });
+    // Advance a millisecond per clock read, without relying on wall-clock timing.
+    let now = 0;
+    mock.method(Date, "now", () => now++);
+    try {
+      const theme = themeLoader.loadTheme("clawd", { readAttempts: 2, retryDelaysMs: [5] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 2);
+      assert.strictEqual(wait.mock.callCount(), 1);
+      assert.ok(now >= 6, "busy-wait should reach the 5ms deadline");
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("fallback does not carry variant or overrides onto clawd", () => {
+    const fixture = makeFixture([{
+      id: "clawd", builtin: true,
+      json: validThemeJson({
+        variantsSchemaVersion: 0,
+        variants: { cozy: { name: "Cozy", timings: { idleMouseMoveThreshold: 42 } } },
+      }),
+    }]);
+    try {
+      const theme = themeLoader.loadTheme("missing-theme", {
+        variant: "cozy",
+        overrides: { states: { idle: { file: "idle-custom.svg" } } },
+      });
+      assert.strictEqual(theme._variantId, "default");
+      assert.strictEqual(theme._userOverrides, null);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("logs read failures for EBUSY but not missing files", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const error = mock.method(console, "error", () => {});
+    try {
+      assert.throws(() => themeLoader.loadTheme("gone", { strict: true }), /not found/);
+      assert.ok(!error.mock.calls.some((call) => call.arguments[0].includes("Failed to read")));
+      const intercept = interceptBuiltinReads("clawd", { failFirst: Infinity });
+      try {
+        assert.throws(() => themeLoader.loadTheme("clawd", { strict: true }), /EBUSY/);
+        assert.ok(error.mock.calls.some((call) => call.arguments[0].includes("Failed to read")));
+      } finally {
+        intercept.stop();
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("retries truncated JSON until the file is complete", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { truncatedJson: true });
+    try {
+      const theme = themeLoader.loadTheme("clawd", { readAttempts: 3, retryDelaysMs: [0, 0] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("fatal default-theme error carries the built-in parse diagnostic", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const builtinPath = path.join(fixture.tmp, "themes", "clawd", "theme.json");
+    fs.writeFileSync(builtinPath, '{"schemaVersion":', "utf8");
+    try {
+      assert.throws(() => themeLoader.loadTheme("clawd"), (err) => {
+        return err.message.includes("Default theme 'clawd' not found")
+          && err.message.includes("failed to parse")
+          && err.message.includes(builtinPath);
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("reports user-theme parse errors ahead of missing built-in files", () => {
+    const fixture = makeFixture([{ id: "broken", builtin: false, json: validThemeJson() }]);
+    const userPath = path.join(fixture.tmp, "userData", "themes", "broken", "theme.json");
+    fs.writeFileSync(userPath, '{"schemaVersion":', "utf8");
+    try {
+      assert.throws(() => themeLoader.loadTheme("broken", { strict: true }), (err) => {
+        assert.match(err.message, /failed to parse/);
+        assert.ok(err.message.includes(userPath));
+        assert.doesNotMatch(err.message, /ENOENT/);
+        return true;
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("reports user-theme read errors ahead of missing built-in files", () => {
+    const fixture = makeFixture([{ id: "busy", builtin: false, json: validThemeJson() }]);
+    const userPath = path.join(fixture.tmp, "userData", "themes", "busy", "theme.json");
+    const realRead = fs.readFileSync.bind(fs);
+    mock.method(fs, "readFileSync", (file, ...rest) => {
+      if (String(file) === userPath) {
+        throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${userPath}'`), { code: "EBUSY" });
+      }
+      return realRead(file, ...rest);
+    });
+    try {
+      assert.throws(() => themeLoader.loadTheme("busy", { strict: true }), /EBUSY/);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("keeps the built-in ENOENT diagnostic when clawd is absent from both roots", () => {
+    const fixture = makeFixture([]);
+    try {
+      assert.throws(() => themeLoader.loadTheme("clawd"), (err) => {
+        assert.match(err.message, /Default theme 'clawd' not found/);
+        assert.match(err.message, /ENOENT/);
+        assert.ok(err.message.includes(path.join(fixture.tmp, "themes", "clawd", "theme.json")));
+        assert.ok(!err.message.includes("userData"));
+        return true;
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("keeps the original strict message for a genuinely missing theme", () => {
+    const fixture = makeFixture([]);
+    try {
+      assert.throws(() => themeLoader.loadTheme("gone", { strict: true }), { message: 'Theme "gone" not found' });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("treats ENOTDIR as a missing file without logging a read failure", () => {
+    const fixture = makeFixture([]);
+    const builtinPath = path.join(fixture.tmp, "themes", "gone", "theme.json");
+    const realRead = fs.readFileSync.bind(fs);
+    const error = mock.method(console, "error", () => {});
+    mock.method(fs, "readFileSync", (file, ...rest) => {
+      if (String(file) === builtinPath) {
+        throw Object.assign(new Error(`ENOTDIR: not a directory, open '${builtinPath}'`), { code: "ENOTDIR" });
+      }
+      return realRead(file, ...rest);
+    });
+    try {
+      assert.throws(() => themeLoader.loadTheme("gone", { strict: true }), { message: 'Theme "gone" not found' });
+      assert.ok(!error.mock.calls.some((call) => call.arguments[0].includes("Failed to read")));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("validation fallback does not carry variant or overrides onto clawd", () => {
+    const fixture = makeFixture([
+      {
+        id: "clawd", builtin: true,
+        json: validThemeJson({
+          variantsSchemaVersion: 0,
+          variants: { cozy: { name: "Cozy", timings: { idleMouseMoveThreshold: 42 } } },
+        }),
+      },
+      { id: "broken", builtin: false, json: { name: "Bad", states: {} } },
+    ]);
+    try {
+      const theme = themeLoader.loadTheme("broken", {
+        variant: "cozy",
+        overrides: { states: { idle: { file: "idle-custom.svg" } } },
+      });
+      assert.strictEqual(theme._variantId, "default");
+      assert.strictEqual(theme._userOverrides, null);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("validation fallback to clawd forwards the retry budget", () => {
+    const fixture = makeFixture([
+      { id: "clawd", builtin: true, json: validThemeJson() },
+      { id: "broken", builtin: false, json: { name: "Bad", states: {} } },
+    ]);
+    const intercept = interceptBuiltinReads("clawd");
+    const wait = mock.method(Atomics, "wait", () => "timed-out");
+    try {
+      const theme = themeLoader.loadTheme("broken", { readAttempts: 3, retryDelaysMs: [11, 23] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+      assert.deepStrictEqual(wait.mock.calls.map((call) => call.arguments[3]), [11, 23]);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("main passes the fixed startup retry budget to loadInitialTheme", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.match(mainSource, /const THEME_STARTUP_READ_ATTEMPTS\s*=\s*5\s*;/);
+    assert.match(mainSource, /const THEME_STARTUP_RETRY_DELAYS_MS\s*=\s*\[100,\s*250,\s*500,\s*1000\]\s*;/);
+    const startupCall = mainSource.match(/themeRuntime\.loadInitialTheme\(_requestedThemeId,\s*\{([^}]+)\}\)/);
+    assert.ok(startupCall, "main should load the requested startup theme");
+    assert.match(startupCall[1], /\breadAttempts:\s*THEME_STARTUP_READ_ATTEMPTS\b/);
+    assert.match(startupCall[1], /\bretryDelaysMs:\s*THEME_STARTUP_RETRY_DELAYS_MS\b/);
   });
 });

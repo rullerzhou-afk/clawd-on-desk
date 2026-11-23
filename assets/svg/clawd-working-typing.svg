@@ -160,9 +160,6 @@
         100% { transform: translateY(-17px) scale(1); opacity: 0; }
       }
     </style>
-    <g id="pixel-packet">
-      <rect x="0" y="0" width="1.5" height="1.5"/>
-    </g>
   </defs>
 
   <!-- Ground Shadow -->
@@ -170,10 +167,10 @@
 
   <!-- Data particles (behind screen, float up and disappear behind it) -->
   <g fill="#40C4FF">
-    <use href="#pixel-packet" class="data-bit d1" x="3" y="7"/>
-    <use href="#pixel-packet" class="data-bit d2" x="7" y="8"/>
-    <use href="#pixel-packet" class="data-bit d3" x="11" y="7"/>
-    <use href="#pixel-packet" class="data-bit d4" x="5" y="8"/>
+    <g class="data-bit d1"><g transform="translate(3,7)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d2"><g transform="translate(7,8)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d3"><g transform="translate(11,7)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d4"><g transform="translate(5,8)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
   </g>
 
   <!-- Mini Screen -->

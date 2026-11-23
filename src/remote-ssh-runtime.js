@@ -32,6 +32,7 @@
 // `settings-controller`; this file only consumes the validated profile.
 
 const childProcess = require("child_process");
+const { deployTargetFingerprint } = require("./remote-ssh-profile");
 const crypto = require("crypto");
 const { EventEmitter } = require("events");
 const {
@@ -39,12 +40,15 @@ const {
   getCachedRemoteNodeBin,
   clearCachedRemoteNodeBin,
   buildRemoteNodeEvalCommand,
+  buildRemoteHookNodeCommand,
 } = require("./remote-ssh-node");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { acceptedRoutingNonces } = require("./remote-ssh-identity");
-const { resolveRemoteRuntimeLayout } = require("./remote-ssh-layout");
+const { resolveRemoteRuntimeLayout, assertPosixRemoteLayout } = require("./remote-ssh-layout");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
+const { REMOTE_NODE_LAUNCH_COMMAND, buildNodeProgramFrame, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
 const { appendRemoteSshConfigArgs } = require("./remote-ssh-local-config");
+const { createRemoteSshStdioTransport } = require("./remote-ssh-stdio-transport");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -73,6 +77,7 @@ function looksLikeWindowsCmdStderr(stderr) {
 const PROBE_WINDOW_MS = 12000;
 const SERIALIZED_READINESS_TIMEOUT_MS = 30000;
 const SERIALIZED_READINESS_DRAIN_TIMEOUT_MS = 5000;
+const STDIO_READY_TIMEOUT_MS = 20000;
 const PROBE_MIN_GAP_MS = 250;
 const PROBE_CHILD_TIMEOUT_MS = 5000;
 const BACKOFF_SCHEDULE_MS = [5000, 15000, 45000, 120000, 300000];
@@ -251,6 +256,17 @@ function classifyStderr(stderr) {
   return { kind: "unknown" };
 }
 
+function shouldSuggestGatewayMode(profile, step, stderr, exitCode) {
+  if (profile.tunnelMode === "stdio" || !["remote-shell", "check-node"].includes(step)) return false;
+  // The Node discovery script completed and found no supported Node; changing
+  // the SSH transport cannot fix that result.
+  if (step === "check-node" && exitCode === 127) return false;
+  return ![
+    "auth_denied", "host_key", "identity_missing", "dns",
+    "net_timeout", "net_unreachable", "broken_pipe", "op_timeout",
+  ].includes(classifyStderr(stderr).reason);
+}
+
 // ── Probe exit code classifier ──
 //
 // The probe is a single ssh + node-e GET against the remote forward port.
@@ -260,6 +276,9 @@ function classifyStderr(stderr) {
 //   2   http.get error event       (forward up but server unresponsive)
 //   3   header mismatch            (port hijacked by another HTTP service)
 //   4   req.setTimeout fired       (server accepted TCP but hung)
+//   6   Windows hooks no longer owned by this deployment
+//   7   Windows Node execPath changed
+//   8   Windows hook configuration could not be verified
 //   126 remote node not executable
 //   127 remote node not found
 //   130 SIGINT
@@ -274,6 +293,9 @@ function classifyProbeExit(code) {
   if (code === 3) return { kind: "permanent", reason: "probe_port_hijack", hint: "remoteSshProbePortHijack" };
   if (code === 4) return { kind: "transient", reason: "probe_http_timeout", hint: "remoteSshProbeHttpTimeout" };
   if (code === 5) return { kind: "permanent", reason: "probe_secure_identity_invalid", hint: "remoteSshErrSecureIdentityMissing" };
+  if (code === 6) return { kind: "permanent", reason: "probe_remote_hooks_taken_over", hint: "remoteSshErrRemoteHooksTakenOver" };
+  if (code === 7) return { kind: "permanent", reason: "probe_windows_node_changed", hint: "remoteSshErrWindowsNodeChanged" };
+  if (code === 8) return { kind: "permanent", reason: "probe_remote_hooks_unverified", hint: "remoteSshErrRemoteHooksUnverified" };
   if (code === 126) return { kind: "permanent", reason: "probe_node_not_exec", hint: "remoteSshProbeNodeNotExec" };
   if (code === 127) return { kind: "permanent", reason: "probe_node_missing", hint: "remoteSshProbeNodeMissing" };
   if (code === 130 || code === 137 || code === 143 || code === 255) {
@@ -282,10 +304,176 @@ function classifyProbeExit(code) {
   return { kind: "transient", reason: "probe_unknown", hint: "remoteSshProbeSignal" };
 }
 
+// Sent only to native Windows hosts. Read failures cannot prove takeover.
+// Serialized with toString(): the function body must not reference outer variables.
+function checkWindowsRemoteHooks({ layout, steps, routingNonce, dshInstalled, installId }) {
+  const fs = require("fs"), path = require("path").win32;
+  const done = (step) => steps && steps[step] && steps[step].status === "done";
+  // Registration ownership check only: it reads package.json declarations and
+  // never claims to verify which package the desktop app actually loaded.
+  let dshRelevant = false;
+  if (dshInstalled === true || installId) {
+    if (typeof installId !== "string" || !/^[a-f0-9]{64}$/.test(installId)) {
+      if (dshInstalled === true) process.exit(8);
+    } else {
+      const remoteRoot = path.join(layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+      const recordPath = path.join(remoteRoot, installId, "deployment.json");
+      let recordRaw = null;
+      try {
+        recordRaw = fs.readFileSync(recordPath, "utf8");
+      } catch (err) {
+        if (!err || err.code !== "ENOENT") process.exit(8);
+      }
+      if (recordRaw === null) {
+        if (dshInstalled === true) process.exit(6);
+      } else {
+        let record;
+        try { record = JSON.parse(recordRaw.replace(/^\uFEFF/, "")); } catch { process.exit(8); }
+        if (!record || typeof record !== "object" || record.phase !== "installed") process.exit(8);
+        const expectedHome = typeof record.dshHome === "string" && record.dshHome ? record.dshHome : null;
+        if (!expectedHome) process.exit(8);
+        const profilePath = path.join(expectedHome, "profiles", "desktop", "package.json");
+        let manifestRaw;
+        try {
+          manifestRaw = fs.readFileSync(profilePath, "utf8");
+        } catch (err) {
+          process.exit(err && err.code === "ENOENT" ? 6 : 8);
+        }
+        let manifest;
+        try { manifest = JSON.parse(manifestRaw.replace(/^\uFEFF/, "")); } catch { process.exit(8); }
+        const spec = manifest && manifest.dependencies && manifest.dependencies["@dsh-external/dsh-clawd-bridge"];
+        if (typeof spec !== "string") process.exit(6);
+        const match = /^(?:file|link):(.*)$/i.exec(spec.trim());
+        if (!match || !match[1]) process.exit(6);
+        let target = match[1];
+        try { target = decodeURIComponent(target); } catch {}
+        if (/^\/[A-Za-z]:[\\/]/.test(target)) target = target.slice(1);
+        if (typeof record.generationId !== "string" || !/^[a-f0-9]{64}$/.test(record.generationId)) process.exit(8);
+        const normalizedHome = (process.platform === "win32" ? expectedHome.toLowerCase() : expectedHome).replace(/\\/g, "/");
+        const namespace = require("crypto").createHash("sha256").update(normalizedHome).digest("hex");
+        const expectedGeneration = path.join(remoteRoot, installId, "homes", namespace, "generations", record.generationId);
+        const declared = path.resolve(path.dirname(profilePath), target);
+        if (declared.toLowerCase() !== expectedGeneration.toLowerCase()) process.exit(6);
+        dshRelevant = true;
+      }
+    }
+  }
+  if (!dshRelevant && !done("installClaude") && !done("installCopilot") && !done("claudePermission") && !done("installCodex")) return;
+  let utils, claude, copilot, codex = null;
+  let unverifiedPath = path.join(layout.claudeHooksDir, "json-utils.js");
+  let owned = true;
+  try {
+    utils = require(unverifiedPath);
+    const read = (file, allowBom = false) => {
+      unverifiedPath = file;
+      const text = fs.readFileSync(file, "utf8");
+      const value = JSON.parse(allowBom ? text.replace(/^\uFEFF/, "") : text);
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid config");
+      return value;
+    };
+    if (done("installClaude") || done("claudePermission")) claude = read(layout.claudeSettingsFile, true);
+    if (done("installCopilot")) copilot = read(path.join(layout.copilotHome, "hooks", "hooks.json"));
+    if (done("installCodex")) {
+      const codexHooksPath = path.join(layout.codexHome, "hooks.json");
+      unverifiedPath = codexHooksPath;
+      let raw = null;
+      try { raw = fs.readFileSync(codexHooksPath, "utf8"); } catch (err) {
+        if (err && err.code === "ENOENT") owned = false;
+        else throw err;
+      }
+      if (raw !== null) {
+        // Windows Codex rejects the whole file on a BOM; that is repairable
+        // by redeployment, not a sign that local Clawd took the hooks over.
+        if (raw.startsWith("\uFEFF")) owned = false;
+        else {
+          codex = JSON.parse(raw);
+          if (!codex || typeof codex !== "object" || Array.isArray(codex)) throw new Error("Invalid config");
+        }
+      }
+    }
+    const flatten = (entries) => (Array.isArray(entries) ? entries : []).flatMap((entry) =>
+      entry && Array.isArray(entry.hooks) ? entry.hooks : [entry]);
+    const normalize = (value) => utils.normalizeHookScriptPath(value, "win32");
+    const ownsCommand = (hook) => {
+      if (!hook || hook.type !== "command" || typeof hook.command !== "string") return false;
+      const script = normalize(path.join(layout.claudeHooksDir, "clawd-hook.js"));
+      if (Array.isArray(hook.args)) return normalize(hook.args[0]) === script
+        && hook.args.slice(1).includes("--clawd-ssh-remote");
+      const parsed = hook.shell === "powershell" && utils.parsePowerShellEnvCommand(hook.command);
+      return !!parsed && parsed.args.length === 4 && normalize(parsed.args[1]) === script
+        && parsed.args[3] === "--clawd-ssh-remote";
+    };
+    const ownsCopilot = (hook, event) => {
+      const parsed = hook && utils.parsePowerShellEnvCommand(hook.powershell);
+      return !!parsed && parsed.args.length === 3 && parsed.args[2] === event
+        && normalize(parsed.args[1]) === normalize(path.join(layout.claudeHooksDir, "copilot-hook.js"));
+    };
+    const checkEvents = (settings, script, key, owns) => {
+      unverifiedPath = path.join(layout.claudeHooksDir, script);
+      const events = require(unverifiedPath)[key];
+      if (!Array.isArray(events) || !events.length) throw new Error("Missing event contract");
+      return events.every((event) => flatten(settings.hooks && settings.hooks[event]).some((hook) => owns(hook, event)));
+    };
+    if (done("installClaude")) owned = checkEvents(claude, "install.js", "CLAUDE_CORE_HOOK_EVENTS", ownsCommand) && owned;
+    if (done("installCopilot")) owned = checkEvents(copilot, "copilot-install.js", "COPILOT_STATE_HOOK_EVENTS", ownsCopilot) && owned;
+    if (done("installCodex") && codex) {
+      unverifiedPath = path.join(layout.claudeHooksDir, "codex-install-utils.js");
+      const { classifyWindowsRemoteCodexHook, isOwnedWindowsRemoteCodexCommand } = require(unverifiedPath);
+      unverifiedPath = path.join(layout.claudeHooksDir, "codex-install.js");
+      const events = require(unverifiedPath).CODEX_STATE_HOOK_EVENTS;
+      if (!Array.isArray(events) || !events.length) throw new Error("Missing event contract");
+      const codexOwned = events.every((event) => {
+        const hooks = flatten(codex.hooks && codex.hooks[event]);
+        const classes = hooks.map((hook) =>
+          classifyWindowsRemoteCodexHook(hook, { hooksDir: layout.claudeHooksDir }));
+        const oursIndex = classes.indexOf("ours");
+        if (oursIndex < 0) return false;
+        if (classes.includes("conflict") || classes.includes("unknown-clawd")) return false;
+        if (classes.slice(0, oursIndex).includes("local-clawd")) return false;
+        return hooks.every((hook, index) => classes[index] !== "ours"
+          || !!isOwnedWindowsRemoteCodexCommand(hook.command, { hooksDir: layout.claudeHooksDir }));
+      });
+      owned = codexOwned && owned;
+    }
+    if (done("claudePermission")) {
+      unverifiedPath = path.join(layout.claudeHooksDir, "server-config.js");
+      const { isManagedPermissionUrl } = require(unverifiedPath);
+      owned = flatten(claude.hooks && claude.hooks.PermissionRequest).some((hook) => {
+        if (!hook || hook.type !== "http" || !isManagedPermissionUrl(hook.url)) return false;
+        try {
+          const url = new URL(hook.url);
+          const nonce = url.pathname === "/permission" ? url.searchParams.get("nonce") : url.pathname.split("/").pop();
+          return nonce === routingNonce;
+        } catch { return false; }
+      }) && owned;
+    }
+  } catch {
+    console.error(`unverified: ${unverifiedPath}`);
+    process.exit(8);
+    return;
+  }
+  if (!owned) process.exit(6);
+}
+
+function windowsProbeFrame(js, profile, layout) {
+  return {
+    command: REMOTE_NODE_LAUNCH_COMMAND,
+    frame: buildNodeProgramFrame(js, {
+      layout,
+      steps: profile.identityTxn && profile.identityTxn.steps,
+      dshInstalled: Array.isArray(profile.managedDeployTargets)
+        && profile.managedDeployTargets.some((target) => target
+          && target.installId === profile.installId
+          && target.dshInstalled === true),
+      installId: profile.installId,
+    }, profile.detectedRemoteNodeBin),
+  };
+}
+
 // ── Probe command builder ──
 //
-// Returns the remote command string to append after the ssh args. Single
-// argument: the remoteForwardPort (NOT localRuntimePort — probe runs from
+// Returns a POSIX command string or a Windows { command, frame } pair.
+// The remoteForwardPort (NOT localRuntimePort — probe runs from
 // remote and hits 127.0.0.1:<remoteForwardPort> which is the bound side of
 // the reverse tunnel).
 function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
@@ -297,10 +485,10 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
   // ssh remote-command argument once forwarded as one shell token.
   const url = `http://127.0.0.1:${remoteForwardPort}/state`;
   const profile = options.profile;
+  let layout = null;
   let securePrefix = "";
   let requestOptions = JSON.stringify(url);
   if (profile && profile.runtimeKey && profile.installId && profile.id) {
-    let layout = null;
     try {
       layout = resolveRemoteRuntimeLayout({
         runtimeMode: profile.runtimeMode,
@@ -308,6 +496,7 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
         remoteHome: profile.remoteHome,
       });
     } catch {}
+    if (layout && layout.platform !== "win32") assertPosixRemoteLayout(layout);
     if (!layout) {
       securePrefix = "process.exit(5);";
     } else {
@@ -320,6 +509,7 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
   }
   const js =
     securePrefix +
+    (layout && layout.platform === "win32" ? `(${checkWindowsRemoteHooks.toString()})({...args,routingNonce:i.routingNonce});` : "") +
     `const r=require('http').get(${requestOptions},res=>{` +
       `const m=res.headers[${JSON.stringify(CLAWD_SERVER_HEADER)}]===${JSON.stringify(CLAWD_SERVER_ID)};` +
       `if(!m)process.exit(3);` +
@@ -327,6 +517,7 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
     `});` +
     `r.on('error',()=>process.exit(2));` +
     `r.setTimeout(2000,()=>{r.destroy();process.exit(4);});`;
+  if (layout && layout.platform === "win32") return windowsProbeFrame(js, profile, layout);
   if (nodeBin === "node") {
     // The PATH fallback must work under both POSIX shells and Windows cmd.exe.
     // A JSON/double-quoted raw program still expands $, $(), and backticks on
@@ -357,6 +548,7 @@ function buildPersistentReadinessCommand(remoteForwardPort, nodeBin, options = {
   } catch {
     layout = null;
   }
+  if (layout && layout.platform !== "win32") assertPosixRemoteLayout(layout);
   const marker = `__CLAWD_REMOTE_READY__:${options.challenge}`;
   const windowMs = Number.isFinite(options.probeWindowMs)
     ? Math.max(1000, Math.min(60000, Math.trunc(options.probeWindowMs)))
@@ -372,6 +564,7 @@ function buildPersistentReadinessCommand(remoteForwardPort, nodeBin, options = {
   const js = [
     "const fs=require('fs'),http=require('http');",
     identityGuard,
+    layout && layout.platform === "win32" ? `(${checkWindowsRemoteHooks.toString()})({...args,routingNonce:i.routingNonce});` : "",
     `const marker=${JSON.stringify(marker)},deadline=Date.now()+${windowMs};`,
     "let stopped=false,ready=false,request=null,retryTimer=null,holdTimer=null,lastExit=2,attemptDone=false;",
     "function stop(){if(stopped)return;stopped=true;if(retryTimer)clearTimeout(retryTimer);if(holdTimer)clearInterval(holdTimer);if(request)request.destroy();process.exit(0)}",
@@ -382,6 +575,7 @@ function buildPersistentReadinessCommand(remoteForwardPort, nodeBin, options = {
     "request.once('error',()=>retry(2));request.setTimeout(2000,()=>{request.destroy();retry(4)})}",
     "attempt();",
   ].join("");
+  if (layout && layout.platform === "win32") return windowsProbeFrame(js, profile, layout);
   return buildRemoteNodeEvalCommand(nodeBin, js);
 }
 
@@ -453,6 +647,10 @@ function createRemoteSshRuntime(deps = {}) {
   const serializedReadinessDrainTimeoutMs = Number.isFinite(deps.serializedReadinessDrainTimeoutMs)
     ? deps.serializedReadinessDrainTimeoutMs
     : SERIALIZED_READINESS_DRAIN_TIMEOUT_MS;
+  const stdioReadyTimeoutMs = Number.isFinite(deps.stdioReadyTimeoutMs)
+    ? deps.stdioReadyTimeoutMs
+    : STDIO_READY_TIMEOUT_MS;
+  const createStdioTransport = deps.createStdioTransport || createRemoteSshStdioTransport;
   const resolveRemoteNode = deps.resolveRemoteNodeBin || resolveRemoteNodeBin;
   const detectSshClient = deps.detectSsh || (() => detectSsh());
   const platform = deps.platform || process.platform;
@@ -517,6 +715,13 @@ function createRemoteSshRuntime(deps = {}) {
       readinessChallenge: null,
       readinessLineBuffer: "",
       readinessTimer: null,
+      tunnelMode: profile.tunnelMode === "stdio" ? "stdio" : "reverse",
+      // Any mode can set this flag. Only the stdio bridge launch consumes it.
+      detectedNodePathChanged: false,
+      stdioTransport: null,
+      stdioReady: false,
+      stdioReadyTimer: null,
+      stdioTerminalError: null,
       sshExitCode: null,
       sshExitSignal: null,
       intentionalClose: false,
@@ -565,8 +770,10 @@ function createRemoteSshRuntime(deps = {}) {
       ...(transport ? transport : {}),
       ...(ingressStatus ? {
         ingressPort: ingressStatus.port,
+        ingressAcceptedCount: ingressStatus.acceptedCount,
         ingressRejectedCount: ingressStatus.rejectedCount,
       } : {}),
+      tunnelMode: state.tunnelMode,
     };
   }
 
@@ -629,6 +836,14 @@ function createRemoteSshRuntime(deps = {}) {
       })
     : () => {};
 
+  function updateProfileSnapshot(state, profile) {
+    if (state.profile.detectedRemoteNodeBin !== profile.detectedRemoteNodeBin) {
+      // Keep the current path available to any health probe in flight.
+      state.detectedNodePathChanged = true;
+    }
+    state.profile = profile;
+  }
+
   function refreshProfile(profile) {
     if (!profile || !profile.id) throw new Error("refreshProfile: profile.id required");
     const state = states.get(profile.id);
@@ -639,6 +854,8 @@ function createRemoteSshRuntime(deps = {}) {
         ? { installId: state.profile.installId }
         : {}),
     };
+    const previousTunnelMode = state.tunnelMode;
+    const nextTunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
     const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(nextProfile);
     if (targetChanged && state.serializedTransport
       && (state.sshChild || state.status === "connecting" || state.status === "connected"
@@ -651,7 +868,13 @@ function createRemoteSshRuntime(deps = {}) {
       emitStatus(state);
       return false;
     }
-    state.profile = nextProfile;
+    updateProfileSnapshot(state, nextProfile);
+    if (previousTunnelMode !== nextTunnelMode
+      && state.status !== "connecting"
+      && state.status !== "connected"
+      && state.status !== "reconnecting") {
+      state.tunnelMode = nextTunnelMode;
+    }
     if (targetChanged) {
       resetRecoveryContext(state);
       clearRemoteShellCache(state);
@@ -672,7 +895,7 @@ function createRemoteSshRuntime(deps = {}) {
         : null;
       const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(profile);
       // Replace profile snapshot — caller may have just edited fields.
-      state.profile = profile;
+      updateProfileSnapshot(state, profile);
       if (targetChanged) {
         clearRemoteShellCache(state);
         resetRecoveryContext(state);
@@ -683,6 +906,7 @@ function createRemoteSshRuntime(deps = {}) {
           || state.status === "reconnecting")) {
         return snapshotState(state);
       }
+      state.tunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
       // Reset retry counters on a user-initiated re-connect.
       state.retryAttempt = 0;
       state.nextRetryAt = null;
@@ -916,8 +1140,8 @@ function createRemoteSshRuntime(deps = {}) {
       if (!resolved || resolved.ok !== true || !resolved.nodeBin) {
         const cls = classifyStderr((resolved && resolved.stderr) || "");
         finishFailure(state, {
-          reason: cls.reason || "probe_node_missing",
-          hint: cls.hint || "remoteSshProbeNodeMissing",
+          reason: cls.reason || (state.profile.remotePlatform === "win32" && resolved && resolved.reason) || "probe_node_missing",
+          hint: cls.hint || (state.profile.remotePlatform === "win32" && resolved && resolved.hint) || "remoteSshProbeNodeMissing",
           message: (resolved && resolved.message) || "Remote Node.js not found.",
         });
         return;
@@ -1063,6 +1287,14 @@ function createRemoteSshRuntime(deps = {}) {
   }
 
   function spawnTunnel(state, localPort) {
+    if (state.tunnelMode === "stdio") {
+      spawnStdioTunnel(state, localPort);
+      return;
+    }
+    spawnReverseTunnel(state, localPort);
+  }
+
+  function spawnReverseTunnel(state, localPort) {
     if (state.stopped) return;
     const profile = state.profile;
     const forwardOpt = `127.0.0.1:${profile.remoteForwardPort}:127.0.0.1:${localPort}`;
@@ -1086,14 +1318,16 @@ function createRemoteSshRuntime(deps = {}) {
       extraOpts.unshift("-N");
     }
     let args = buildSshArgs(profile, { extraOpts });
+    let readiness;
     if (state.serializedTransport) {
       state.readinessChallenge = crypto.randomBytes(16).toString("hex");
       state.readinessLineBuffer = "";
-      args = args.concat([buildPersistentReadinessCommand(
+      readiness = buildPersistentReadinessCommand(
         profile.remoteForwardPort,
         state.remoteNodeBin,
         { profile, challenge: state.readinessChallenge },
-      )]);
+      );
+      args = args.concat([readiness.command || readiness]);
     }
 
     let child;
@@ -1241,10 +1475,207 @@ function createRemoteSshRuntime(deps = {}) {
           });
         });
       }, serializedReadinessTimeoutMs);
+      if (readiness.frame) writeNodeFrameSafely(child, readiness.frame, {
+        persistent: true,
+        onError: (err) => {
+          if (state.sshChild !== child || state.stopped) return;
+          finishProbeFrameWriteFailure(state, err);
+        },
+      });
       return;
     }
 
     startProbeLoopWithRemoteNode(state, child);
+  }
+
+  function spawnStdioTunnel(state, localPort) {
+    if (state.stopped) return;
+    const profile = state.profile;
+    if (state.serializedTransport) {
+      finishFailure(state, {
+        reason: "stdio_serialized_unsupported",
+        hint: "remoteSshErrGatewayUnsupported",
+        message: "Jump host mode does not support forced single SSH sessions. Select Automatic instead.",
+      });
+      return;
+    }
+    if (profile.remotePlatform === "win32") {
+      finishFailure(state, {
+        reason: "stdio_windows_unsupported",
+        hint: "remoteSshErrGatewayUnsupported",
+        message: "Jump host mode requires a POSIX remote. Select Automatic for Windows remotes.",
+      });
+      return;
+    }
+
+    let hooksDir;
+    try {
+      const layout = resolveRemoteRuntimeLayout({
+        runtimeMode: profile.runtimeMode,
+        runtimeKey: profile.runtimeKey,
+        remoteHome: profile.remoteHome,
+      });
+      hooksDir = layout.claudeHooksDir;
+    } catch (err) {
+      finishFailure(state, {
+        reason: "stdio_layout_invalid",
+        hint: "remoteSshErrSecureIdentityMissing",
+        message: (err && err.message) || "The remote hook layout could not be resolved.",
+      });
+      return;
+    }
+    // Only the stdio bridge launch consumes this flag.
+    // Reverse probes reload the path from cache. Serialized connects resolve it
+    // separately and can take an options.remoteNode override.
+    if (state.detectedNodePathChanged) {
+      state.remoteNodeBin = null;
+      state.remoteNodeSource = null;
+      state.detectedNodePathChanged = false;
+    }
+    const remoteNode = state.remoteNodeBin || profile.detectedRemoteNodeBin;
+    if (typeof remoteNode !== "string" || !remoteNode.startsWith("/")) {
+      finishFailure(state, {
+        reason: "stdio_node_missing",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: "The remote Node path is unavailable; run Deploy / Repair Hooks again.",
+      });
+      return;
+    }
+
+    state.readinessChallenge = crypto.randomBytes(16).toString("hex");
+    let command;
+    let args;
+    try {
+      command = buildRemoteHookNodeCommand(
+        remoteNode,
+        "remote-ssh-stdio-bridge.js",
+        [profile.remoteForwardPort, state.readinessChallenge],
+        { hooksDir },
+      );
+      args = buildSshArgs(profile, {
+        extraOpts: ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3"],
+      }).concat([command]);
+    } catch (err) {
+      finishFailure(state, {
+        reason: "stdio_command_invalid",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: (err && err.message) || "The jump host bridge command could not be built.",
+      });
+      return;
+    }
+
+    let child;
+    const childOptions = {
+      env: { ...process.env, LANG: "C", LC_ALL: "C" },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    };
+    try {
+      child = spawn("ssh", args, childOptions);
+    } catch (err) {
+      finishFailure(state, {
+        kind: "permanent",
+        reason: err && err.code === "ENOENT" ? "ssh_missing" : "spawn_failed",
+        hint: err && err.code === "ENOENT" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed",
+        message: (err && err.message) || "Jump host bridge spawn failed",
+      });
+      return;
+    }
+
+    state.sshChild = child;
+    state.stderrBuf = Buffer.alloc(0);
+    state.stderrTruncated = false;
+    state.sshExitCode = null;
+    state.sshExitSignal = null;
+    state.intentionalClose = false;
+    state.stdioReady = false;
+    state.stdioTerminalError = null;
+    clearStdioReadinessTimer(state);
+
+    child.on("error", (err) => {
+      if (state.sshChild !== child) return;
+      finishFailure(state, {
+        kind: "permanent",
+        reason: err && err.code === "ENOENT" ? "ssh_missing" : "stdio_spawn_failed",
+        hint: err && err.code === "ENOENT" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed",
+        message: (err && err.message) || "Jump host bridge process error",
+      });
+    });
+    if (child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        if (state.sshChild !== child) return;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        state.stderrBuf = state.stderrBuf.length === 0
+          ? buf
+          : Buffer.concat([state.stderrBuf, buf]);
+        if (state.stderrBuf.length > 8192) {
+          state.stderrTruncated = true;
+          state.stderrBuf = state.stderrBuf.slice(-8192);
+        }
+      });
+    }
+    child.on("exit", (code, signal) => {
+      onSshExit(state, child, code, signal);
+    });
+
+    try {
+      state.stdioTransport = createStdioTransport({
+        child,
+        localPort,
+        challenge: state.readinessChallenge,
+        onReady: () => {
+          if (state.sshChild !== child || state.stopped || state.stdioReady) return;
+          state.stdioReady = true;
+          clearStdioReadinessTimer(state);
+          emitter.emit("progress", {
+            profileId: profile.id,
+            step: "connect",
+            status: "ok",
+            message: "Jump host bridge ready.",
+            hint: null,
+          });
+          startProbeLoopWithRemoteNode(state, child);
+        },
+        onError: (err) => {
+          if (state.sshChild !== child || state.stopped) return;
+          state.stdioTerminalError = err || new Error("Jump host transport failed");
+          killChild(child);
+        },
+      });
+    } catch (err) {
+      finishFailure(state, {
+        reason: "stdio_transport_create_failed",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: (err && err.message) || "The jump host transport could not be created.",
+      });
+      return;
+    }
+
+    state.stdioReadyTimer = setTimeoutFn(() => {
+      state.stdioReadyTimer = null;
+      if (state.sshChild !== child || state.stdioReady || state.stopped) return;
+      finishFailure(state, {
+        reason: "stdio_ready_timeout",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: "The remote jump host bridge did not become ready. Redeploy the hooks and retry.",
+      });
+    }, stdioReadyTimeoutMs);
+  }
+
+  function clearStdioReadinessTimer(state) {
+    if (!state || !state.stdioReadyTimer) return;
+    clearTimeoutFn(state.stdioReadyTimer);
+    state.stdioReadyTimer = null;
+  }
+
+  function closeStdioTransport(state, { cooperative = true } = {}) {
+    clearStdioReadinessTimer(state);
+    state.stdioReady = false;
+    const transport = state.stdioTransport;
+    state.stdioTransport = null;
+    if (transport && typeof transport.close === "function") {
+      try { transport.close({ cooperative }); } catch {}
+    }
   }
 
   function onSerializedTunnelStdout(state, child, chunk) {
@@ -1276,13 +1707,7 @@ function createRemoteSshRuntime(deps = {}) {
   }
 
   function remoteNodeExpectedTarget(profile) {
-    return {
-      host: profile && profile.host,
-      port: profile && profile.port,
-      identityFile: profile && profile.identityFile,
-      remoteForwardPort: profile && profile.remoteForwardPort,
-      hostPrefix: profile && profile.hostPrefix,
-    };
+    return deployTargetFingerprint(profile);
   }
 
   function remoteShellCacheKey(profile) {
@@ -1375,6 +1800,7 @@ function createRemoteSshRuntime(deps = {}) {
     // One-shot negative cache: once we've seen this remote reject `sh`,
     // every later resolver call is guaranteed to fail the same way.
     // Stay on bare-node-probe mode and don't bother (or spam log).
+    if (state.profile.remotePlatform === "win32") clearRemoteShellCache(state);
     if (state.remoteShell === "windows-cmd") {
       if (state.remoteShellTarget === shellTarget) return;
       clearRemoteShellCache(state);
@@ -1403,7 +1829,7 @@ function createRemoteSshRuntime(deps = {}) {
           // the tunnel green. Only log this once-per-host: if the stderr
           // is the Windows-cmd "is not recognized" pattern, flip the
           // one-shot cache so we don't repeat this every reconnect.
-          if (looksLikeWindowsCmdStderr(resolved && resolved.stderr)) {
+          if (state.profile.remotePlatform !== "win32" && looksLikeWindowsCmdStderr(resolved && resolved.stderr)) {
             markRemoteShell(state, "windows-cmd", shellTarget);
           } else {
             log("remote-ssh: remote Node resolver failed after probe success:", resolved && resolved.message);
@@ -1412,8 +1838,8 @@ function createRemoteSshRuntime(deps = {}) {
         }
         finishFailure(state, {
           kind: "permanent",
-          reason: "probe_node_missing",
-          hint: "remoteSshProbeNodeMissing",
+          reason: (state.profile.remotePlatform === "win32" && resolved && resolved.reason) || "probe_node_missing",
+          hint: (state.profile.remotePlatform === "win32" && resolved && resolved.hint) || "remoteSshProbeNodeMissing",
           message: (resolved && resolved.message) || "Remote Node.js not found.",
         });
         return;
@@ -1446,7 +1872,7 @@ function createRemoteSshRuntime(deps = {}) {
       if (state.status === "connected") {
         // Same one-shot suppression as finish(): if the throw came from
         // a Windows-cmd remote rejecting `sh`, flip the cache silently.
-        if (looksLikeWindowsCmdStderr(err && err.stderr)) {
+        if (state.profile.remotePlatform !== "win32" && looksLikeWindowsCmdStderr(err && err.stderr)) {
           markRemoteShell(state, "windows-cmd", shellTarget);
         } else {
           log("remote-ssh: remote Node resolver threw after probe success:", err && err.message);
@@ -1488,6 +1914,10 @@ function createRemoteSshRuntime(deps = {}) {
     if (state.sshChild !== child) return;
     state.sshChild = null;
     cleanupProbeLoop(state);
+    const stdioTerminalError = state.stdioTerminalError;
+    state.stdioTerminalError = null;
+    const wasStdioReady = state.stdioReady;
+    closeStdioTransport(state);
 
     if (state.stopped) {
       // User-initiated disconnect already flipped state to idle.
@@ -1497,7 +1927,8 @@ function createRemoteSshRuntime(deps = {}) {
       if (state.serializedTransport && transportCoordinator
         && typeof transportCoordinator.snapshotForProfile === "function") {
         const transport = transportCoordinator.snapshotForProfile(state.profile.id);
-        if (transport.transportPhase === "idle" && state.status !== "idle") {
+        if (transport.transportPhase === "idle" && state.status !== "idle"
+          && state.lastErrorReason !== "probe_frame_write_failed") {
           setStatus(state, "idle", {
             message: null,
             hint: null,
@@ -1529,6 +1960,57 @@ function createRemoteSshRuntime(deps = {}) {
       dropPartialFirstLine: state.stderrTruncated,
     });
     const wasConnected = state.status === "connected";
+    if (state.tunnelMode === "stdio" && !wasStdioReady) {
+      if (code === 98) {
+        if (state.recoveryTargetKey === tunnelTargetKey(state.profile)) {
+          state.forwardRecoveryFailures += 1;
+          if (state.forwardRecoveryFailures < FORWARD_RECOVERY_FAILURE_LIMIT) {
+            scheduleReconnect(state, {
+              message: "Waiting for the previous remote bridge to release its port.",
+              hint: "remoteSshErrForwardRetrying",
+              lastErrorReason: "stdio_recovery_conflict",
+              wasConnected: false,
+            });
+            return;
+          }
+        }
+        finishFailure(state, {
+          reason: "stdio_port_conflict",
+          hint: "remoteSshErrStdioPortInUse",
+          message: `Remote bridge port ${state.profile.remoteForwardPort} is unavailable. Choose another port and run Deploy / Repair Hooks.`,
+        });
+        return;
+      }
+      if (code === 64) {
+        finishFailure(state, {
+          reason: "stdio_bridge_invalid_args",
+          hint: "remoteSshErrStdioBridgeUnavailable",
+          message: "The remote jump host bridge rejected its launch arguments. Redeploy the hooks.",
+        });
+        return;
+      }
+      if (code === 126 || code === 127) {
+        clearCachedRemoteNodeBin(state.profile);
+        state.remoteNodeBin = null;
+        state.remoteNodeSource = null;
+        finishFailure(state, {
+          reason: "stdio_node_stale",
+          hint: classifyProbeExit(code).hint,
+          message: "The remote Node path is no longer usable. Run Deploy / Repair Hooks again.",
+        });
+        return;
+      }
+    }
+    if (stdioTerminalError) {
+      scheduleReconnect(state, {
+        message: (stdioTerminalError && stdioTerminalError.message)
+          || "Jump host transport disconnected",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        lastErrorReason: "stdio_transport_failed",
+        wasConnected,
+      });
+      return;
+    }
     const serializedExitCode = state.serializedTransport && !wasConnected
       ? signalToExitCode(code, signal)
       : null;
@@ -1633,6 +2115,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.probeWindowDeadline = state.probeStartedAt + PROBE_WINDOW_MS;
     state.probeInFlight = false;
     state.probeLastExitCode = null;
+    state.probeLastStderr = null;
     schedNextProbe(state, 0);
     state.probeWindowTimer = setTimeoutFn(() => {
       onProbeWindowTimeout(state);
@@ -1676,13 +2159,13 @@ function createRemoteSshRuntime(deps = {}) {
     // No extraOpts override for ConnectTimeout: ssh -o is first-wins, so the
     // base's ConnectTimeout=15 would always win anyway. PROBE_CHILD_TIMEOUT_MS
     // (5s) is the real upper bound on each probe attempt.
-    const probeArgs = buildSshArgs(profile).concat([probeCmd]);
+    const probeArgs = buildSshArgs(profile).concat([probeCmd.command || probeCmd]);
 
     let probe;
     try {
       probe = spawn("ssh", probeArgs, {
         env: { ...process.env, LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "ignore", "pipe"],
+        stdio: [probeCmd.frame ? "pipe" : "ignore", "ignore", "pipe"],
         windowsHide: true,
       });
     } catch (err) {
@@ -1693,6 +2176,13 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     state.probeChild = probe;
+    let probeStderr = Buffer.alloc(0);
+    if (profile.remotePlatform === "win32" && probe.stderr) {
+      probe.stderr.on("data", (chunk) => {
+        if (state.probeChild !== probe) return;
+        probeStderr = Buffer.concat([probeStderr, Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))]).subarray(-8192);
+      });
+    }
     state.probeChildTimer = setTimeoutFn(() => {
       if (state.probeChild !== probe) return;
       state.probeInFlight = false;
@@ -1736,6 +2226,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.probeChild = null;
       const exitCode = signalToExitCode(code, signal);
       state.probeLastExitCode = exitCode;
+      if (profile.remotePlatform === "win32") state.probeLastStderr = stderrSummary(probeStderr, profile);
       if (state.stopped) return;
       if ((exitCode === 126 || exitCode === 127)
           && state.sshChild
@@ -1756,6 +2247,12 @@ function createRemoteSshRuntime(deps = {}) {
       if (Date.now() < state.probeWindowDeadline && state.sshChild && !state.stopped) {
         schedNextProbe(state, PROBE_MIN_GAP_MS);
       }
+    });
+    if (probeCmd.frame) writeNodeFrameSafely(probe, probeCmd.frame, {
+      onError: (err) => {
+        if (state.probeChild !== probe || state.stopped) return;
+        finishProbeFrameWriteFailure(state, err);
+      },
     });
   }
 
@@ -1833,7 +2330,8 @@ function createRemoteSshRuntime(deps = {}) {
         kind: "permanent",
         reason: cls.reason,
         hint: cls.hint,
-        message: `Health probe failed (exit ${exitCode})`,
+        message: `Health probe failed (exit ${exitCode})`
+          + (exitCode === 8 && state.probeLastStderr ? `: ${state.probeLastStderr}` : ""),
       });
       return;
     }
@@ -1936,9 +2434,18 @@ function createRemoteSshRuntime(deps = {}) {
     }, delay);
   }
 
+  function finishProbeFrameWriteFailure(state, err) {
+    finishFailure(state, {
+      reason: "probe_frame_write_failed",
+      hint: "remoteSshProbeUnresponsive",
+      message: `Remote SSH stdin failed (${(err && err.code) || "write error"}): ${(err && err.message) || "could not send Node program"}`,
+    });
+  }
+
   function finishFailure(state, { reason, hint, message }) {
     cleanupProbeLoop(state);
     clearSerializedReadinessTimer(state);
+    closeStdioTransport(state);
     if (state.sshChild) {
       if (state.serializedTransport && state.sshChild.stdin) {
         state.releaseTransportOnClose = true;
@@ -2005,6 +2512,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.transportContext = transportContext || state.transportContext;
     cleanupProbeLoop(state);
     clearSerializedReadinessTimer(state);
+    closeStdioTransport(state);
     if (state.backoffTimer) {
       clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
@@ -2052,6 +2560,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.stopped = true;
       state.intentionalClose = true;
       state.releaseTransportOnClose = false;
+      closeStdioTransport(state);
       closeProfileIngress(state);
       resetRecoveryContext(state);
       clearRemoteShellCache(state);
@@ -2078,6 +2587,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.releaseTransportOnClose = true;
       cleanupProbeLoop(state);
       clearSerializedReadinessTimer(state);
+      closeStdioTransport(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       closeProfileIngress(state);
@@ -2097,6 +2607,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.stopped = true;
     cleanupProbeLoop(state);
     clearSerializedReadinessTimer(state);
+    closeStdioTransport(state);
     if (state.backoffTimer) {
       clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
@@ -2145,6 +2656,7 @@ function createRemoteSshRuntime(deps = {}) {
     for (const state of states.values()) {
       state.stopped = true;
       cleanupProbeLoop(state);
+      closeStdioTransport(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       state.remoteNodeResolveInFlight = false;
@@ -2175,6 +2687,7 @@ function createRemoteSshRuntime(deps = {}) {
     for (const state of states.values()) {
       state.stopped = true;
       cleanupProbeLoop(state);
+      closeStdioTransport(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       state.remoteNodeResolveInFlight = false;
@@ -2285,6 +2798,7 @@ module.exports = {
   buildSshArgs,
   buildScpArgs,
   classifyStderr,
+  shouldSuggestGatewayMode,
   classifyProbeExit,
   buildProbeCommand,
   buildPersistentReadinessCommand,
@@ -2300,6 +2814,7 @@ module.exports = {
   CLAWD_SERVER_ID,
   PROBE_WINDOW_MS,
   SERIALIZED_READINESS_TIMEOUT_MS,
+  STDIO_READY_TIMEOUT_MS,
   PROBE_MIN_GAP_MS,
   PROBE_CHILD_TIMEOUT_MS,
   BACKOFF_SCHEDULE_MS,

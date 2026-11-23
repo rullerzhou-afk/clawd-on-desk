@@ -4,9 +4,11 @@ const { describe, it } = require("node:test");
 
 const MENU_MODULE_PATH = require.resolve("../src/menu");
 
-function loadMenuWithElectron(fakeElectron, fakeTaskbar = null) {
+function loadMenuWithElectron(fakeElectron, fakeTaskbar = null, platform = "win32") {
   delete require.cache[MENU_MODULE_PATH];
   const originalLoad = Module._load;
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === "electron") return fakeElectron;
     if (fakeTaskbar && request === "./taskbar") return fakeTaskbar;
@@ -16,6 +18,7 @@ function loadMenuWithElectron(fakeElectron, fakeTaskbar = null) {
     return require("../src/menu");
   } finally {
     Module._load = originalLoad;
+    Object.defineProperty(process, "platform", originalPlatform);
   }
 }
 

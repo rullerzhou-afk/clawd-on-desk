@@ -2,7 +2,7 @@
 //
 // Shared runtime for opencode-derived hosts (opencode, mimocode, …). Runs
 // inside the host process (Bun CLI/TUI or Node-based Desktop sidecar) and forwards session/tool events to
-// the Clawd HTTP server (127.0.0.1:23333-23337).
+// the Clawd loopback server (runtime.json, then legacy 23333-23337).
 //
 // This module is IMPORTED by the thin per-agent entries
 // (hooks/opencode-plugin/index.mjs, hooks/mimocode-plugin/index.mjs) and is
@@ -129,11 +129,28 @@ export function orcaPaneKeyFromEnv(env = process.env) {
 // scope so the strict permission-target checks cannot drift between the two
 // runtimes. Any change here must keep satisfying the
 // opencode-family-core.test.js owner-only / live-owner fail-closed matrix.
+function normalizeLocalPort(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]{0,4}$/.test(value))) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+// Yield the cache before reading disk. A failed cached request resumes here,
+// rereads runtime in the SAME delivery, then scans only the legacy ports.
+function* localPortCandidates(cached) {
+  const seen = new Set();
+  const first = normalizeLocalPort(cached);
+  if (first) { seen.add(first); yield first; }
+  for (const port of [readRuntimePort(), ...SERVER_PORTS]) {
+    if (port && !seen.has(port)) { seen.add(port); yield port; }
+  }
+}
+
 export function readRuntimePort() {
   try {
     const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    const port = Number(raw && raw.port);
-    if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
+    const port = normalizeLocalPort(raw && raw.port);
+    if (raw?.app === CLAWD_SERVER_ID && port) return port;
   } catch {}
   return null;
 }
@@ -154,10 +171,10 @@ export function readPermissionRuntimePort() {
     }
 
     const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    const port = Number(raw && raw.port);
+    const port = normalizeLocalPort(raw && raw.port);
     const ownerPid = raw && raw.ownerPid;
     if (raw?.app !== CLAWD_SERVER_ID) return null;
-    if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
+    if (!port) return null;
     if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
     try {
       process.kill(ownerPid, 0);
@@ -515,6 +532,49 @@ export function evaluateManagedLayoutGate(metaUrl, config = {}) {
  * @param {string} config.sessionIdPrefix  e.g. "opencode:"
  * @returns {function} the plugin entrypoint (default-exported by the entry)
  */
+export function resolveOpencodeServeAttachUrl(agentId, argv, value) {
+  if (agentId !== "opencode" || !Array.isArray(argv)) return null;
+  // The native release runs ["opencode", "serve", ...]; the Bun-compiled
+  // build observed on Windows runs ["bun", "<embedded>.js", "serve", ...].
+  // Only the first real command token counts, so a TUI directory argument can
+  // never be mistaken for serve mode.
+  const bundledScript = typeof argv[1] === "string" && /\.(?:c|m)?js$/i.test(argv[1]);
+  let commandIndex = bundledScript ? 2 : 1;
+  // OpenCode v1 accepts its global logging/boolean options before the command.
+  // Consume only known options and their values; scanning for any later "serve"
+  // would mistake an option value, TUI project, or another command's argument.
+  while (commandIndex < argv.length) {
+    const option = argv[commandIndex];
+    if (option === "--log-level" || option === "--logLevel") {
+      if (!/^(?:DEBUG|INFO|WARN|ERROR)$/.test(argv[commandIndex + 1])) return null;
+      commandIndex += 2;
+    } else if (/^--(?:log-level|logLevel)=(?:DEBUG|INFO|WARN|ERROR)$/.test(option)) {
+      commandIndex++;
+    } else if (/^--no-(?:print-logs|printLogs|pure)$/.test(option)) {
+      // Negated booleans never consume the following token in yargs.
+      commandIndex++;
+    } else if (/^--(?:print-logs|printLogs|pure)(?:=(?:true|false))?$/.test(option)) {
+      commandIndex++;
+      if (!option.includes("=") && ["true", "false"].includes(argv[commandIndex])) commandIndex++;
+    } else {
+      break;
+    }
+  }
+  if (argv[commandIndex] !== "serve") return null;
+  try {
+    const raw = String(value || "");
+    if (!raw || raw.length > 2048 || /[\s\u0000-\u001f\u007f]/u.test(raw)) return null;
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
+      || url.search || url.hash || url.pathname !== "/") return null;
+    if (url.hostname === "0.0.0.0") url.hostname = "127.0.0.1";
+    if (url.hostname === "[::]") url.hostname = "[::1]";
+    if (url.hostname !== "localhost" && url.hostname !== "[::1]"
+      && !/^127(?:\.\d{1,3}){3}$/.test(url.hostname)) return null;
+    return url.href;
+  } catch { return null; }
+}
+
 export function createOpencodeFamilyPlugin(config) {
   const { agentId, hookSource, logFileName, sessionIdPrefix } = config || {};
   for (const [key, value] of Object.entries({ agentId, hookSource, logFileName, sessionIdPrefix })) {
@@ -577,6 +637,7 @@ export function createOpencodeFamilyPlugin(config) {
   // outbound cwd consumes it only until the host's info-directory latch proves
   // map misses must fail closed.
   const _sessionInstanceDirectoryById = new Map();
+  const _attachTargetBySession = new Map();
   // Authoritative session title learned from session lifecycle info.
   // Shared by every handler returned from this factory product.
   const _sessionTitleById = new Map();
@@ -679,21 +740,9 @@ export function createOpencodeFamilyPlugin(config) {
     });
   }
 
-  // Ordered: cached → runtime.json → full scan. Only touches runtime.json when
-  // the cache is empty (avoids a sync fs read on every successful POST).
+  // Lazy discovery preserves the successful-cache fast path.
   function getPortCandidates() {
-    const ordered = [];
-    const seen = new Set();
-    const add = (p) => {
-      if (p && !seen.has(p) && SERVER_PORTS.includes(p)) {
-        seen.add(p);
-        ordered.push(p);
-      }
-    };
-    add(_cachedPort);
-    if (_cachedPort == null) add(readRuntimePort());
-    SERVER_PORTS.forEach(add);
-    return ordered;
+    return localPortCandidates(_cachedPort);
   }
 
   function getPermissionPortCandidates() {
@@ -1089,6 +1138,7 @@ export function createOpencodeFamilyPlugin(config) {
       _sessionDirectoryById.delete(sessionId);
       _sessionInstanceDirectoryById.delete(sessionId);
       _sessionTitleById.delete(sessionId);
+      _attachTargetBySession.delete(sessionId);
       _lastStatePerSession.delete(sessionId);
     }
 
@@ -1218,6 +1268,11 @@ export function createOpencodeFamilyPlugin(config) {
     if (cwd.directory) outbound.cwd = cwd.directory;
     else delete outbound.cwd;
     outbound.agent_pid = process.pid;
+    if (AGENT_ID === "opencode" && logTag.startsWith("STATE")) {
+      const attach = _attachTargetBySession.get(normalizeSessionId(outbound.session_id));
+      outbound.opencode_attach_url = !outbound.headless && attach && !attach.instance.disposed
+        ? attach.url : null;
+    }
     const payload = JSON.stringify(outbound);
     return {
       body: outbound,
@@ -1235,7 +1290,7 @@ export function createOpencodeFamilyPlugin(config) {
     const candidates = urlPath === "/permission"
       ? getPermissionPortCandidates()
       : getPortCandidates();
-    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start candidates=[${candidates.join(",")}]`);
+    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start`);
 
     for (const port of candidates) {
       if (urlPath === STATE_PATH && !pruneStaleContextSnapshot(snapshot)) {
@@ -2898,6 +2953,7 @@ export function createOpencodeFamilyPlugin(config) {
       : "";
     const instanceToken = registerInstanceDirectory(instanceDirectory);
     const contextInstance = {
+      attachUrl: resolveOpencodeServeAttachUrl(AGENT_ID, process.argv, ctx && ctx.serverUrl),
       client: instanceClient, instanceToken, directory: instanceDirectory,
       historyRequests: new Set(), lifecycleRevision: 0, disposed: false,
       hydrationTimer: null, hydrationDrainQueued: false,
@@ -2982,6 +3038,14 @@ export function createOpencodeFamilyPlugin(config) {
           }
           captureSessionDirectory(event);
           captureSessionInstanceDirectory(event, instanceDirectory);
+          if (AGENT_ID === "opencode" && sid) {
+            const key = normalizeSessionId(sid);
+            const directory = resolveSessionDirectory(key).directory;
+            if (normalizeDirectoryOwnershipKey(directory) === normalizeDirectoryOwnershipKey(instanceDirectory)
+              && normalizeDirectoryOwnershipKey(instanceDirectory)) {
+              _attachTargetBySession.set(key, { url: contextInstance.attachUrl, instance: contextInstance });
+            }
+          }
           captureSessionTitle(event);
 
           if (sid && !_rootSessionId) {
@@ -3117,11 +3181,12 @@ export function createOpencodeFamilyPlugin(config) {
 //   - Unknown event types are ignored (fail-closed): the v1-era event vocabulary
 //     must never be assumed to fire on v2.
 //
-// Registration: v2 hosts read the `plugins` config key (they also tolerate the
-// legacy `plugin` key, where the v1 function entry merely logs a load warning).
-// The installer therefore keeps the v1 entry under `plugin` and registers this
-// entry directory under `plugins`; the two host generations never interfere
-// (verified both directions on 1.18.32 and 2.0.15).
+// Registration: v2 hosts read the `plugins` config key. OpenCode 2.0.15
+// tolerated a legacy `plugin` entry (verified historically), but the current
+// installer registers the v2 entry only under `plugins` and sweeps its owned
+// legacy `plugin` entry on v2 hosts; v1/unknown hosts retain the v1 path.
+// The two host generations never interfere (verified both directions on
+// 1.18.32 and 2.0.15).
 const V2_PERMISSION_BLOCKING_TIMEOUT_MS = 590 * 1000;
 // /permission bodies carry raw tool resources (shell commands, file paths).
 // Same fail-closed budget as the zcode hook: over budget → skip the POST and
@@ -3264,20 +3329,9 @@ export function createOpencodeFamilyPluginV2(config) {
     });
   }
 
-  // Ordered: cached → runtime.json → full scan (same bargain as v1).
+  // Same lazy runtime rediscovery as v1.
   function getPortCandidates() {
-    const ordered = [];
-    const seen = new Set();
-    const add = (p) => {
-      if (p && !seen.has(p) && SERVER_PORTS.includes(p)) {
-        seen.add(p);
-        ordered.push(p);
-      }
-    };
-    add(_cachedPort);
-    if (_cachedPort == null) add(readRuntimePort());
-    SERVER_PORTS.forEach(add);
-    return ordered;
+    return localPortCandidates(_cachedPort);
   }
 
   function getPermissionPortCandidates() {

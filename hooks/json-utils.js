@@ -339,8 +339,63 @@ function resolveWslDistroEnv() {
   return null;
 }
 
+// PowerShell also reads U+2018, U+2019, U+201A and U+201B as single quotes, so
+// inside a single-quoted string each of them is doubled, like ASCII `'`.
+// Otherwise a path containing one ends the string early and the rest of it
+// runs as PowerShell code.
+const POWERSHELL_SINGLE_QUOTE_RE = /['\u2018\u2019\u201A\u201B]/g;
+const POWERSHELL_DOUBLED_SINGLE_QUOTE_RE = /(['\u2018\u2019\u201A\u201B])\1/g;
+
 function quotePowerShellSingleArg(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
+  return `'${String(value).replace(POWERSHELL_SINGLE_QUOTE_RE, (quote) => quote + quote)}'`;
+}
+
+// Inverse of the doubling in quotePowerShellSingleArg, applied to the text
+// between a single-quoted string's delimiters.
+function unescapePowerShellSingleQuoted(text) {
+  return String(text).replace(POWERSHELL_DOUBLED_SINGLE_QUOTE_RE, "$1");
+}
+
+// Only the installer's literal env assignments followed by one quoted Node
+// invocation are accepted. Composition and PowerShell interpolation fail closed.
+function parsePowerShellEnvCommand(command) {
+  if (typeof command !== "string" || /[\r\n\0]/.test(command)) return null;
+  let rest = command;
+  const env = {};
+  while (rest.startsWith("$env:")) {
+    const match = /^\$env:([A-Za-z_][A-Za-z0-9_]*)=('(?:''|[^'])*');[ \t]+/.exec(rest);
+    if (!match) return null;
+    const value = unescapePowerShellSingleQuoted(match[2].slice(1, -1));
+    if (quotePowerShellSingleArg(value) !== match[2]) return null;
+    env[match[1]] = value;
+    rest = rest.slice(match[0].length);
+  }
+  if (!rest.startsWith('& "')) return null;
+  rest = rest.slice(2);
+  const args = [];
+  while (rest) {
+    const match = /^"([^"`$\u201C\u201D\u201E]*)"(?:[ \t]+|$)/.exec(rest);
+    if (!match) return null;
+    args.push(match[1]);
+    rest = rest.slice(match[0].length);
+  }
+  return args.length ? { env, args } : null;
+}
+
+function normalizeHookScriptPath(value, platform = process.platform) {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/\\/g, "/");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function remoteHookScriptKey(hooksDir, name, platform = process.platform) {
+  return normalizeHookScriptPath(`${hooksDir.replace(/[\\/]+$/, "")}/${name}`, platform);
+}
+
+function getCliOptionValue(argv, flag) {
+  const index = argv.indexOf(flag);
+  const value = index >= 0 ? argv[index + 1] : undefined;
+  return typeof value === "string" && value && !value.startsWith("--") ? value : undefined;
 }
 
 function windowsPowerShellBin(options = {}) {
@@ -383,7 +438,7 @@ function decodeWindowsEncodedCommand(command) {
 function extractFirstQuotedToken(command) {
   const text = String(command || "").trim().replace(/^&\s+/, "");
   const single = text.match(/^'((?:''|[^'])*)'/);
-  if (single) return single[1].replace(/''/g, "'");
+  if (single) return unescapePowerShellSingleQuoted(single[1]);
   const double = text.match(/^"((?:\\"|[^"])*)"/);
   if (double) return double[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
   const bare = text.match(/^(\S+)/);
@@ -544,6 +599,24 @@ function extractExistingNodeBinFromCommands(commands, marker) {
  * @returns {string|null}
  */
 function extractExistingNodeBin(settings, marker, options) {
+  if (options && options.claude && settings && settings.hooks) {
+    // Exec form already separates the executable from argv. Preserve its raw
+    // path (including UNC backslashes) without reparsing diagnostic text.
+    for (const entries of Object.values(settings.hooks)) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        const hooks = options.nested && entry && Array.isArray(entry.hooks)
+          ? [entry, ...entry.hooks]
+          : [entry];
+        for (const hook of hooks) {
+          if (
+            hook && Array.isArray(hook.args) && getClaudeHookCommand(hook, marker) !== null
+            && isAbsoluteCommandToken(hook.command)
+          ) return hook.command;
+        }
+      }
+    }
+  }
   return extractExistingNodeBinFromCommands(findHookCommands(settings, marker, options), marker);
 }
 
@@ -566,6 +639,29 @@ function commandMatchesMarker(command, marker) {
 }
 
 const CLAUDE_STATE_HOOK_MARKER = "clawd-hook.js";
+const CLAUDE_COMMAND_MARKERS = new Set([CLAUDE_STATE_HOOK_MARKER, "auto-start.js", "auto-start.sh"]);
+
+// Read-only command text for Claude's shell and exec forms. Exec ownership is
+// proved by the script basename in args[0], never a marker in later arguments.
+// This text is for the existing marker/path readers, not for shell execution.
+function getClaudeHookCommand(hook, marker) {
+  if (!hook || typeof hook.command !== "string") return null;
+  if (!Object.prototype.hasOwnProperty.call(hook, "args")) return hook.command;
+  if (
+    !Array.isArray(hook.args) || !hook.args.length
+    || !hook.args.every((arg) => typeof arg === "string")
+  ) return null;
+  const basename = hook.args[0].split(/[\\/]/).pop();
+  if (marker ? basename !== marker : !CLAUDE_COMMAND_MARKERS.has(basename)) return null;
+  // The path parser consumes double-quoted backslash escapes; escape them so
+  // UNC prefixes survive the round trip as well as ordinary Windows paths.
+  return [hook.command, ...hook.args].map((arg) => quoteHookCommandArg(arg.replace(/\\/g, "\\\\"))).join(" ");
+}
+
+function claudeHookHasMarker(hook, marker) {
+  return (getClaudeHookCommand(hook, marker) || "").includes(marker);
+}
+
 const CLAUDE_HOOK_PATH_VAR_TOKENS = new Set([
   "$CLAWD_HOOK_PATH",
   "${CLAWD_HOOK_PATH}",
@@ -730,9 +826,9 @@ function findManagedClaudeEnvNodeBinCandidates(settings) {
     candidates.push(value);
   };
   const collect = (hook, event) => {
-    if (!hook || typeof hook.command !== "string") return;
-    if (classifyManagedClaudeStateHookCommand(hook.command, settings, event) !== "env") return;
-    const parsed = parseClaudeEnvStateHookCommand(hook.command, event);
+    const command = getClaudeHookCommand(hook, CLAUDE_STATE_HOOK_MARKER);
+    if (classifyManagedClaudeStateHookCommand(command, settings, event) !== "env") return;
+    const parsed = parseClaudeEnvStateHookCommand(command, event);
     for (const candidate of getClaudeEnvNodeBinCandidates(settings, parsed)) append(candidate);
   };
 
@@ -840,6 +936,7 @@ function findHookCommands(settings, marker, options) {
   const nested = options && options.nested;
   const flatArray = options && options.flatArray;
   const commands = [];
+  const commandText = (hook) => options && options.claude ? getClaudeHookCommand(hook, marker) : hook.command;
 
   // KiroCrew's hooks.json stores `hooks` as a FLAT array of hook objects
   // ({ event, command, ... }), not the Claude-style object of per-event
@@ -859,13 +956,15 @@ function findHookCommands(settings, marker, options) {
       if (!entry || typeof entry !== "object") continue;
       if (nested && Array.isArray(entry.hooks)) {
         for (const h of entry.hooks) {
-          if (h && commandMatchesMarker(h.command, marker)) {
-            commands.push(h.command);
+          const command = h && commandText(h);
+          if (commandMatchesMarker(command, marker)) {
+            commands.push(command);
           }
         }
       }
-      if (commandMatchesMarker(entry.command, marker)) {
-        commands.push(entry.command);
+      const command = commandText(entry);
+      if (commandMatchesMarker(command, marker)) {
+        commands.push(command);
       }
     }
   }
@@ -892,6 +991,8 @@ module.exports = {
   DEFAULT_BACKUP_KEEP,
   asarUnpackedPath,
   commandMatchesMarker,
+  getClaudeHookCommand,
+  claudeHookHasMarker,
   classifyManagedClaudeStateHookCommand,
   findManagedClaudeEnvNodeBinCandidates,
   getClaudeEnvNodeBinCandidate,
@@ -907,9 +1008,15 @@ module.exports = {
   formatNodeHookCommand,
   resolveWslDistroEnv,
   buildPortableStatuslineCommand,
+  portableWindowsNodeToken,
   buildWindowsEncodedNodeHookCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
   quotePowerShellSingleArg,
+  unescapePowerShellSingleQuoted,
+  parsePowerShellEnvCommand,
+  normalizeHookScriptPath,
+  remoteHookScriptKey,
+  getCliOptionValue,
   windowsPowerShellBin,
 };

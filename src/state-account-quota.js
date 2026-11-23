@@ -35,6 +35,7 @@ const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
+const { DEEPSEEK_QUOTA_FIELDS } = require("./deepseek-balance-normalizer");
 const { KIMI_QUOTA_FIELDS } = require("./kimi-quota-normalizer");
 
 const QUOTA_PROVIDER_FIELDS = {
@@ -43,6 +44,7 @@ const QUOTA_PROVIDER_FIELDS = {
   codexQuota: CODEX_QUOTA_FIELDS,
   codexSparkQuota: CODEX_QUOTA_FIELDS,
   kimiQuota: KIMI_QUOTA_FIELDS,
+  deepseekQuota: DEEPSEEK_QUOTA_FIELDS,
 };
 const QUOTA_PROVIDER_KEYS = Object.keys(QUOTA_PROVIDER_FIELDS);
 

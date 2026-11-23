@@ -28,28 +28,34 @@ const HOOK_NAMES = [
 
 let cachedPort = null;
 
+function normalizeLocalPort(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]{0,4}$/.test(value))) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+// Yield the cache before reading disk. A failed cached request resumes here,
+// rereads runtime in the SAME delivery, then scans only the legacy ports.
+function* localPortCandidates(cached) {
+  const seen = new Set();
+  const first = normalizeLocalPort(cached);
+  if (first) { seen.add(first); yield first; }
+  for (const port of [readRuntimePort(), ...SERVER_PORTS]) {
+    if (port && !seen.has(port)) { seen.add(port); yield port; }
+  }
+}
+
 function readRuntimePort() {
   try {
     const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    const port = Number(raw && raw.port);
-    if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
+    const port = normalizeLocalPort(raw && raw.port);
+    if (raw?.app === PLUGIN_ID && port) return port;
   } catch {}
   return null;
 }
 
 function getPortCandidates() {
-  const ordered = [];
-  const seen = new Set();
-  const add = (port) => {
-    if (Number.isInteger(port) && SERVER_PORTS.includes(port) && !seen.has(port)) {
-      seen.add(port);
-      ordered.push(port);
-    }
-  };
-  add(cachedPort);
-  if (cachedPort == null) add(readRuntimePort());
-  for (const port of SERVER_PORTS) add(port);
-  return ordered;
+  return localPortCandidates(cachedPort);
 }
 
 function stripUndefined(value) {

@@ -14,11 +14,13 @@ module.exports = {
     userPromptSubmitted: "thinking",
     preToolUse: "working",
     postToolUse: "working",
+    postToolUseFailure: "working",
     errorOccurred: "error",
     agentStop: "attention",
     subagentStart: "juggling",
     subagentStop: "working",
     preCompact: "sweeping",
+    notification: "notification",
   },
   capabilities: {
     httpHook: false,
@@ -29,6 +31,9 @@ module.exports = {
     permissionApproval: true,
     mobilePermissionObservation: false,
     interactiveBubble: true,
+    // Enables the Settings "Alert me when it waits for input" toggle for Copilot's notification hook.
+    notificationHook: true,
+    terminalWaitReminder: true,
     sessionEnd: true,
     subagent: true,
   },

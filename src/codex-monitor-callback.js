@@ -1,5 +1,8 @@
 "use strict";
 
+const { normalizePlanProgress } = require("../hooks/codex-plan-progress");
+const { normalizeCodexTurnId } = require("./codex-turn-id");
+
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
 
@@ -7,7 +10,8 @@ function isCodexMonitorMetadataOnlyEvent(event, extra) {
   if (event === "session_index:title") return true;
   return event === "event_msg:token_count"
     && !!(extra && typeof extra === "object"
-      && (extra.contextUsage || extra.codexQuota || extra.codexSparkQuota));
+      && (extra.contextUsage || extra.codexQuota || extra.codexSparkQuota
+        || Object.prototype.hasOwnProperty.call(extra, "planProgress")));
 }
 
 function normalizeContextUsage(value) {
@@ -56,6 +60,10 @@ function buildCodexMonitorSessionOptions(extra, options = {}) {
   }
   const contextUsage = normalizeContextUsage(input.contextUsage);
   if (contextUsage) out.contextUsage = contextUsage;
+  if (Object.prototype.hasOwnProperty.call(input, "planProgress")) {
+    out.planProgress = normalizePlanProgress(input.planProgress);
+    out.planProgressTurnId = normalizeCodexTurnId(input.planProgressTurnId);
+  }
   // Completion output is extracted by the JSONL monitor from the final
   // assistant message. Keep it on the lifecycle callback so the state store
   // and Telegram/Slack completion consumers receive the same answer as the

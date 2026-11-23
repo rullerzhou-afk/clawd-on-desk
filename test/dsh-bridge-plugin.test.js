@@ -473,6 +473,37 @@ test("DSH plugin sends projection pressure, missing operands, and title updates 
   ]);
 });
 
+test("DSH lifecycle events re-supply the current folded title after a missed SessionStart", async () => {
+  const { createSessionObservers } = await bridge();
+  const posted = [];
+  const observers = createSessionObservers({
+    enqueue: (payload) => { posted.push(payload); return true; },
+  });
+  let title = "Prompted while Clawd was closed";
+  observers.attachProjections({
+    sessionProjections: {
+      onChanged() { return () => {}; },
+      snapshot(_session, keys) { return { values: keys?.includes("title") ? { title } : {} }; },
+    },
+    effect() {},
+  });
+  const session = { id: "s1", header: { cwd: "/repo" } };
+  // Clawd restarted mid-session: no session/created, so the title was never posted.
+  observers.handleSessionEvent(session, { type: "turn/start" });
+  assert.strictEqual(posted.at(-1).event, "UserPromptSubmit");
+  assert.strictEqual(posted.at(-1).session_title, "Prompted while Clawd was closed");
+  // DSH renames it: the event title and the projection agree, and the next
+  // unrelated lifecycle event carries the new title too.
+  title = "Renamed in DSH";
+  observers.handleSessionEvent(session, { type: "session/title", data: { title } });
+  observers.handleSessionEvent(session, { type: "turn/end" });
+  assert.strictEqual(posted.at(-1).event, "Stop");
+  assert.strictEqual(posted.at(-1).session_title, "Renamed in DSH");
+  observers.handleSessionDisposed(session);
+  assert.strictEqual(posted.at(-1).event, "SessionEnd");
+  assert.strictEqual(posted.at(-1).session_title, "Renamed in DSH");
+});
+
 test("DSH plugin seeds a new session from the projection snapshot without waiting for onChanged", async () => {
   const { createSessionObservers } = await bridge();
   const session = { id: "restored", header: { cwd: "/repo" } };
@@ -554,4 +585,27 @@ test("DSH plugin ignores projection changes for keys other than contextPressure"
     projectionListeners[0](session, key, "ignored");
   }
   assert.deepStrictEqual(posted, [], "non-contextPressure projection keys must not enqueue anything");
+});
+
+test("the bridge declares its browser half for session-level focus", async () => {
+  const fs = require("node:fs");
+  const root = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  // Without these two declarations DSH never serves /plugins/.../client.js, and
+  // the page half that switches sessions would simply not exist.
+  assert.strictEqual(pkg.exports["./client"], "./lib/client.js");
+  assert.deepStrictEqual(pkg.dsh.client, { platform: "web" });
+  const source = fs.readFileSync(path.join(root, "lib", "client.js"), "utf8");
+  assert.match(source, /__ModuleLoader__/, "browser half must register with the DSH module loader");
+  assert.match(source, /openSession/, "browser half must switch the session");
+  assert.match(source, /\/dsh\/focus-stream/, "browser half must read Clawd's focus stream");
+  let plugin;
+  require("node:vm").runInNewContext(source, {
+    window: { __ModuleLoader__: { load({ id, factory }) {
+      assert.strictEqual(id, pkg.name);
+      plugin = factory(() => { throw new Error("unexpected client dependency"); });
+    } } },
+  });
+  assert.strictEqual(plugin.name, "dsh-clawd-bridge-client");
+  assert.strictEqual(typeof plugin.apply, "function");
 });

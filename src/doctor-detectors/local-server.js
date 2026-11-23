@@ -6,12 +6,23 @@ function checkLocalServer(serverApi) {
     : null;
 
   if (!status || !status.listening) {
+    const failure = status && status.startupFailure;
+    const attempts = status && Array.isArray(status.bindAttempts) ? status.bindAttempts : [];
+    const denied = attempts.some((attempt) => attempt.code === "EACCES");
+    const detail = failure && failure.stage === "runtime"
+      ? `Local server closed: runtime publication failed (${status.runtimePath})`
+      : "Local server is not listening" + (attempts.length
+        ? `; bind attempts: ${attempts.map(({ port, code }) => `${port === 0 ? "system-assigned" : port}: ${code}`).join(", ")}` : "");
     return {
       id: "local-server",
       status: "fail",
       level: "critical",
-      detail: "Local server is not listening",
-      textHint: "Restart Clawd. If the issue persists, check ~/.clawd/ permissions.",
+      detail,
+      textHint: denied
+        ? "Restart Clawd. EACCES can mean reserved ports, permission policies or exclusive listeners. On Windows, inspect (read-only): netsh interface ipv4 show excludedportrange protocol=tcp."
+        : failure && failure.stage === "bind"
+          ? "Restart Clawd and check the reported bind errors and local port availability."
+          : "Restart Clawd. If the issue persists, check ~/.clawd/ permissions.",
       runtime: status,
       fixAction: { type: "restart-clawd" },
     };

@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const {
+  BINARY_MEDIA_EXTENSIONS,
   analyzeAudit,
   buildExtractedPackageManifest,
   buildSourcePackageManifest,
@@ -87,8 +88,8 @@ function basePolicy() {
       "legal": "legal",
     },
     thresholds: {
-      trackedTreeWarningBytes: 100,
-      trackedTreeHardBytes: 200,
+      trackedMediaWarningBytes: 100,
+      trackedMediaHardBytes: 200,
       largeTrackedBinaryMediaBytes: 10,
       duplicatePackagedPayloadWarningBytes: 4,
     },
@@ -197,6 +198,43 @@ describe("repository asset audit", () => {
     )));
   });
 
+  it("requires finite positive media thresholds ordered warning < hard", () => {
+    assert.deepStrictEqual(validatePolicy(basePolicy()), []);
+
+    const missingHard = basePolicy();
+    delete missingHard.thresholds.trackedMediaHardBytes;
+    assert.ok(validatePolicy(missingHard).some((message) => (
+      message.includes("trackedMediaHardBytes")
+    )));
+
+    const missingWarning = basePolicy();
+    delete missingWarning.thresholds.trackedMediaWarningBytes;
+    assert.ok(validatePolicy(missingWarning).some((message) => (
+      message.includes("trackedMediaWarningBytes")
+    )));
+
+    const reversed = basePolicy();
+    reversed.thresholds.trackedMediaWarningBytes = 200;
+    assert.ok(validatePolicy(reversed).some((message) => (
+      message.includes("must be less than")
+    )));
+
+    for (const key of [
+      "trackedMediaHardBytes",
+      "trackedMediaWarningBytes",
+      "largeTrackedBinaryMediaBytes",
+    ]) {
+      for (const value of [0, -1, 1.5]) {
+        const invalid = basePolicy();
+        invalid.thresholds[key] = value;
+        assert.ok(
+          validatePolicy(invalid).some((message) => message.includes(key)),
+          `${key}=${value} must be rejected`,
+        );
+      }
+    }
+  });
+
   it("resolves the most specific policy rule regardless of declaration order", () => {
     const policy = basePolicy();
     policy.pathRules.unshift({
@@ -218,16 +256,51 @@ describe("repository asset audit", () => {
     assert.strictEqual(finding.level, "error");
   });
 
-  it("hard-fails the tracked-tree hard budget instead of emitting only a warning", () => {
+  it("hard-fails the tracked-media hard budget instead of emitting only a warning", () => {
     const report = analyzeAudit({
-      trackedFiles: [tracked("assets/LICENSE", 201)],
+      trackedFiles: [tracked("assets/LICENSE", 5), tracked("assets/gif/hero.gif", 201)],
       manifest: manifest([]),
       policy: basePolicy(),
     });
     assert.ok(report.findings.some((finding) => (
-      finding.level === "error" && finding.rule === "tracked-tree-hard-budget"
+      finding.level === "error" && finding.rule === "tracked-media-hard-budget"
     )));
-    assert.ok(!report.findings.some((finding) => finding.rule === "tracked-tree-warning-budget"));
+    assert.ok(!report.findings.some((finding) => finding.rule === "tracked-media-warning-budget"));
+  });
+
+  it("warns when tracked media bytes are between the warning and hard budgets", () => {
+    const report = analyzeAudit({
+      trackedFiles: [tracked("assets/LICENSE", 5), tracked("assets/gif/hero.gif", 150)],
+      manifest: manifest([]),
+      policy: basePolicy(),
+    });
+    const warning = report.findings.find((finding) => finding.rule === "tracked-media-warning-budget");
+    assert.strictEqual(warning.level, "warning");
+    assert.ok(!report.findings.some((finding) => finding.rule === "tracked-media-hard-budget"));
+    assert.strictEqual(report.tracked.mediaBytes, 150);
+    assert.strictEqual(report.tracked.bytes, 155);
+  });
+
+  it("does not hard-fail when tracked media exactly equals the hard budget", () => {
+    const report = analyzeAudit({
+      trackedFiles: [tracked("assets/LICENSE", 5), tracked("assets/gif/hero.gif", 200)],
+      manifest: manifest([]),
+      policy: basePolicy(),
+    });
+    assert.ok(!report.findings.some((finding) => finding.rule === "tracked-media-hard-budget"));
+    const warning = report.findings.find((finding) => finding.rule === "tracked-media-warning-budget");
+    assert.strictEqual(warning.level, "warning");
+  });
+
+  it("does not count non-media files toward the tracked-media budget", () => {
+    const report = analyzeAudit({
+      trackedFiles: [tracked("assets/LICENSE", 5), tracked("src/huge.js", 500)],
+      manifest: manifest([]),
+      policy: basePolicy(),
+    });
+    assert.deepStrictEqual(report.findings, []);
+    assert.strictEqual(report.tracked.mediaBytes, 0);
+    assert.strictEqual(report.tracked.bytes, 505);
   });
 
   it("hard-fails assets/source package matches and ownerless large media", () => {
@@ -542,20 +615,22 @@ describe("repository asset audit", () => {
     assert.ok(stableJson(value).endsWith("\n"));
   });
 
-  it("keeps the prospective repository tree under the hard budget", () => {
+  it("keeps prospective tracked media under the hard budget", () => {
     const root = path.resolve(__dirname, "..");
     const policy = JSON.parse(
       fs.readFileSync(path.join(root, "tools", "repository-asset-policy.json"), "utf8")
     );
     const prospective = readProspectiveTrackedTree(root);
 
-    const prospectiveBytes = prospective.reduce((sum, file) => sum + file.bytes, 0);
-    const headroom = policy.thresholds.trackedTreeHardBytes - prospectiveBytes;
+    const mediaBytes = prospective
+      .filter((file) => BINARY_MEDIA_EXTENSIONS.has(file.extension))
+      .reduce((sum, file) => sum + file.bytes, 0);
+    const headroom = policy.thresholds.trackedMediaHardBytes - mediaBytes;
     // The hard-budget gate must judge the tree that would actually be committed.
     assert.ok(
       headroom >= 0,
-      `prospective tracked tree ${prospectiveBytes} bytes exceeds hard budget `
-      + `${policy.thresholds.trackedTreeHardBytes} bytes by ${-headroom}`
+      `prospective tracked media ${mediaBytes} bytes exceeds hard budget `
+      + `${policy.thresholds.trackedMediaHardBytes} bytes by ${-headroom}`
     );
   });
 

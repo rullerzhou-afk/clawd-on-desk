@@ -17,7 +17,8 @@ function makeFakeHttp() {
   function createHttpServer(handler) {
     capturedHandler = handler;
     const server = new EventEmitter();
-    server.listen = function () { this.emit("listening"); };
+    server.listen = function (port) { this.boundPort = port; this.emit("listening"); };
+    server.address = function () { return { port: this.boundPort }; };
     server.close = function () {};
     return server;
   }

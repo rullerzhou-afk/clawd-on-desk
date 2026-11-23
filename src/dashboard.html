@@ -289,6 +289,8 @@ h1 {
   --id-antigravity-inner: #6366f1;
   --id-kimi-outer: #3b93f7;
   --id-kimi-inner: #e27aeb;
+  /* DeepSeek balance has only an outer ring; see quota-ring.html for the palette rationale. */
+  --id-deepseek-outer: #7aa0e8;
   --sev-warn: #fbbf24;
   --sev-hot: #f87171;
 }
@@ -311,6 +313,7 @@ h1 {
 .quota-bar-fill.pv-antigravityQuota.rg-inner { background: var(--id-antigravity-inner); }
 .quota-bar-fill.pv-kimiQuota.rg-outer { background: var(--id-kimi-outer); }
 .quota-bar-fill.pv-kimiQuota.rg-inner { background: var(--id-kimi-inner); }
+.quota-bar-fill.pv-deepseekQuota.rg-outer { background: var(--id-deepseek-outer); }
 /* Severity overrides identity exactly like on the coins: warn 60, hot 85. */
 .quota-bar-fill.sev-warn { background: var(--sev-warn); }
 .quota-bar-fill.sev-hot { background: var(--sev-hot); }
@@ -500,7 +503,8 @@ h1 {
 .path,
 .model-row,
 .event-row,
-.context-usage-row {
+.context-usage-row,
+.plan-progress-row {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -710,6 +714,13 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
+.plan-progress-row {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -735,6 +746,20 @@ h1 {
   background: var(--surface-alt);
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+.profile-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(222, 136, 109, 0.18);
+  color: #c4684c;
+  white-space: nowrap;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  vertical-align: baseline;
 }
 
 .recovery-badge {
@@ -909,6 +934,7 @@ button:disabled {
   </div>
   <script src="./session-focus-unavailable.js"></script>
   <script src="./language-picker.js"></script>
+  <script src="./quota-balance.js"></script>
   <script src="./dashboard-renderer.js"></script>
 </body>
 </html>

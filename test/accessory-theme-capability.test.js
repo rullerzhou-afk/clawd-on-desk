@@ -82,6 +82,11 @@ describe("built-in accessory capability contracts", () => {
     assert.ok(files.includes("clawd-working-typing-boss.svg"));
     assert.ok(!usages.some((usage) => usage.file === "clawd-working-typing-boss.svg"));
     assert.ok(!usages.some((usage) => usage.source === "rendering.objectChannelFiles"));
+    assert.ok(!usages.some((usage) => usage.source === "rendering.discreteSampling"));
+    assert.ok(
+      files.includes("clawd-working-thinking.svg"),
+      "a sampled file is also a required asset, like any object-channel file"
+    );
     assert.strictEqual(normalized._capabilities.accessories, true);
     assertDeclaredTargetsExist("clawd", raw);
 

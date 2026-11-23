@@ -6,8 +6,8 @@
 // (main hooks.py) and, for a subagent, `parent_session_key` (the spawning
 // chat). Reading these keeps each chat on its own pet session instead of
 // collapsing every chat into one shared "default" session — which would let
-// one chat's Stop celebrate while another chat is still working. A subagent's
-// own id is appended so its tool events don't un-finish its parent row.
+// one chat's Stop celebrate while another chat is still working. Subagent
+// events are discarded in the payload builder before this resolver runs.
 function resolveSessionId(payload) {
   if (!payload || typeof payload !== "object") return "default";
   const base =
@@ -18,8 +18,7 @@ function resolveSessionId(payload) {
     payload.session_id ||
     payload.sessionId ||
     "default";
-  const subagent = payload.subagent_id || payload.subagentId || "";
-  return subagent ? `${String(base)}::sub:${subagent}` : String(base);
+  return String(base);
 }
 
 module.exports = resolveSessionId;

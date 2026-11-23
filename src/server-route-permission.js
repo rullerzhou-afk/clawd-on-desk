@@ -1,6 +1,10 @@
 "use strict";
+const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
-const { resolveCodexApprovalRoute } = require("./codex-approval-routing");
+const {
+  isNonlocalCodexRequest,
+  resolveCodexApprovalRoute,
+} = require("./codex-approval-routing");
 
 const {
   CLAWD_SERVER_HEADER,
@@ -34,6 +38,10 @@ const {
   buildToolInputFingerprint,
 } = require("./server-permission-utils");
 const { preparePermissionReminder, NOT_INSPECTED_TAG } = require("./permission-reminder");
+const {
+  isPermissionReviewEnabled,
+  preparePermissionReview,
+} = require("./permission-review");
 const { shouldScanIrreversibleCommand } = require("./bubble-format");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { getAgent } = require("../agents/registry");
@@ -42,6 +50,10 @@ const {
   normalizeOpencodeFamilyBridgeUrl,
   isValidOpencodeFamilyBridgeToken,
 } = require("./opencode-family-bridge-url");
+const {
+  normalizeExternalFamilyPermissionIdentity,
+  opencodeFamilyBridgeTokensEqual,
+} = require("./opencode-family-permission-identity");
 const { resolveSessionIdentity } = require("./session-key");
 const { codexProfileIdentity, resolveCodexProfile } = require("./codex-profiles");
 const {
@@ -50,9 +62,11 @@ const {
 const {
   INTERACTION_INTENT,
   classifyPermissionInteraction,
+  isCodexClaimableMcpTool,
   isDecisionInteraction,
   isValidInteraction,
 } = require("./permission-automation-policy");
+const { normalizeCodexTurnId } = require("./codex-turn-id");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
@@ -161,6 +175,46 @@ function shouldInterceptCodexPermission(ctx, data) {
   // authoritative settings reader, preserve Codex ownership.
   return typeof ctx.isCodexPermissionInterceptEnabled === "function"
     && ctx.isCodexPermissionInterceptEnabled();
+}
+
+// Auto hands remote and WSL requests back to Codex because their transcript is
+// not readable here. When the user's global automation would allow such a
+// request on the spot, Clawd answers it instead, as Intercept did before Auto
+// (#1186). For shell/file tools only the `nonlocal` route reason qualifies; a
+// local automatic reviewer chosen in Codex stays in charge. Ordinary
+// namespaced MCP tools follow the same rule when the wire request is nonlocal,
+// except the Codex `codex_apps` connector namespace. This deliberately
+// overrides a per-plugin `approval_mode = "prompt"` on the remote Codex: the
+// user's global automation is the authorization the product agreed to.
+// Anything that would wait for a human still goes to Codex.
+function isCodexAutomationClaimTool(data) {
+  if (!data) return false;
+  // The route resolves shell/file tools by tool first and nonlocal second, so
+  // for these two names `reason === "nonlocal"` is exactly this pure check.
+  // Do not call the resolver here: it synchronously reads the transcript and
+  // this helper runs before the permission-mode gate.
+  if (data.tool_name === "Bash" || data.tool_name === "apply_patch") {
+    return isNonlocalCodexRequest(data);
+  }
+  return isCodexClaimableMcpTool(data.tool_name) && isNonlocalCodexRequest(data);
+}
+
+function shouldClaimCodexPermissionForAutomation(ctx, data, probe) {
+  if (!isCodexAutomationClaimTool(data)) return false;
+  if (typeof ctx.getCodexPermissionMode !== "function"
+    || ctx.getCodexPermissionMode() !== "auto") return false;
+  if (typeof ctx.wouldAutoAllowPermission !== "function") return false;
+  if (shouldBypassCodexBubble(ctx)) return false;
+  return ctx.wouldAutoAllowPermission(probe) === true;
+}
+
+function isCodexAutomationClaimShape(ctx, data) {
+  return !!(
+    data
+    && isCodexAutomationClaimTool(data)
+    && typeof ctx.getCodexPermissionMode === "function"
+    && ctx.getCodexPermissionMode() === "auto"
+  );
 }
 
 function shouldMuteCodexNativeNotificationSound(ctx) {
@@ -303,6 +357,10 @@ function buildCodexPermissionSessionOptions(data, remoteProfile, wslSourced) {
     agentId: "codex",
     hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
   };
+  const ephemeral = readCodexClientEphemeral(data,
+    data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE && !remoteProfile && !wslSourced && !data.host);
+  if (typeof ephemeral === "boolean") options.codexClientEphemeral = ephemeral;
+  if (ephemeral === false) options.transcriptPath = data.transcript_path;
 
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
@@ -609,6 +667,136 @@ function tryRemoteOnlyApproval(ctx, fields) {
   return { handled: true, resolution: "remote" };
 }
 
+const REVIEW_CANCELLED = Symbol("permission-review-cancelled");
+
+const inFlightOpencodeFamilyReviews = new Set();
+
+function registerInFlightOpencodeFamilyReview(identity) {
+  const normalized = normalizeExternalFamilyPermissionIdentity(identity);
+  if (!normalized) return null;
+  const record = { identity: normalized, resolvedExternally: false };
+  inFlightOpencodeFamilyReviews.add(record);
+  return record;
+}
+
+function markInFlightOpencodeFamilyReviewResolvedExternally(identity) {
+  const normalized = normalizeExternalFamilyPermissionIdentity(identity);
+  if (!normalized) return 0;
+  let marked = 0;
+  for (const record of inFlightOpencodeFamilyReviews) {
+    const candidate = record.identity;
+    if (
+      candidate.agentId !== normalized.agentId
+      || candidate.requestId !== normalized.requestId
+      || candidate.sessionId !== normalized.sessionId
+      || candidate.bridgeUrl !== normalized.bridgeUrl
+      || !opencodeFamilyBridgeTokensEqual(candidate.bridgeToken, normalized.bridgeToken)
+    ) continue;
+    record.resolvedExternally = true;
+    marked++;
+  }
+  return marked;
+}
+
+function unregisterInFlightOpencodeFamilyReview(record) {
+  if (record) inFlightOpencodeFamilyReviews.delete(record);
+}
+
+// Request-scoped external review (#995).
+//
+// The review is awaited before the permEntry exists, so the usual
+// `res.on("close", abortHandler)` registration in every branch is too late: a
+// client that disconnects while the gate runs would leave a ghost card and a
+// child process occupying a concurrency slot. This scopes the review to the
+// request:
+//
+//   - `close` on the response aborts the child immediately;
+//   - after the await, DND / agent-disabled and the caller's branch-specific
+//     gates are re-checked, because the result was authorized for the state at
+//     accept time, not for the state now;
+//   - a cancelled review never becomes a verdict. The caller's onCancelled
+//     fallback runs and no entry is created.
+//
+// `res` may be null (opencode v1): that branch has already answered 200 and
+// the response's `close` says nothing about the request, which lives in the
+// plugin's bridge until the reverse reply.
+// The global bubble toggle is intentionally not a generic cancellation: some
+// branches keep Telegram/Feishu remote-only approval alive when the desktop
+// window is disabled. Those branches pass their own narrower re-check below.
+function reviewAuthorizationChanged(ctx, agentId, branchAuthorizationChanged) {
+  try {
+    if (ctx.doNotDisturb) return "dnd";
+    if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(agentId)) return "agent-disabled";
+  } catch (_err) {
+    return "authorization-unreadable";
+  }
+  if (typeof branchAuthorizationChanged === "function") {
+    try {
+      const changed = branchAuthorizationChanged();
+      if (changed) return typeof changed === "string" ? changed : "branch-authorization-changed";
+    } catch (_err) {
+      return "authorization-unreadable";
+    }
+  }
+  return null;
+}
+
+async function settlePermissionReview(ctx, res, options = {}) {
+  const {
+    onCancelled,
+    authorizationChanged,
+    recordRequestHookEvent,
+    ...reviewOptions
+  } = options;
+  const controller = new AbortController();
+  const abortForClose = () => {
+    if (!controller.signal.aborted) controller.abort("client-disconnected");
+  };
+  const watched = !!res && typeof res.once === "function";
+  if (watched) res.once("close", abortForClose);
+  let result;
+  try {
+    result = await preparePermissionReview({
+      ctx,
+      ...reviewOptions,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // preparePermissionReview resolves by contract; this is a defensive net so
+    // a surprise cannot leave the request unanswered.
+    result = { permissionReview: null, cancelled: true, reason: "review-error" };
+    if (typeof ctx.permLog === "function") {
+      ctx.permLog(`external review: unexpected failure (${err && err.message ? err.message : err}) tool=${options.toolName || "(missing)"} session=${options.sessionId}`);
+    }
+  } finally {
+    if (watched) res.removeListener("close", abortForClose);
+  }
+
+  let reason = result.cancelled === true
+    ? (result.reason || "cancelled")
+    : (controller.signal.aborted ? "client-disconnected" : null);
+  if (!reason && res && res.destroyed === true) reason = "client-disconnected";
+  const changed = reason
+    ? null
+    : reviewAuthorizationChanged(ctx, options.agentId, authorizationChanged);
+  if (changed) reason = changed;
+
+  if (!reason) return result.permissionReview;
+  if (typeof ctx.permLog === "function") {
+    ctx.permLog(`external review: request no longer actionable (${reason}) — discarding result tool=${options.toolName || "(missing)"} session=${options.sessionId} agent=${options.agentId || "unknown"}`);
+  }
+  if (recordRequestHookEvent && typeof recordRequestHookEvent === "object") {
+    const recordCancellation = reason === "dnd"
+      ? recordRequestHookEvent.droppedByDnd
+      : reason === "agent-disabled"
+        ? recordRequestHookEvent.droppedByDisabled
+        : recordRequestHookEvent.accepted;
+    if (typeof recordCancellation === "function") recordCancellation();
+  }
+  if (typeof onCancelled === "function") onCancelled(reason);
+  return REVIEW_CANCELLED;
+}
+
 function startRemoteApproval(ctx, permEntry) {
   if (
     permEntry
@@ -632,6 +820,23 @@ function addPendingPermission(ctx, permEntry) {
     permEntry.permissionReminder = { hold: true, tag: NOT_INSPECTED_TAG };
     if (typeof ctx.permLog === "function") {
       ctx.permLog(`destructive reminder: no view derived for tool=${permEntry.toolName || "(missing)"} agent=${permEntry.agentId || "unknown"} — treating as not inspected`);
+    }
+  }
+  // Same fail-closed net for the optional external review command (#995): a
+  // configured review that a path forgot to stamp holds the request instead of
+  // letting it become an unreviewed automatic allow. `null` is the deliberate
+  // "not configured at accept time" value, so only `undefined` is suspicious.
+  if (permEntry && permEntry.permissionReview === undefined && isPermissionReviewEnabled(ctx)) {
+    permEntry.permissionReview = {
+      configured: true,
+      hold: true,
+      tag: NOT_INSPECTED_TAG,
+      note: null,
+      warning: false,
+      exitCode: null,
+    };
+    if (typeof ctx.permLog === "function") {
+      ctx.permLog(`external review: no verdict derived for tool=${permEntry.toolName || "(missing)"} agent=${permEntry.agentId || "unknown"} — treating as not reviewed`);
     }
   }
   if (typeof ctx.addPendingPermission === "function") {
@@ -668,7 +873,7 @@ function handlePermissionPost(req, res, options) {
     if (bodySize > MAX_PERMISSION_BODY_BYTES) { tooLarge = true; return; }
     body += chunk;
   });
-  req.on("end", () => {
+  req.on("end", async () => {
     if (tooLarge) {
       // Never forge a user deny on a transport-level rejection: the agent id
       // is not even parsed yet, and qwen/zcode hooks would pass a
@@ -874,6 +1079,36 @@ function handlePermissionPost(req, res, options) {
             return;
           }
 
+          // Optional external review (#995), settled before the remote-only and
+          // automatic-allow paths below. Conditionally awaited so the feature
+          // being off keeps the handler synchronous.
+          const permissionReview = isPermissionReviewEnabled(ctx)
+            ? await settlePermissionReview(ctx, res, {
+              agentId,
+              recordRequestHookEvent,
+              sessionId,
+              sessionAutomationIdentity,
+              interaction,
+              toolName,
+              toolInput: rawInput,
+              cwd: typeof data.cwd === "string" ? data.cwd : "",
+              permissionReminder: permissionReminder.permissionReminder,
+              // A v2 permission request blocks on its response: a request
+              // whose authorization changed mid-review (DND, agent disabled)
+              // gets the same no-decision the pre-review gate would have sent.
+              // A disconnected client has nobody left to answer.
+              authorizationChanged: () => shouldBypassFamilyBubble(ctx, agentId)
+                ? "family-bubbles-disabled"
+                : null,
+              onCancelled: () => {
+                if (!res.headersSent && !res.destroyed) sendOpencodeV2PermissionNoDecision(res);
+              },
+            })
+            : null;
+          if (permissionReview === REVIEW_CANCELLED) {
+            return;
+          }
+
           // Global bubble switch only means "no desktop window": Telegram /
           // Feishu remote-only approval stays alive (same contract as zcode).
           if (!arePermissionBubblesEnabled(ctx)) {
@@ -884,6 +1119,7 @@ function handlePermissionPost(req, res, options) {
               cwd: typeof data.cwd === "string" ? data.cwd : "",
               ...trustedSessionFields(sessionIdentity),
               ...permissionReminder,
+              permissionReview,
             });
             if (remoteOnlyResult.handled) return;
             ctx.permLog(`${agentId} v2 permission bubbles disabled, no remote approval -> no decision, native prompt fallback (tool=${toolName})`);
@@ -903,6 +1139,7 @@ function handlePermissionPost(req, res, options) {
             toolInput,
             ...permissionDetail,
             ...permissionReminder,
+            permissionReview,
             resolvedSuggestion: null,
             createdAt: Date.now(),
             interaction,
@@ -986,7 +1223,18 @@ function handlePermissionPost(req, res, options) {
               bridgeToken,
             })
             : 0;
+          const reviewMarked = dismissed === 0
+            && markInFlightOpencodeFamilyReviewResolvedExternally({
+              agentId,
+              requestId,
+              sessionId: sessionIdentity.sessionId,
+              bridgeUrl,
+              bridgeToken,
+            }) > 0;
           ctx.permLog(`${agentId} permission lifecycle replied: request=${boundedPermissionLogValue(requestId)} matched=${dismissed}`);
+          if (reviewMarked) {
+            ctx.permLog(`${agentId} permission lifecycle replied during external review — request marked resolved; no stale bubble will be queued`);
+          }
           return;
         }
 
@@ -1058,6 +1306,61 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        // Optional external review (#995), settled before the entry can reach
+        // the automatic-allow path in showPermissionBubble(). Conditionally
+        // awaited: with the feature off this branch stays synchronous, which
+        // the opencode-family ACK/enqueue contract depends on.
+        //
+        // `null` response on purpose: this branch already answered 200, so the
+        // response's `close` says nothing about the request -- the request
+        // lives in the plugin's bridge until the reverse reply, and its fate
+        // is resolved through the entry's own lifecycle.
+        const reviewEnabled = isPermissionReviewEnabled(ctx);
+        const reviewRegistration = reviewEnabled
+          ? registerInFlightOpencodeFamilyReview({
+            agentId,
+            requestId,
+            sessionId,
+            bridgeUrl,
+            bridgeToken,
+          })
+          : null;
+        let permissionReview = null;
+        let resolvedExternally = false;
+        try {
+          permissionReview = reviewEnabled
+            ? await settlePermissionReview(ctx, null, {
+              agentId,
+              recordRequestHookEvent,
+              sessionId,
+              sessionAutomationIdentity,
+              interaction,
+              toolName,
+              toolInput: rawInput,
+              cwd: typeof data.cwd === "string" ? data.cwd : "",
+              permissionReminder: permissionReminder.permissionReminder,
+              authorizationChanged: () => (
+                !arePermissionBubblesEnabled(ctx) || shouldBypassFamilyBubble(ctx, agentId)
+                  ? "family-bubbles-disabled"
+                  : null
+              ),
+            })
+            : null;
+        } finally {
+          resolvedExternally = !!(
+            reviewRegistration && reviewRegistration.resolvedExternally === true
+          );
+          unregisterInFlightOpencodeFamilyReview(reviewRegistration);
+        }
+        if (permissionReview === REVIEW_CANCELLED) {
+          return;
+        }
+        if (resolvedExternally) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`${agentId} permission review ended after native resolve — skipping stale bubble request=${boundedPermissionLogValue(requestId)}`);
+          return;
+        }
+
         const permEntry = {
           res: null,
           abortHandler: null,
@@ -1070,6 +1373,7 @@ function handlePermissionPost(req, res, options) {
           toolInput,
           ...permissionDetail,
           ...permissionReminder,
+          permissionReview,
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
@@ -1289,6 +1593,36 @@ function handlePermissionPost(req, res, options) {
           return codexSessionOptions;
         };
 
+        const queueCodexRemoteFallbackNotice = () => {
+          if (typeof ctx.queueCodexRemoteFallbackForEntry !== "function") return false;
+          return ctx.queueCodexRemoteFallbackForEntry({
+            agentId: "codex",
+            sessionId,
+            rawSessionId: sessionIdentity.rawSessionId,
+            profileId: trustedProfileId,
+            codexRemoteDisplayHost: trustedDisplayHost,
+            toolName,
+            toolInput,
+            turnId: normalizeCodexTurnId(data.turn_id),
+            toolUseId,
+            toolInputFingerprint,
+          });
+        };
+
+        const sendCodexNativePermissionFallback = (reason) => {
+          codexSessionOptions = resolveCodexSessionProcessMetadata();
+          const nativeSessionOptions = { ...codexSessionOptions };
+          if (shouldMuteCodexNativeNotificationSound(ctx)) {
+            nativeSessionOptions.muteNotificationSound = true;
+          }
+          nativeSessionOptions.transientPermissionEvent = true;
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
+          ctx.permLog(`codex ${reason} -> no decision, native prompt fallback (tool=${toolName})`);
+          queueCodexRemoteFallbackNotice();
+          recordRequestHookEvent.accepted();
+          sendCodexPermissionNoDecision(res);
+        };
+
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
           ctx.permLog(`codex DND -> no decision, native prompt fallback (tool=${toolName})`);
@@ -1310,17 +1644,76 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
-        if (!shouldInterceptCodexPermission(ctx, data)) {
-          codexSessionOptions = resolveCodexSessionProcessMetadata();
-          const nativeSessionOptions = { ...codexSessionOptions };
-          if (shouldMuteCodexNativeNotificationSound(ctx)) {
-            nativeSessionOptions.muteNotificationSound = true;
-          }
-          nativeSessionOptions.transientPermissionEvent = true;
-          ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
-          ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
+        const codexBubbleBypass = shouldBypassCodexBubble(ctx);
+        const codexClaimShape = isCodexAutomationClaimShape(ctx, data);
+        if (!shouldInterceptCodexPermission(ctx, data) && (!codexClaimShape || codexBubbleBypass)) {
+          sendCodexNativePermissionFallback("native permission mode");
+          return;
+        }
+        if (codexBubbleBypass) {
           recordRequestHookEvent.accepted();
+          const reason = !arePermissionBubblesEnabled(ctx)
+            ? "permission bubbles disabled"
+            : "codex bubbles disabled";
+          ctx.permLog(`${reason} -> no decision, native prompt fallback (tool=${toolName})`);
           sendCodexPermissionNoDecision(res);
+          return;
+        }
+
+        // Optional external review (#995). A held request must not be claimed
+        // for a bubble-less automatic allow: wouldAutoAllowPermission() sees
+        // the frozen stamp and answers false, so Codex keeps its native prompt.
+        const permissionReview = isPermissionReviewEnabled(ctx)
+          ? await settlePermissionReview(ctx, res, {
+            agentId: "codex",
+            recordRequestHookEvent,
+            sessionId,
+            sessionAutomationIdentity,
+            interaction,
+            toolName,
+            toolInput: rawInput,
+            cwd: legacyCodexSessionOptions.cwd
+              || (ctx.sessions && typeof ctx.sessions.get === "function"
+                ? (ctx.sessions.get(sessionId) || {}).cwd
+                : "")
+              || (typeof data.cwd === "string" ? data.cwd : "")
+              || "",
+            permissionReminder: permissionReminder.permissionReminder,
+            // Codex's fallback is its own native prompt: hand it back the
+            // same way the pre-review DND/disabled gates do.
+            onCancelled: (cancelReason) => {
+              if (res.headersSent || res.destroyed) return;
+              // A client that already went away will not read the reminder; a
+              // normal cancellation still goes back to Codex and deserves it.
+              // DND/disabled are filtered by the manager's live gate.
+              if (cancelReason !== "client-disconnected") queueCodexRemoteFallbackNotice();
+              sendCodexPermissionNoDecision(res);
+            },
+          })
+          : null;
+        if (permissionReview === REVIEW_CANCELLED) {
+          return;
+        }
+
+        const codexAutomationClaim = shouldClaimCodexPermissionForAutomation(ctx, data, {
+          agentId: "codex",
+          isCodex: true,
+          codexAutoManual: true,
+          toolName,
+          toolInput,
+          ...permissionReminder,
+          permissionReview,
+          interaction,
+          sessionId,
+          ...trustedSessionFields(sessionIdentity),
+          sessionAutomationIdentity,
+          codexInteractiveSubagent: isCodexSubagent,
+          headless: data.headless === true,
+        });
+        if (codexAutomationClaim) {
+          ctx.permLog(`codex auto mode: global automation claims delegated request (tool=${toolName})`);
+        } else if (!shouldInterceptCodexPermission(ctx, data)) {
+          sendCodexNativePermissionFallback("native permission mode");
           return;
         }
 
@@ -1348,6 +1741,7 @@ function handlePermissionPost(req, res, options) {
           toolInput,
           ...permissionDetail,
           ...permissionReminder,
+          permissionReview,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1359,6 +1753,9 @@ function handlePermissionPost(req, res, options) {
           codexAutoManual: typeof ctx.getCodexPermissionMode === "function"
             && ctx.getCodexPermissionMode() === "auto",
           codexInteractiveSubagent: isCodexSubagent,
+          codexAutomationClaim,
+          codexTurnId: normalizeCodexTurnId(data.turn_id),
+          codexRemoteDisplayHost: trustedDisplayHost,
           headless: data.headless === true,
           codexSessionRole: codexSessionOptions.codexSessionRole || null,
           codexAgentNickname: codexSessionOptions.codexAgentNickname || null,
@@ -1380,6 +1777,8 @@ function handlePermissionPost(req, res, options) {
           model: codexSessionOptions.model || null,
           codexOriginator: codexSessionOptions.codexOriginator || null,
           codexSource: codexSessionOptions.codexSource || null,
+          ...(typeof codexSessionOptions.codexClientEphemeral === "boolean"
+            ? { codexClientEphemeral: codexSessionOptions.codexClientEphemeral } : {}),
         };
         const abortHandler = () => {
           if (res.writableFinished) return;
@@ -1400,6 +1799,7 @@ function handlePermissionPost(req, res, options) {
           ctx.permLog(`codex bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
           removePendingPermission(ctx, permEntry, "codex-bubble-failed");
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          queueCodexRemoteFallbackNotice();
           sendCodexPermissionNoDecision(res);
           return;
         }
@@ -1467,6 +1867,29 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        // Optional external review (#995), settled before the automatic-allow
+        // path in showPermissionBubble().
+        const permissionReview = isPermissionReviewEnabled(ctx)
+          ? await settlePermissionReview(ctx, res, {
+            agentId: "qwen-code",
+            recordRequestHookEvent,
+            sessionId,
+            sessionAutomationIdentity,
+            interaction,
+            toolName,
+            toolInput: rawInput,
+            cwd: qwenSessionOptions.cwd || "",
+            permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => shouldBypassQwenCodeBubble(ctx)
+              ? "qwen-bubbles-disabled"
+              : null,
+            onCancelled: () => {
+              if (!res.headersSent && !res.destroyed) sendQwenCodePermissionNoDecision(res);
+            },
+          })
+          : null;
+        if (permissionReview === REVIEW_CANCELLED) return;
+
         const permEntry = {
           res,
           abortHandler: null,
@@ -1479,6 +1902,7 @@ function handlePermissionPost(req, res, options) {
           toolInput,
           ...permissionDetail,
           ...permissionReminder,
+          permissionReview,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1595,6 +2019,16 @@ function handlePermissionPost(req, res, options) {
         ) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`zcode no-capability interaction (${interaction.intent}) -> no decision, native prompt fallback (tool=${toolName})`);
+          // #1264: the hook short-circuits before its /state POST on this
+          // path, so without this flash the pet stays fully silent while
+          // ZCode waits on its native prompt. Same transient PermissionRequest
+          // notification as the hook's fail-closed path: global ~5s flash,
+          // no HUD row, auto-return, DND-safe.
+          try {
+            ctx.updateSession(sessionId, "notification", "PermissionRequest", zcodeSessionOptions);
+          } catch (sessionErr) {
+            ctx.permLog(`zcode updateSession failed: ${sessionErr && sessionErr.message} -> no decision`);
+          }
           sendZcodePermissionNoDecision(res);
           return;
         }
@@ -1606,25 +2040,90 @@ function handlePermissionPost(req, res, options) {
         // out of ZCode's loop, including remote channels.
         const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
           && !ctx.isAgentPermissionsEnabled("zcode");
+        if (agentGateOff) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode bubbles disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        // ZCode 3.16.3 answers AskUserQuestion over this same transport: the
+        // tool's input schema carries an optional `answers` record ("User
+        // answers collected by the permission component") and an allow decision
+        // with updatedInput is applied as a modify — the same contract the
+        // Claude Code elicitation path implements. Validate the question shape
+        // up front; unsupported shapes fall back to the native prompt with the
+        // same pet flash as the no-capability drop (#1264).
+        const isZcodeElicitation = interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+          && interaction.capabilities.answerQuestions === true;
+        const zcodeElicitation = isZcodeElicitation
+          ? prepareElicitationToolInput(rawInput)
+          : null;
+        if (zcodeElicitation && !zcodeElicitation.canAnswer) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode elicitation unsupported shape (${zcodeElicitation.reason}) -> no decision, native prompt fallback (tool=${toolName})`);
+          try {
+            ctx.updateSession(sessionId, "notification", "PermissionRequest", zcodeSessionOptions);
+          } catch (sessionErr) {
+            ctx.permLog(`zcode updateSession failed: ${sessionErr && sessionErr.message} -> no decision`);
+          }
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        // Optional external review (#995), settled before either the
+        // remote-only or the local automatic-allow path can decide.
+        const permissionReview = isPermissionReviewEnabled(ctx)
+          ? await settlePermissionReview(ctx, res, {
+            agentId: "zcode",
+            recordRequestHookEvent,
+            sessionId,
+            sessionAutomationIdentity,
+            interaction,
+            toolName,
+            toolInput: rawInput,
+            cwd: zcodeSessionOptions.cwd || "",
+            permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => (
+              typeof ctx.isAgentPermissionsEnabled === "function"
+              && !ctx.isAgentPermissionsEnabled("zcode")
+                ? "zcode-bubbles-disabled"
+                : null
+            ),
+            onCancelled: () => {
+              if (!res.headersSent && !res.destroyed) sendZcodePermissionNoDecision(res);
+            },
+          })
+          : null;
+        if (permissionReview === REVIEW_CANCELLED) return;
         if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
           recordRequestHookEvent.accepted();
           const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
-            res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
+            res, sessionId, toolName,
+            // Answerable questions carry the same elicitation fields as the
+            // local entry: the remote resolver keys submitted answers off
+            // elicitationWireInput, so a truncated toolInput copy would
+            // produce answer keys ZCode cannot match (#1264 review).
+            ...(zcodeElicitation
+              ? {
+                  toolInput: zcodeElicitation.displayInput,
+                  elicitationDetailInput: zcodeElicitation.detailDisplayInput,
+                  detailTruncated: zcodeElicitation.detailTruncated,
+                  elicitationWireInput: zcodeElicitation.wireInput,
+                  isElicitation: true,
+                }
+              : { toolInput }),
+            toolUseId, toolInputFingerprint,
             agentId: "zcode", isZcode: true, interaction, sessionAutomationIdentity,
             cwd: zcodeSessionOptions.cwd || "",
             host: zcodeSessionOptions.host || null,
             model: zcodeSessionOptions.model || null,
             ...trustedSessionFields(sessionIdentity),
-            ...permissionReminder,
+            ...(zcodeElicitation ? {} : permissionReminder),
+            permissionReview,
           });
           if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available -> no decision, native prompt fallback (tool=${toolName})`);
-          sendZcodePermissionNoDecision(res);
-          return;
-        }
-        if (agentGateOff) {
-          recordRequestHookEvent.accepted();
-          ctx.permLog(`zcode bubbles disabled -> no decision, native prompt fallback (tool=${toolName})`);
           sendZcodePermissionNoDecision(res);
           return;
         }
@@ -1638,9 +2137,19 @@ function handlePermissionPost(req, res, options) {
           bubble: null,
           hideTimer: null,
           toolName,
-          toolInput,
-          ...permissionDetail,
-          ...permissionReminder,
+          toolInput: zcodeElicitation ? zcodeElicitation.displayInput : toolInput,
+          ...(zcodeElicitation
+            ? {
+                elicitationDetailInput: zcodeElicitation.detailDisplayInput,
+                detailTruncated: zcodeElicitation.detailTruncated,
+                elicitationWireInput: zcodeElicitation.wireInput,
+                isElicitation: true,
+              }
+            : {
+                ...permissionDetail,
+                ...permissionReminder,
+              }),
+          permissionReview,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1777,6 +2286,28 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        // Optional external review (#995).
+        const permissionReview = isPermissionReviewEnabled(ctx)
+          ? await settlePermissionReview(ctx, res, {
+            agentId: "copilot-cli",
+            recordRequestHookEvent,
+            sessionId,
+            sessionAutomationIdentity,
+            interaction,
+            toolName,
+            toolInput: rawInput,
+            cwd: copilotSessionOptions.cwd || "",
+            permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => shouldBypassCopilotBubble(ctx)
+              ? "copilot-bubbles-disabled"
+              : null,
+            onCancelled: () => {
+              if (!res.headersSent && !res.destroyed) sendCopilotPermissionNoDecision(res);
+            },
+          })
+          : null;
+        if (permissionReview === REVIEW_CANCELLED) return;
+
         const permEntry = {
           res,
           abortHandler: null,
@@ -1789,6 +2320,7 @@ function handlePermissionPost(req, res, options) {
           toolInput,
           ...permissionDetail,
           ...permissionReminder,
+          permissionReview,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1924,6 +2456,35 @@ function handlePermissionPost(req, res, options) {
           ...trustedSessionFields(sessionIdentity),
         };
 
+        // Optional external review (#995). DSH's ApprovalRequest carries no
+        // tool arguments, so the command receives an empty toolInput; that
+        // limitation is documented with the setting.
+        const permissionReview = agentGateOff || !isPermissionReviewEnabled(ctx)
+          ? null
+          : await settlePermissionReview(ctx, res, {
+            agentId,
+            recordRequestHookEvent,
+            sessionId,
+            sessionAutomationIdentity,
+            interaction,
+            toolName,
+            toolInput: rawInput,
+            cwd: sessionOptions.cwd
+              || (typeof data.cwd === "string" ? data.cwd : "")
+              || "",
+            permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => (
+              typeof ctx.isAgentPermissionsEnabled === "function"
+              && !ctx.isAgentPermissionsEnabled(agentId)
+                ? "dsh-bubbles-disabled"
+                : null
+            ),
+            onCancelled: () => {
+              if (!res.headersSent && !res.destroyed) sendDshPermissionNoDecision(res);
+            },
+          });
+        if (permissionReview === REVIEW_CANCELLED) return;
+
         if (shouldBypassDshBubble(ctx)) {
           recordRequestHookEvent.accepted();
           if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
@@ -1941,6 +2502,7 @@ function handlePermissionPost(req, res, options) {
               isDsh: true,
               ...sessionOptions,
               ...permissionReminder,
+              permissionReview,
             });
             if (remoteOnlyResult.handled) return;
           }
@@ -1962,6 +2524,7 @@ function handlePermissionPost(req, res, options) {
           toolUseId,
           toolInputFingerprint,
           ...permissionReminder,
+          permissionReview,
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
@@ -2157,6 +2720,28 @@ function handlePermissionPost(req, res, options) {
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
+        // Optional external review (#995), settled before the automatic-allow
+        // path in showPermissionBubble().
+        const permissionReview = isPermissionReviewEnabled(ctx)
+          ? await settlePermissionReview(ctx, res, {
+            agentId: "hermes",
+            recordRequestHookEvent,
+            sessionId,
+            sessionAutomationIdentity,
+            interaction,
+            toolName,
+            toolInput: rawInput,
+            cwd: hermesSessionOptions.cwd || "",
+            permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => shouldBypassHermesBubble(ctx)
+              ? "hermes-bubbles-disabled"
+              : null,
+            onCancelled: () => {
+              if (!res.headersSent && !res.destroyed) sendHermesPermissionNoDecision(res);
+            },
+          })
+          : null;
+        if (permissionReview === REVIEW_CANCELLED) return;
         ctx.permLog(`HERMES PERMISSION: tool=${toolName} session=${sessionId}`);
         ctx.updateSession(sessionId, "notification", "PermissionRequest", hermesSessionOptions);
 
@@ -2172,6 +2757,7 @@ function handlePermissionPost(req, res, options) {
           toolInput,
           ...permissionDetail,
           ...permissionReminder,
+          permissionReview,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -2319,6 +2905,64 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      // The per-agent permission gate is a pre-review native fallback. The
+      // global bubble switch is deliberately not folded in here: when it is
+      // the only switch that is off, a configured remote-only reviewer still
+      // needs the request and the review result.
+      const ccAgentGateOff = !isDecisionInteraction(interaction)
+        && typeof ctx.isAgentPermissionsEnabled === "function"
+        && !ctx.isAgentPermissionsEnabled(permAgentId);
+      if (ccAgentGateOff) {
+        recordRequestHookEvent.accepted();
+        ctx.permLog(`${permAgentId} bubbles disabled → destroy connection, chat fallback before external review (tool=${toolName})`);
+        res.destroy();
+        return;
+      }
+
+      // Optional external review (#995): settled here, once, before any path
+      // below can auto-allow or hand the request to a remote channel. The
+      // verdict is frozen on the entry; decision helpers stay synchronous.
+      // The synchronous enable check keeps this handler in one execution
+      // segment when the feature is off (README: opencode v1 ACK + enqueue).
+      //
+      // The response is scoped here: every branch below registers its own
+      // abortHandler only AFTER the entry exists, which is too late for a
+      // client that disconnects while the gate runs.
+      const permissionReview = isPermissionReviewEnabled(ctx)
+        ? await settlePermissionReview(ctx, res, {
+          agentId: permAgentId,
+          recordRequestHookEvent,
+          sessionId,
+          sessionAutomationIdentity,
+          interaction,
+          toolName,
+          toolInput: rawInput,
+          cwd: existingSession && typeof existingSession.cwd === "string"
+            ? existingSession.cwd
+            : (typeof data.cwd === "string" ? data.cwd : ""),
+          permissionReminder: permissionReminder.permissionReminder,
+          authorizationChanged: () => {
+            if (
+              !isDecisionInteraction(interaction)
+              && typeof ctx.isAgentPermissionsEnabled === "function"
+              && !ctx.isAgentPermissionsEnabled(permAgentId)
+            ) return "agent-bubbles-disabled";
+            if (shouldBypassCCSubagentBubble(ctx, interaction, permAgentId, hookIdentity)) {
+              return "subagent-bubbles-disabled";
+            }
+            return null;
+          },
+          // The Claude/CodeBuddy fallback is the native chat prompt: destroy
+          // the connection so no decision is forged, then stop.
+          onCancelled: () => {
+            if (!res.headersSent && !res.destroyed) {
+              try { res.destroy(); } catch {}
+            }
+          },
+        })
+        : null;
+      if (permissionReview === REVIEW_CANCELLED) return;
+
       if (shouldBypassCCBubble(ctx, interaction, permAgentId)) {
         recordRequestHookEvent.accepted();
         // "Permission bubbles disabled" (the global/local toggle) only means
@@ -2336,6 +2980,7 @@ function handlePermissionPost(req, res, options) {
             sessionAutomationIdentity,
             ...trustedSessionFields(sessionIdentity),
             ...permissionReminder,
+            permissionReview,
           });
           if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
@@ -2444,6 +3089,7 @@ function handlePermissionPost(req, res, options) {
         planReviewWireInput,
         ...permissionDetail,
         ...permissionReminder,
+        permissionReview,
         toolUseId,
         toolInputFingerprint,
         resolvedSuggestion: null,
@@ -2536,4 +3182,10 @@ module.exports = {
   shouldBypassDshBubble,
   shouldBypassHermesBubble,
   handlePermissionPost,
+};
+
+module.exports.__test = {
+  isCodexAutomationClaimTool,
+  isCodexAutomationClaimShape,
+  shouldClaimCodexPermissionForAutomation,
 };

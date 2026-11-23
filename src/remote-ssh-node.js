@@ -9,8 +9,11 @@
 // and formats all subsequent remote Node invocations with that path.
 
 const childProcess = require("child_process");
+const { prepareSshCommandArguments } = require("./remote-ssh-command");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const { decodeShellBytes } = require("./remote-ssh-decode");
+const { isWindowsAbsolutePath } = require("./remote-ssh-layout");
+const { REMOTE_NODE_LAUNCH_COMMAND, buildNodeDiscoveryFrame, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
 
 const NODE_PROBE_TIMEOUT_MS = 60000;
 const NODE_PROBE_SENTINEL = "__CLAWD_REMOTE_NODE_PROBE__";
@@ -91,7 +94,7 @@ exit 127
 `;
 
 function spawnAndWait(spawn, command, args, opts = {}) {
-  const { stdin, env, timeoutMs = NODE_PROBE_TIMEOUT_MS, runtime, role = "node-resolve" } = opts;
+  const { stdin, env, timeoutMs = NODE_PROBE_TIMEOUT_MS, runtime, role = "node-resolve", profile, platform = process.platform } = opts;
   return new Promise((resolve, reject) => {
     let child;
     const childOptions = {
@@ -100,6 +103,7 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       windowsHide: true,
     };
     try {
+      args = prepareSshCommandArguments(command, args, { profile, platform });
       child = runtime && typeof runtime.spawnManagedTransportChild === "function"
         ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
         : spawn(command, args, childOptions);
@@ -119,6 +123,7 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     let exitCode = null;
     let exitSignal = null;
     let processError = null;
+    let stdinError = null;
     let timedOut = false;
     let drainTimer = null;
     const timer = setTimeout(() => {
@@ -159,12 +164,6 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     if (child.stdout) child.stdout.on("data", (d) => { stdoutChunks.push(d); });
     if (child.stderr) child.stderr.on("data", (d) => { stderrChunks.push(d); });
 
-    if (stdin != null && child.stdin) {
-      try { child.stdin.end(stdin); } catch {}
-    } else if (child.stdin) {
-      try { child.stdin.end(); } catch {}
-    }
-
     child.on("error", (err) => { processError = err; });
     child.on("exit", (code, signal) => {
       exitCode = code;
@@ -202,12 +201,22 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         }
       }
       finish({
-        code: exitCode === null ? code : exitCode,
+        code: stdinError ? -1 : (exitCode === null ? code : exitCode),
         signal: exitSignal === null ? signal : exitSignal,
         stdout,
-        stderr: stderr || (processError && processError.message) || "",
+        stderr: stderr || (stdinError && `${stdinError.code || "stdin_write_failed"}: ${stdinError.message}`) || (processError && processError.message) || "",
+        ...(stdinError ? { stdinError: true } : {}),
         ...(processError ? { spawnError: true } : {}),
       });
+    });
+    if (child.stdin) writeNodeFrameSafely(child, stdin, {
+      onError: (err) => {
+        if (done) return;
+        stdinError = err;
+        if (!managed) {
+          try { child.kill(); } catch {}
+        }
+      },
     });
   });
 }
@@ -247,8 +256,10 @@ function isSupportedRemoteNodeVersion(value) {
   return Number.isInteger(major) && major >= MIN_REMOTE_NODE_MAJOR;
 }
 
-function isValidRemoteNodeBin(value) {
+function isValidRemoteNodeBin(value, platform = "posix") {
+  if (platform === "win32") return isWindowsAbsolutePath(value);
   return typeof value === "string"
+    && platform === "posix"
     && value.startsWith("/")
     && !/[\x00-\x1f\x7f]/.test(value);
 }
@@ -259,6 +270,7 @@ function remoteNodeCacheKey(profile) {
     host: profile.host || "",
     port: Number.isInteger(profile.port) ? profile.port : 22,
     identityFile: profile.identityFile || "",
+    ...(profile.remotePlatform === "win32" ? { remotePlatform: "win32" } : {}),
   });
 }
 
@@ -267,7 +279,7 @@ const REMOTE_NODE_CACHE_INVALID = { invalid: true };
 
 function getProfileRemoteNodeBin(profile) {
   if (!profile || typeof profile !== "object") return null;
-  if (!isValidRemoteNodeBin(profile.detectedRemoteNodeBin)) return null;
+  if (!isValidRemoteNodeBin(profile.detectedRemoteNodeBin, profile.remotePlatform || "posix")) return null;
   if (!isSupportedRemoteNodeVersion(profile.detectedRemoteNodeVersion)) return null;
   const out = {
     nodeBin: profile.detectedRemoteNodeBin,
@@ -300,7 +312,7 @@ function getCachedRemoteNodeBin(profile) {
 
 function setCachedRemoteNodeBin(profile, result) {
   const key = remoteNodeCacheKey(profile);
-  if (!key || !result || !isValidRemoteNodeBin(result.nodeBin)) return;
+  if (!key || !result || !isValidRemoteNodeBin(result.nodeBin, profile.remotePlatform || "posix")) return;
   if (!isSupportedRemoteNodeVersion(result.version)) return;
   remoteNodeCache.set(key, {
     nodeBin: result.nodeBin,
@@ -315,10 +327,15 @@ function clearCachedRemoteNodeBin(profile) {
   remoteNodeCache.set(key, REMOTE_NODE_CACHE_INVALID);
 }
 
-async function probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs, nodeBin = null, source = "cache" }) {
+async function probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs, platform, nodeBin = null, source = "cache" }) {
   const command = buildRemoteNodeProbeCommand(nodeBin, source);
   const args = buildSshArgs(profile).concat([command]);
-  const r = await spawnAndWait(spawn, "ssh", args, { runtime, timeoutMs });
+  const r = await spawnAndWait(spawn, "ssh", args, {
+    profile,
+    platform,
+    runtime,
+    timeoutMs,
+  });
   if (r.code !== 0) {
     const detail = summarizeStderr(r.stderr) || `ssh exited ${formatExit(r)}`;
     return {
@@ -352,6 +369,7 @@ async function resolveRemoteNodeBin(options = {}) {
     timeoutMs = NODE_PROBE_TIMEOUT_MS,
     useCache = true,
     verifyCache = false,
+    platform = process.platform,
   } = options;
   const spawn = options.spawn || childProcess.spawn;
 
@@ -360,6 +378,18 @@ async function resolveRemoteNodeBin(options = {}) {
   }
   if (typeof buildSshArgs !== "function") {
     throw new Error("resolveRemoteNodeBin requires buildSshArgs");
+  }
+
+  if (profile.remotePlatform === "win32") {
+    const cached = useCache ? getCachedRemoteNodeBin(profile) : null;
+    if (cached && !verifyCache && typeof profile.detectedRemoteNodeBin === "string"
+      && cached.nodeBin.toLowerCase() === profile.detectedRemoteNodeBin.toLowerCase()) {
+      return { ok: true, ...cached, source: cached.source || "cache" };
+    }
+    const result = await discoverWindowsRemoteNode({ profile, spawn, buildSshArgs, runtime, timeoutMs });
+    if (result.ok) setCachedRemoteNodeBin(profile, result);
+    else clearCachedRemoteNodeBin(profile);
+    return result.ok ? result : { ...result, step: "check-node" };
   }
 
   const cached = useCache ? getCachedRemoteNodeBin(profile) : null;
@@ -373,6 +403,7 @@ async function resolveRemoteNodeBin(options = {}) {
       buildSshArgs,
       runtime,
       timeoutMs,
+      platform,
       nodeBin: cached.nodeBin,
       source: cached.source || "cache",
     });
@@ -383,9 +414,27 @@ async function resolveRemoteNodeBin(options = {}) {
     clearCachedRemoteNodeBin(profile);
   }
 
-  const probed = await probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs });
+  const probed = await probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs, platform });
   if (probed.ok) setCachedRemoteNodeBin(profile, probed);
   return probed;
+}
+
+async function discoverWindowsRemoteNode(options) {
+  const runFrame = options.runFrame || runRemoteNodeFrame;
+  const result = await runFrame({ ...options, frame: buildNodeDiscoveryFrame(), mutation: false });
+  let node;
+  try { node = JSON.parse(String(result.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
+  if (result.code !== 0 || !node || node.platform !== "win32") {
+    return { ok: false, step: "check-node", reason: "platform_changed", message: "Remote host is no longer a native Windows host." };
+  }
+  if (!isSupportedRemoteNodeVersion(node.version) || !isValidRemoteNodeBin(node.execPath, "win32")) {
+    return { ok: false, step: "check-node", reason: "node_unavailable", hint: "remoteSshErrWindowsNodeMissing", message: "Windows remote hosts require Node.js 14 or newer and an absolute execPath." };
+  }
+  const expected = options.profile.detectedRemoteNodeBin;
+  if (typeof expected !== "string" || node.execPath.toLowerCase() !== expected.toLowerCase()) {
+    return { ok: false, step: "check-node", reason: "windows_node_changed", hint: "remoteSshErrWindowsNodeChanged", message: "Remote Node execPath changed; probe the platform before deploying again." };
+  }
+  return { ok: true, nodeBin: node.execPath, version: node.version, source: "discovery", homedir: node.homedir, platform: node.platform };
 }
 
 function remoteHookPath(scriptName, hooksDir = null) {
@@ -433,6 +482,12 @@ function formatExit(r) {
   return `code ${r.code == null ? "?" : r.code}`;
 }
 
+function runRemoteNodeFrame({ profile, spawn = childProcess.spawn, buildSshArgs, runtime, frame, timeoutMs, platform }) {
+  return spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([REMOTE_NODE_LAUNCH_COMMAND]), {
+    profile, platform, runtime, stdin: frame, timeoutMs, role: "node-program",
+  });
+}
+
 module.exports = {
   NODE_PROBE_TIMEOUT_MS,
   NODE_PROBE_SENTINEL,
@@ -447,6 +502,9 @@ module.exports = {
   getCachedRemoteNodeBin,
   setCachedRemoteNodeBin,
   resolveRemoteNodeBin,
+  discoverWindowsRemoteNode,
   buildRemoteHookNodeCommand,
   buildRemoteNodeEvalCommand,
+  runRemoteNodeFrame,
+  runRemoteNodeCommand: spawnAndWait,
 };

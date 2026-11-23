@@ -61,6 +61,7 @@ function makeRuntime(overrides = {}) {
     syncGrokBuildHooksImpl: () => calls.push({ name: "grok-build" }),
     syncKiroHooksImpl: () => calls.push({ name: "kiro" }),
     syncKiroCrewHooksImpl: () => calls.push({ name: "kirocrew" }),
+    syncKiroDesktopHooksImpl: () => calls.push({ name: "kiro-desktop" }),
     syncKimiHooksImpl: () => calls.push({ name: "kimi" }),
     syncQwenHooksImpl: () => calls.push({ name: "qwen" }),
     syncZcodeHooksImpl: () => calls.push({ name: "zcode" }),
@@ -306,6 +307,7 @@ describe("integration sync runtime", () => {
       "grok-build",
       "kiro",
       "kirocrew",
+      "kiro-desktop",
       "kimi",
       "qwen",
       "zcode",
@@ -377,6 +379,7 @@ describe("integration sync runtime", () => {
       "grok-build",
       "kiro",
       "kirocrew",
+      "kiro-desktop",
       "kimi",
       "qwen",
       "zcode",
@@ -424,6 +427,34 @@ describe("integration sync runtime", () => {
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["copilot"]);
   });
 
+  it("keeps KiroCrew hooks disabled during startup but reopens them for explicit sync and repair", () => {
+    const kiroCrewOptions = [];
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncKiroCrewHooksImpl: (options) => {
+          kiroCrewOptions.push(options);
+          return { status: "ok" };
+        },
+      },
+      shouldSyncAgentIntegration: (agentId) => agentId === "kirocrew",
+      getAgentIntegrationOptions: () => ({}),
+    });
+
+    runtime.syncEnabledStartupIntegrations();
+    runtime.syncIntegrationForAgent("kirocrew", {
+      source: "settings-agent-install",
+      automatic: false,
+    });
+    runtime.repairIntegrationForAgent("kirocrew", {});
+
+    assert.strictEqual(kiroCrewOptions.length, 3);
+    assert.deepStrictEqual(kiroCrewOptions, [
+      { silent: true, preserveDisabled: true },
+      { silent: true, preserveDisabled: false },
+      { silent: true, preserveDisabled: false },
+    ]);
+  });
+
   it("gives DSH startup, Settings Install, and Doctor Repair distinct mutation intent", async () => {
     const { runtime, calls } = makeRuntime();
     await runtime.syncIntegrationForAgent("deepseek-harness", { source: "startup", automatic: true });
@@ -467,7 +498,7 @@ describe("integration sync runtime", () => {
 
     assert.deepStrictEqual(calls, [{
       name: "codebuddy",
-      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" } },
+      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" }, port:24444 },
     }]);
   });
 
@@ -519,7 +550,7 @@ describe("integration sync runtime", () => {
 
     assert.deepStrictEqual(calls, [{
       name: "codebuddy",
-      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" } },
+      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" }, port:24444 },
     }]);
   });
 
@@ -536,6 +567,7 @@ describe("integration sync runtime", () => {
     }, () => runtime.syncCodeBuddyHooks());
 
     assert.deepStrictEqual(received.permissionTarget, { mode: "local" });
+    assert.strictEqual(received.port,24444,"must use the live server port, not stale disk runtime");
   });
 
   it("syncIntegrationForAgent treats count-style zero writes as a missing local integration", () => {

@@ -11,7 +11,14 @@ const initPermission = require("../../src/permission");
 // agent-enabled, bubble policy) that the server snapshots at construction.
 // Rendering alone does not authorize a visible approval surface: the default
 // null pet owner keeps synthetic requests hidden while their real pages load.
-async function createPermissionIngressHarness({ render = false, ctxOverrides = {}, portCandidates = [0] } = {}) {
+async function createPermissionIngressHarness({
+  render = false,
+  ctxOverrides = {},
+  portCandidates = [0],
+  remoteProfile = null,
+  routingNonces = [],
+  showPermissionBubbleThrows = false,
+} = {}) {
   const shown = [];
   const updates = [];
   const logs = [];
@@ -43,8 +50,10 @@ async function createPermissionIngressHarness({ render = false, ctxOverrides = {
   const permission = initPermission(ctx);
   for (const key of ["pendingPermissions", "PASSTHROUGH_TOOLS", "addPendingPermission",
     "removePendingPermission", "resolvePermissionEntry", "sendPermissionResponse", "syncPermissionBubbleContent",
+    "wouldAutoAllowPermission", "queueCodexRemoteFallbackForEntry",
     "syncPermissionShortcuts"]) ctx[key] = permission[key];
   ctx.showPermissionBubble = (entry) => {
+    if (showPermissionBubbleThrows) throw new Error("test bubble creation failure");
     if (render) permission.showPermissionBubble(entry);
     shown.push(entry);
   };
@@ -67,13 +76,26 @@ async function createPermissionIngressHarness({ render = false, ctxOverrides = {
     clearRuntimeConfig: () => true,
     readRuntimePort: () => null,
     readRuntimeIdentity: () => null,
+    readLocalServerPortHint: () => null,
+    writeLocalServerPortHint: () => true,
     windowsProcessChainModes: { "claude-code": "legacy" },
   });
   await api.startHttpServer();
   const port = server.address().port;
+  let ingress = null;
+  let remotePort = null;
+  if (remoteProfile) {
+    ingress = api.openRemoteSshIngress({
+      remoteProfile,
+      getAcceptedNonces: () => routingNonces,
+    });
+    remotePort = await ingress.start();
+  }
   return {
     ctx, api, permission, shown, updates, logs, debugLogs, requests, port,
+    remotePort,
     async close() {
+      if (ingress) ingress.close();
       for (const entry of [...permission.pendingPermissions]) {
         permission.resolvePermissionEntry(entry, "no-decision", "Test cleanup");
       }

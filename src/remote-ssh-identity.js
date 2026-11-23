@@ -205,6 +205,7 @@ function createIdentityTxn(profile, {
   randomBytes = crypto.randomBytes,
   now = Date.now,
   previousNonceTtlMs = DEFAULT_PREVIOUS_NONCE_TTL_MS,
+  remotePlatform,
 } = {}) {
   if (!profile || typeof profile !== "object") throw new TypeError("profile is required");
   if (profile.identityTxn && profile.identityTxn.phase !== "committed") {
@@ -214,6 +215,7 @@ function createIdentityTxn(profile, {
   const toNonce = randomBytes(16).toString("hex");
   if (!isValidRoutingNonce(toNonce)) throw new Error("random source did not return a 128-bit nonce");
   const raw = {
+    ...(remotePlatform !== undefined ? { remotePlatform } : {}),
     runtimeKey: profile.runtimeKey,
     layoutVersion: profile.layoutVersion || REMOTE_LAYOUT_VERSION,
     phase: "rotating",
@@ -262,6 +264,8 @@ function abortIdentityTxnToEmergencyNonce(profile, {
     ...profile,
     isolatedActive: false,
     identityTxn: {
+      // Revocation is local only. Bind the replacement transaction to the
+      // platform discovered by the next deployment, not the retired target.
       runtimeKey: profile.runtimeKey,
       layoutVersion: profile.layoutVersion || REMOTE_LAYOUT_VERSION,
       phase: "rotating",

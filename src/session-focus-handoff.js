@@ -3,6 +3,7 @@
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { discoverDshDesktopSync } = require("../hooks/dsh-install");
+const { CODEBUDDY_URL_SCHEME_RE } = require("./process-app-focus");
 
 const DSH_DESKTOP_EXE_NAME = "DeepSeek Harness.exe";
 // A GUI launch cannot be proven, but the promise must not hang: a child that
@@ -11,6 +12,20 @@ const DSH_LAUNCH_CONFIRM_TIMEOUT_MS = 15000;
 
 function sanitizeFocusError(err) {
   return err && err.message ? err.message.replace(/[\r\n\t]+/g, " ") : "unknown";
+}
+
+const DSH_SESSION_NAMESPACE = "deepseek-harness:";
+
+// The bridge reports `<agent>:<dsh session id>` (canonicalSessionId), but the
+// DSH page only accepts its own id form, so the namespace comes off before the
+// id is published. A missing field (older bridges, other agents) means no
+// session-level jump — the window focus still works on its own.
+function resolveDshSessionId(entry) {
+  const raw = typeof (entry && entry.rawSessionId) === "string" ? entry.rawSessionId.trim() : "";
+  if (!raw) return "";
+  const id = raw.startsWith(DSH_SESSION_NAMESPACE) ? raw.slice(DSH_SESSION_NAMESPACE.length) : raw;
+  // The bridge uses `default` when DSH supplied no id; it is not a real session.
+  return id === "default" ? "" : id;
 }
 
 // Discovery outcomes that are not a verified unique install each get their own
@@ -151,6 +166,7 @@ function focusDshDesktopTarget({
   requestSource = "dashboard",
   url,
   focusLog = () => {},
+  publishDshFocus = () => false,
   discoverDesktop,
   osPlatform,
   spawnImpl,
@@ -164,6 +180,20 @@ function focusDshDesktopTarget({
   const id = String(sessionId || (focusEntry && focusEntry.id) || "");
   focusLog(`focus request source=${requestSource} sid=${id} agent=${(focusEntry && focusEntry.agentId) || "-"} target=dsh-desktop`);
   return Promise.resolve()
+    // The window focus below is only half the job: an already-open DSH window
+    // keeps showing whatever conversation it was on, so the page-side plugin
+    // must be told which session this click meant. Publish first (no await
+    // needed — the page subscribes continuously) so it is already switching by
+    // the time the window comes forward. A failure here never blocks the focus.
+    .then(() => {
+      const dshSessionId = resolveDshSessionId(focusEntry);
+      if (!dshSessionId) return;
+      try {
+        publishDshFocus(dshSessionId);
+      } catch {
+        // A dead stream is not a failed click; `dsh://open` still raises the app.
+      }
+    })
     .then(() => shell.openExternal(url))
     .then(() => {
       focusLog(`focus result branch=dsh-desktop reason=opened source=${requestSource} sid=${id}`);
@@ -224,10 +254,141 @@ function focusCodexThreadTarget({
     });
 }
 
+// On Windows the entries before the agent in pidChain are per-event shells that
+// have already exited. A cache hit has no fresh chain and leaves the old one on
+// the session, so an agent that is missing from its chain belongs to a former
+// process and the whole chain must be ignored.
+function chainAboveAgent(pidChain, agentPid) {
+  if (!agentPid) return pidChain;
+  const agentIndex = pidChain.indexOf(agentPid);
+  return agentIndex >= 0 ? pidChain.slice(agentIndex + 1) : [];
+}
+
+// On Windows the candidates are the agent's ancestors, then the resolved
+// source, then the agent itself. Elsewhere every event rebuilds the process
+// tree, so the full pidChain comes first, then source, then agent.
+// Deduplicated positive integers only.
+function collectCodeBuddyPids(focusEntry, platform) {
+  const pidChain = focusEntry && Array.isArray(focusEntry.pidChain) ? focusEntry.pidChain : [];
+  const agentPid = focusEntry && focusEntry.agentPid;
+  const chain = platform === "win32" ? chainAboveAgent(pidChain, agentPid) : pidChain;
+  const values = [
+    ...chain,
+    focusEntry && focusEntry.sourcePid,
+    agentPid,
+  ];
+  const seen = new Set();
+  const pids = [];
+  for (const value of values) {
+    const numeric = Number(value);
+    if (!Number.isSafeInteger(numeric) || numeric <= 0 || seen.has(numeric)) continue;
+    seen.add(numeric);
+    pids.push(numeric);
+  }
+  return pids;
+}
+
+const CODEBUDDY_CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+// The hook only says "this is an IDE session". The app, its distribution and
+// its route support are verified here, at click time, from the live process.
+// A verified build asks CodeBuddy to open that conversation; otherwise activate
+// that same app; if neither works, fall back to the pre-existing terminal path.
+// Windows passes no openApp: its existing window focus by recorded PID already
+// raises the right edition, so a build without the route goes straight there.
+function focusCodeBuddyIdeTarget({
+  shell,
+  focusEntry,
+  sessionId,
+  requestSource = "dashboard",
+  focusLog = () => {},
+  focusTerminalSession = () => false,
+  findApp = () => Promise.resolve(null),
+  openApp = null,
+  platform = process.platform,
+} = {}) {
+  const id = String(sessionId || (focusEntry && focusEntry.id) || "");
+  const context = `source=${requestSource} sid=${id}`;
+  // Focus logging writes to a file in production. A diagnostic write failure
+  // must never throw out of the click path or change which branch runs.
+  const log = (line) => {
+    try {
+      focusLog(line);
+    } catch {
+      // Diagnostics only.
+    }
+  };
+  log(`focus request ${context} agent=${(focusEntry && focusEntry.agentId) || "-"} target=codebuddy-ide`);
+
+  const runTerminalFallback = () => Promise.resolve()
+    .then(() => focusTerminalSession(focusEntry, id, requestSource))
+    .then((focused) => {
+      if (!focused) {
+        log(`focus result branch=none reason=codebuddy-terminal-fallback-no-source-pid ${context}`);
+      }
+    })
+    .catch((err) => {
+      log(`focus result branch=none reason=codebuddy-terminal-fallback-failed ${context} error=${sanitizeFocusError(err)}`);
+    });
+
+  const fallBackToTerminal = (reason, err) => {
+    const detail = err ? ` error=${sanitizeFocusError(err)}` : "";
+    log(`focus result branch=codebuddy-terminal-fallback reason=${reason} ${context}${detail}`);
+    return runTerminalFallback();
+  };
+
+  const activateApp = (bundlePath) => (typeof openApp !== "function"
+    ? fallBackToTerminal("codebuddy-app-activation-unavailable")
+    : Promise.resolve()
+    .then(() => openApp(bundlePath))
+    .then((result) => {
+      if (result && result.submitted === true) {
+        log(`focus result branch=codebuddy-app reason=${result.reason || "unknown"} ${context}`);
+        return undefined;
+      }
+      return fallBackToTerminal("codebuddy-app-activation-failed");
+    })
+    .catch((err) => fallBackToTerminal("codebuddy-app-activation-failed", err)));
+
+  return Promise.resolve()
+    .then(() => findApp(collectCodeBuddyPids(focusEntry, platform)))
+    .then((app) => {
+      const bundlePath = app && typeof app.bundlePath === "string" ? app.bundlePath : "";
+      if (!bundlePath) return fallBackToTerminal("codebuddy-app-not-found");
+
+      const scheme = app && typeof app.urlScheme === "string" ? app.urlScheme.trim() : "";
+      const rawSessionId = focusEntry && typeof focusEntry.rawSessionId === "string"
+        ? focusEntry.rawSessionId.trim()
+        : "";
+      const canOpenConversation = scheme
+        && CODEBUDDY_URL_SCHEME_RE.test(scheme)
+        && rawSessionId
+        && rawSessionId !== "default"
+        && CODEBUDDY_CONVERSATION_ID_RE.test(rawSessionId)
+        && shell
+        && typeof shell.openExternal === "function";
+      if (!canOpenConversation) return activateApp(bundlePath);
+
+      const url = `${scheme}://codebuddy-ide/conversation/open?id=${rawSessionId}`;
+      return Promise.resolve()
+        .then(() => shell.openExternal(url))
+        .then(() => {
+          log(`focus result branch=codebuddy-conversation reason=opened ${context}`);
+        })
+        .catch((err) => {
+          log(`focus result branch=codebuddy-conversation reason=open-failed ${context} error=${sanitizeFocusError(err)}`);
+          return activateApp(bundlePath);
+        });
+    })
+    .catch((err) => fallBackToTerminal("codebuddy-app-not-found", err));
+}
+
 module.exports = {
+  focusCodeBuddyIdeTarget,
   focusCodexThreadTarget,
   focusDshDesktopTarget,
   launchDshDesktopApp,
+  resolveDshSessionId,
   sanitizeFocusError,
   stripElectronLaunchEnv,
 };

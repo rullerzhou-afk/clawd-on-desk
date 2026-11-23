@@ -148,11 +148,18 @@
 
   function statusMessageText(status) {
     if (!status) return "";
+    let message = status.message || "";
     if (status.hint) {
       const translated = t(status.hint);
-      if (translated && translated !== status.hint) return translated;
+      if (translated && translated !== status.hint) message = translated;
     }
-    return status.message || "";
+    // Optional transport advice supplements the error; it must not hide why
+    // discovery or deployment failed.
+    if (status.helpHint) {
+      const help = t(status.helpHint);
+      if (help && help !== status.helpHint) message = [message, help].filter(Boolean).join(" ");
+    }
+    return message;
   }
 
   function formatTimeAgo(ts) {
@@ -232,6 +239,54 @@
     }).catch((err) => {
       ops.showToast((err && err.message) || t("remoteSshStatus_failed"), { error: true });
     });
+  }
+
+  function buildDiagnosticsText(profile, status) {
+    const currentStatus = status || statusForProfile(profile.id);
+    const progress = (view.progressLog.get(profile.id) || []).slice(-20);
+    const hintText = currentStatus.hint
+      ? (t(currentStatus.hint) || currentStatus.hint)
+      : null;
+    const sshCommand = profile.port && profile.port !== 22
+      ? `ssh -p ${profile.port} ${profile.host}`
+      : `ssh ${profile.host}`;
+    const lines = [
+      `Clawd Remote SSH diagnostics`,
+      `profile: ${profile.label || profile.id}`,
+      `host: ${profile.host}`,
+      `sshPort: ${profile.port || 22}`,
+      `remoteBridgePort: ${profile.remoteForwardPort}`,
+      `tunnelMode: ${currentStatus.tunnelMode || profile.tunnelMode || "reverse"}`,
+      `sshTransportMode: ${profile.sshTransportMode || "auto"}`,
+      `runtimeMode: ${profile.runtimeMode || "account-default"}`,
+      `remotePlatform: ${profile.remotePlatform || "unknown"}`,
+      `status: ${currentStatus.status || "idle"}`,
+      `lastErrorReason: ${currentStatus.lastErrorReason || ""}`,
+      `message: ${currentStatus.message || ""}`,
+      `hint: ${hintText || ""}`,
+      `ingressPort: ${currentStatus.ingressPort || ""}`,
+      `ingressAcceptedCount: ${currentStatus.ingressAcceptedCount ?? ""}`,
+      `ingressRejectedCount: ${currentStatus.ingressRejectedCount ?? ""}`,
+      `lastDeployedAt: ${
+        Number.isFinite(profile.lastDeployedAt)
+          ? new Date(profile.lastDeployedAt).toISOString()
+          : ""
+      }`,
+      "",
+      "Remote service checks:",
+      `${sshCommand} 'ss -ltn | grep :${profile.remoteForwardPort} || netstat -ltn | grep :${profile.remoteForwardPort}'`,
+      `${sshCommand} "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"`,
+      `${sshCommand} 'tail -n 100 ~/.clawd/remote-last-error.log'`,
+    ];
+    if (progress.length > 0) {
+      lines.push("", "Recent deploy/connect progress:");
+      for (const entry of progress) {
+        const when = new Date(entry.ts).toISOString();
+        const detail = statusMessageText(entry);
+        lines.push(`[${when}] ${entry.status} ${entry.step}${detail ? `: ${detail}` : ""}`);
+      }
+    }
+    return lines.join("\n");
   }
 
   // ── Render ──
@@ -562,6 +617,41 @@
     }
     section.appendChild(runtimeRow);
 
+    const tunnelRow = document.createElement("div");
+    tunnelRow.className = "remote-ssh-hooks-row";
+    const tunnelLabel = document.createElement("span");
+    tunnelLabel.className = "remote-ssh-hooks-label";
+    tunnelLabel.textContent = t("remoteSshTunnelModeLabel");
+    tunnelRow.appendChild(tunnelLabel);
+    const tunnelValue = document.createElement("span");
+    tunnelValue.className = "remote-ssh-hooks-value";
+    const selectedTunnelMode = (status && status.tunnelMode)
+      || (profile.tunnelMode === "stdio" ? "stdio" : "reverse");
+    tunnelValue.textContent = t(
+      selectedTunnelMode === "stdio"
+        ? "remoteSshTunnelModeStdio"
+        : "remoteSshTunnelModeReverse"
+    );
+    tunnelRow.appendChild(tunnelValue);
+    section.appendChild(tunnelRow);
+
+    if (Number.isInteger(status.ingressPort)) {
+      const ingressRow = document.createElement("div");
+      ingressRow.className = "remote-ssh-hooks-row";
+      const ingressLabel = document.createElement("span");
+      ingressLabel.className = "remote-ssh-hooks-label";
+      ingressLabel.textContent = t("remoteSshIngressLabel");
+      ingressRow.appendChild(ingressLabel);
+      const ingressValue = document.createElement("span");
+      ingressValue.className = "remote-ssh-hooks-value";
+      ingressValue.textContent = t("remoteSshIngressCounts")
+        .replace("{port}", String(status.ingressPort))
+        .replace("{accepted}", String(status.ingressAcceptedCount || 0))
+        .replace("{rejected}", String(status.ingressRejectedCount || 0));
+      ingressRow.appendChild(ingressValue);
+      section.appendChild(ingressRow);
+    }
+
     if (isolated) {
       const boundary = document.createElement("div");
       boundary.className = "remote-ssh-field-hint";
@@ -704,21 +794,23 @@
                 { ttl: 10000, error: true }
               );
             } else {
-              // Append codex /hooks reminder — Deploy installs the hooks but the
-              // user still has to review them once in codex TUI before they go
-              // live (sha256 trusted_hash gate in ~/.codex/config.toml).
-              ops.showToast(`${t("remoteSshDeploySuccess")} ${t("codexHookReviewReminder")}`,
-                { ttl: 8000 });
+              // Only a verified Codex installer run needs the native /hooks review.
+              const messages = [t("remoteSshDeploySuccess")];
+              if (r.codexHooksInstalled === true) messages.push(t("codexHookReviewReminder"));
+              if (r.dshBridgeInstalled === true && r.dshRestartRequired === true) {
+                messages.push(t("remoteSshDshBridgeInstalledRestartRequired"));
+              } else if (r.dshBridgeInstalled === true) {
+                messages.push(t("remoteSshDshBridgeInstalled"));
+              } else if (r.dshRestartRequired === true) {
+                messages.push(t("remoteSshDshRestartRequired"));
+              }
+              if (r.dshDiscoveryWarning && r.dshDiscoveryWarning.hint === "remoteSshWarnDshDiscoveryIncomplete") {
+                messages.push(t("remoteSshWarnDshDiscoveryIncomplete"));
+              }
+              ops.showToast(messages.join(" "), { ttl: 8000 });
             }
           } else {
-            // Same hint preference as the progress log line — `remote-shell`
-            // failure surfaces the Windows-cmd guidance in zh.
-            let toastMsg = null;
-            if (r && r.hint) {
-              const hintText = t(r.hint);
-              if (hintText && hintText !== r.hint) toastMsg = hintText;
-            }
-            if (!toastMsg) toastMsg = (r && r.message) || "deploy failed";
+            const toastMsg = statusMessageText(r) || "deploy failed";
             ops.showToast(toastMsg, { error: true, ttl: 10000 });
           }
         })
@@ -736,6 +828,23 @@
         });
     });
     actions.appendChild(deployBtn);
+
+    const diagnosticsBtn = helpers.buildButton({
+      labelKey: "remoteSshCopyDiagnostics",
+      size: "compact",
+    });
+    diagnosticsBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(buildDiagnosticsText(profile, status));
+        ops.showToast(t("remoteSshDiagnosticsCopied"));
+      } catch (err) {
+        ops.showToast(
+          `${t("remoteSshDiagnosticsCopyFailed")}: ${err && err.message ? err.message : "clipboard unavailable"}`,
+          { error: true },
+        );
+      }
+    });
+    actions.appendChild(diagnosticsBtn);
     section.appendChild(actions);
 
     // Progress log slice for this profile (multi-profile concurrent deploys
@@ -747,16 +856,10 @@
       for (const ev of profileLog) {
         const line = document.createElement("div");
         line.className = "remote-ssh-progress-line remote-ssh-progress-" + ev.status;
-        const stepLabel = t("remoteSshStep_" + ev.step) || ev.step;
-        // Prefer a localized hint over the raw English message — `remote-shell`
-        // failures carry hint:"remoteSshErrWindowsCmdShell" so zh users see
-        // actionable Chinese guidance instead of an English one-liner.
-        let detail = "";
-        if (ev.hint) {
-          const hintText = t(ev.hint);
-          if (hintText && hintText !== ev.hint) detail = hintText;
-        }
-        if (!detail && ev.message) detail = ev.message;
+        const stepKey = "remoteSshStep_" + ev.step;
+        const translatedStep = t(stepKey);
+        const stepLabel = translatedStep !== stepKey ? translatedStep : ev.step;
+        const detail = statusMessageText(ev);
         line.textContent = `[${ev.status}] ${stepLabel}` + (detail ? ` — ${detail}` : "");
         if (ev.message && detail !== ev.message) line.title = ev.message;
         log.appendChild(line);
@@ -817,6 +920,7 @@
       const label = document.createElement("label");
       label.className = "remote-ssh-field-label";
       label.textContent = t(labelKey);
+      let hintEl = null;
       const picker = helpers.buildSettingsSelect({
         value: String(formData[key]),
         options: options.map((option) => (option && typeof option === "object"
@@ -828,16 +932,17 @@
         onChange(value) {
           const parsed = parseInt(value, 10);
           formData[key] = Number.isFinite(parsed) ? parsed : value;
+          if (hintEl && attrs.hintForValue) hintEl.textContent = attrs.hintForValue(formData[key]);
           return true;
         },
       });
       wrap.appendChild(label);
       wrap.appendChild(picker.element);
-      if (attrs.hint) {
-        const hint = document.createElement("div");
-        hint.className = "remote-ssh-field-hint";
-        hint.textContent = attrs.hint;
-        wrap.appendChild(hint);
+      if (attrs.hint || attrs.hintForValue) {
+        hintEl = document.createElement("div");
+        hintEl.className = "remote-ssh-field-hint";
+        hintEl.textContent = attrs.hintForValue ? attrs.hintForValue(formData[key]) : attrs.hint;
+        wrap.appendChild(hintEl);
       }
       return wrap;
     }
@@ -891,18 +996,23 @@
       || editedStatus.status === "connected"
       || editedStatus.status === "reconnecting"
       || (editedStatus.transportPhase && editedStatus.transportPhase !== "idle");
-    if (!formData.sshTransportMode) formData.sshTransportMode = "auto";
+    if (!formData._transportChoice) {
+      formData._transportChoice = formData.tunnelMode === "stdio"
+        ? "stdio"
+        : (formData.sshTransportMode === "serialized" ? "serialized" : "auto");
+    }
     section.appendChild(selectField(
       "remoteSshFieldTransportMode",
-      "sshTransportMode",
+      "_transportChoice",
       [
         { value: "auto", label: t("remoteSshTransportModeAuto") },
         { value: "serialized", label: t("remoteSshTransportModeSerialized") },
+        { value: "stdio", label: t("remoteSshTransportModeGateway") },
       ],
       {
-        hint: t(transportModeBusy
+        hintForValue: (value) => t(transportModeBusy
           ? "remoteSshTransportModeDisconnectHint"
-          : "remoteSshTransportModeHint"),
+          : (value === "stdio" ? "remoteSshTransportModeGatewayHint" : "remoteSshTransportModeHint")),
         disabled: transportModeBusy,
         className: "",
       }
@@ -960,7 +1070,8 @@
         label: (formData.label || "").trim(),
         host: (formData.host || "").trim(),
         remoteForwardPort: formData.remoteForwardPort,
-        sshTransportMode: formData.sshTransportMode === "serialized" ? "serialized" : "auto",
+        sshTransportMode: formData._transportChoice === "serialized" ? "serialized" : "auto",
+        tunnelMode: formData._transportChoice === "stdio" ? "stdio" : "reverse",
         autoStartCodexMonitor: !!formData.autoStartCodexMonitor,
         chainStatusline: !!formData.chainStatusline,
         connectOnLaunch: !!formData.connectOnLaunch,
@@ -970,9 +1081,11 @@
       if (formData.identityFile && formData.identityFile.trim()) payload.identityFile = formData.identityFile.trim();
       if (formData.hostPrefix && formData.hostPrefix.trim()) payload.hostPrefix = formData.hostPrefix.trim();
       const action = isNew ? "remoteSsh.add" : "remoteSsh.update";
+      const modeChanged = !isNew && (formData.tunnelMode || "reverse") !== payload.tunnelMode;
       callCommand(action, payload).then((r) => {
         if (r && r.status === "ok") {
-          ops.showToast(t(isNew ? "remoteSshAddSuccess" : "remoteSshUpdateSuccess"));
+          const message = t(isNew ? "remoteSshAddSuccess" : "remoteSshUpdateSuccess");
+          ops.showToast(modeChanged ? `${message} ${t("remoteSshTransportModeRedeploy")}` : message);
           view.editing = null;
           if (isNew) view.selectedProfileId = payload.id;
           ops.requestRender({ content: true });

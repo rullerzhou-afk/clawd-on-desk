@@ -209,6 +209,41 @@ function validateTheme(cfg) {
       ) {
         errors.push("rendering.objectChannelFiles must contain SVG basenames only");
       }
+      if (cfg.rendering.discreteSampling !== undefined) {
+        // Discrete sampling only rewrites CSS animation timing on the
+        // document-backed (<object>) channel, so it cannot change the derived
+        // power profile and must not be folded into hasScriptedSvgRuntime:
+        // declaring a rate alone must never opt a theme into the scripted
+        // profile. Each entry describes a file that already routes through
+        // <object>; a key that never reaches that channel would be a silent
+        // no-op, so it is rejected instead of accepted as a typo.
+        const sampling = cfg.rendering.discreteSampling;
+        if (!isPlainObject(sampling)) {
+          errors.push("rendering.discreteSampling must be an object mapping SVG basenames to a sample rate");
+        } else {
+          const objectChannelFiles = Array.isArray(cfg.rendering.objectChannelFiles)
+            ? cfg.rendering.objectChannelFiles.filter((file) => (
+              typeof file === "string"
+              && basenameOnly(file) === file
+              && file.endsWith(".svg")
+            ))
+            : [];
+          const forceObjectChannel = cfg.rendering.svgChannel === "object";
+          for (const [file, rate] of Object.entries(sampling)) {
+            if (typeof file !== "string" || basenameOnly(file) !== file || !file.endsWith(".svg")) {
+              errors.push(`rendering.discreteSampling keys must contain SVG basenames only, got ${JSON.stringify(file)}`);
+              continue;
+            }
+            if (!Number.isInteger(rate) || rate < 1 || rate > 60) {
+              errors.push(`rendering.discreteSampling["${file}"] must be an integer between 1 and 60, got ${JSON.stringify(rate)}`);
+              continue;
+            }
+            if (!forceObjectChannel && !objectChannelFiles.includes(file)) {
+              errors.push(`rendering.discreteSampling["${file}"] must also be listed in rendering.objectChannelFiles (or set rendering.svgChannel to "object")`);
+            }
+          }
+        }
+      }
     }
   }
 
@@ -1363,6 +1398,14 @@ function collectRequiredAssetFiles(theme) {
   for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {
     addThemeAssetFile(files, file);
   }
+  // Discrete sampling names the same document-backed assets again; treat the
+  // basenames as required too so a typo fails asset validation instead of
+  // silently sampling nothing. (The schema rejects keys outside the object
+  // channel, but a forced svgChannel leaves objectChannelFiles empty.)
+  const discreteSampling = theme && theme.rendering && theme.rendering.discreteSampling;
+  for (const file of Object.keys(isPlainObject(discreteSampling) ? discreteSampling : {})) {
+    addThemeAssetFile(files, file);
+  }
   const mirroredFiles = theme && theme.mirroredFiles;
   for (const file of Object.values(isPlainObject(mirroredFiles) ? mirroredFiles : {})) {
     addThemeAssetFile(files, file);
@@ -1463,6 +1506,15 @@ function normalizeRendering(value) {
     seenObjectChannelFiles.add(safeFile);
     objectChannelFiles.push(safeFile);
   }
+  const discreteSampling = {};
+  if (isPlainObject(value.discreteSampling)) {
+    for (const [rawFile, rate] of Object.entries(value.discreteSampling)) {
+      const safeFile = basenameOnly(rawFile);
+      if (!safeFile || !safeFile.endsWith(".svg")) continue;
+      if (!Number.isInteger(rate) || rate < 1 || rate > 60) continue;
+      discreteSampling[safeFile] = rate;
+    }
+  }
   if (isPlainObject(value.lowPowerStaticImageOverrides)) {
     for (const [state, override] of Object.entries(value.lowPowerStaticImageOverrides)) {
       if (!isPlainObject(override)) continue;
@@ -1479,6 +1531,7 @@ function normalizeRendering(value) {
     rendering.lowPowerStaticImageOverrides = lowPowerStaticImageOverrides;
   }
   if (objectChannelFiles.length > 0) rendering.objectChannelFiles = objectChannelFiles;
+  if (Object.keys(discreteSampling).length > 0) rendering.discreteSampling = discreteSampling;
   return {
     ...rendering,
   };

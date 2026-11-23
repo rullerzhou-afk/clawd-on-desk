@@ -8,6 +8,7 @@
 //   reasonix-hook-platform-probe.js — fakes POSIX and records forbidden sync spawns
 //   hook-orca-spy.js       — spies on applyOrcaPaneKey, stubs the resolver
 //   hook-http-blocker.js   — fails all http (existing)
+//   hook-http-hanger.js    — records readiness/HTTP attempts/exit, never settles HTTP
 
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
@@ -86,6 +87,119 @@ function spawnHook({ preload = [], payload, env = {}, home, timeout = 30000 }) {
     windowsHide: true,
     timeout,
   });
+}
+
+async function spawnHangingHook(event, { delayedStdin = false, windowsWrapper = false } = {}) {
+  const home = makeTempDir();
+  writeRuntimeIdentity(home);
+  const record = path.join(home, "hanger.jsonl");
+  const command = windowsWrapper
+    ? reasonixInstallTest.buildReasonixHookCommand(process.execPath, HOOK_PATH, { platform: "win32" })
+    : null;
+  const startedAt = Date.now();
+  const child = spawn(
+    windowsWrapper ? "cmd.exe" : process.execPath,
+    windowsWrapper ? ["/d", "/c", command] : ["--require", HANGER_PATH, HOOK_PATH],
+    {
+      env: hookEnv(home, {
+        CLAWD_TEST_HOOK_HANGER_RECORD: record,
+        ...(windowsWrapper ? { NODE_OPTIONS: `--require="${HANGER_NODE_OPTIONS_PATH}"` } : {}),
+      }),
+      windowsHide: true,
+      timeout: 6500,
+    }
+  );
+  let stdout = "";
+  let stderr = "";
+  let stdinError;
+  let readyPoll;
+  let stdinTimer;
+  let stdinSentAt;
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stdin.on("error", (error) => { stdinError = error.message; });
+  const sendPayload = () => {
+    stdinSentAt = Date.now();
+    child.stdin.end(JSON.stringify({
+      event,
+      sessionId: "hanging-http",
+      cwd: "D:/proj",
+      toolName: "bash",
+    }) + "\n");
+  };
+
+  try {
+    const result = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal, closedAt: Date.now() }));
+    });
+    if (delayedStdin) {
+      readyPoll = setInterval(() => {
+        if (!readRecords(record).some((entry) => entry.kind === "ready")) return;
+        clearInterval(readyPoll);
+        stdinTimer = setTimeout(sendPayload, 1800);
+      }, 10);
+    } else {
+      sendPayload();
+    }
+    const status = await result;
+    return {
+      ...status,
+      event,
+      startedAt,
+      stdinSentAt,
+      stdout,
+      stderr,
+      stdinError,
+      elapsed: status.closedAt - startedAt,
+      records: readRecords(record),
+    };
+  } finally {
+    clearInterval(readyPoll);
+    clearTimeout(stdinTimer);
+  }
+}
+
+function assertHangingHookExit(t, result, { delayedStdin = false, windowsWrapper = false } = {}) {
+  const ready = result.records.find((entry) => entry.kind === "ready");
+  const request = result.records.find((entry) => entry.kind === "request");
+  const exited = result.records.find((entry) => entry.kind === "exit");
+  const budget = windowsWrapper ? 5000 : delayedStdin ? 3000 : 2000;
+  const elapsedBetween = (end, start) => Number.isFinite(end) && Number.isFinite(start) ? end - start : null;
+  // Emit before assertions, including failures/missing receipts. Only elapsed
+  // times and fixture labels are shared: no paths, payloads, PIDs or raw dates.
+  t.diagnostic("reasonix-hook-timing " + JSON.stringify({
+    event: result.event,
+    node: process.version,
+    platform: process.platform,
+    windowsWrapper,
+    delayedStdin,
+    budgetMs: budget,
+    totalMs: result.elapsed,
+    spawnToReadyMs: elapsedBetween(ready?.at, result.startedAt),
+    readyToRequestMs: elapsedBetween(request?.at, ready?.at),
+    stdinSentAfterReadyMs: elapsedBetween(result.stdinSentAt, ready?.at),
+    stdinSentToRequestMs: elapsedBetween(request?.at, result.stdinSentAt),
+    requestToNodeExitMs: elapsedBetween(exited?.at, request?.at),
+    readyToNodeExitMs: elapsedBetween(exited?.at, ready?.at),
+    nodeExitToCloseMs: elapsedBetween(result.closedAt, exited?.at),
+  }));
+  assert.strictEqual(result.code, 0);
+  assert.strictEqual(result.signal, null);
+  assert.strictEqual(result.stdout, "");
+  assert.strictEqual(result.stderr, "");
+  assert.strictEqual(result.stdinError, undefined);
+  assert.ok(ready, "Node must reach the HTTP hanger preloader");
+  assert.ok(request, "hook must attempt HTTP before failing open");
+  assert.ok(exited, "Node must record its exit before the wrapper closes");
+  if (delayedStdin) {
+    assert.ok(request.at - ready.at >= 1800, "stdin must arrive 1800ms after Node readiness");
+  }
+  // Check Node separately: a fast local PowerShell launch must not conceal
+  // the old 0.7–1s wait after stdin that exhausted the reporter's 5s budget.
+  const deliveryElapsed = exited.at - request.at;
+  assert.ok(deliveryElapsed < 500, `blocking HTTP must fail open promptly (${deliveryElapsed}ms)`);
+  assert.ok(result.elapsed < budget, `hook must leave outer-wrapper headroom (${result.elapsed}ms, budget ${budget}ms)`);
 }
 
 describe("reasonix hook delivery", () => {
@@ -274,42 +388,80 @@ describe("reasonix hook delivery", () => {
       env: hookEnv(home),
     });
     // Never write and never close stdin: readStdinJsonDetailed's 2s window must
-    // settle and fail open inside the 4s in-process deadline, leaving another
-    // second for Reasonix's outer PowerShell/cmd wrapper.
+    // settle and fail open inside the 2.2s in-process deadline, leaving time
+    // for Reasonix's outer PowerShell/cmd wrapper.
     const code = await new Promise((resolve) => child.on("exit", resolve));
     const elapsed = Date.now() - startedAt;
 
     assert.strictEqual(code, 0);
     assert.ok(elapsed >= 1800, `hook should wait out most of the stdin window (${elapsed}ms)`);
-    assert.ok(elapsed < 4000, `hook must leave outer-wrapper headroom (${elapsed}ms)`);
+    assert.ok(elapsed < 3000, `hook must leave outer-wrapper headroom (${elapsed}ms)`);
   });
 
-  it("keeps the real Windows EncodedCommand wrapper below Reasonix's 5s timeout", { skip: process.platform !== "win32" }, () => {
-    const home = makeTempDir();
-    const command = reasonixInstallTest.buildReasonixHookCommand(process.execPath, HOOK_PATH, {
-      platform: "win32",
+  for (const event of ["UserPromptSubmit", "PreToolUse"]) {
+    it(`keeps ${event} delivery and offline failure silent`, () => {
+      for (const preload of [RECORDER_PATH, BLOCKER_PATH]) {
+        const home = makeTempDir();
+        const record = path.join(home, "http.jsonl");
+        const startedAt = Date.now();
+        const result = spawnHook({
+          preload: [preload],
+          payload: { event, sessionId: "delivery-or-offline", cwd: "D:/proj", toolName: "bash" },
+          env: { CLAWD_HOOK_HTTP_RECORD: record },
+          home,
+        });
+        assert.strictEqual(result.status, 0);
+        assert.strictEqual(result.stdout, "");
+        assert.strictEqual(result.stderr, "");
+        assert.ok(Date.now() - startedAt < 2000, "healthy/offline HTTP must not wait for the safety deadline");
+        if (preload === RECORDER_PATH) {
+          const posts = readRecords(record).filter((entry) => entry.method === "POST");
+          assert.strictEqual(posts.length, 1);
+          assert.strictEqual(JSON.parse(posts[0].body).event, event);
+        }
+      }
     });
+
+    for (const delayedStdin of [false, true]) {
+      const timing = delayedStdin ? "1800ms-late" : "immediate";
+      it(`fails open for ${event} with ${timing} stdin and hanging HTTP`, async (t) => {
+        const result = await spawnHangingHook(event, { delayedStdin });
+        assertHangingHookExit(t, result, { delayedStdin });
+      });
+
+      it(`keeps the real Windows wrapper below 5s for ${event} with ${timing} stdin and hanging HTTP`, {
+        skip: process.platform !== "win32",
+      }, async (t) => {
+        const result = await spawnHangingHook(event, { delayedStdin, windowsWrapper: true });
+        assertHangingHookExit(t, result, { delayedStdin, windowsWrapper: true });
+      });
+    }
+  }
+
+  it("keeps the longer non-blocking budget after a slow process snapshot", () => {
+    const home = makeTempDir();
+    writeRuntimeIdentity(home);
+    const record = path.join(home, "hanger.jsonl");
     const startedAt = Date.now();
-    const result = spawnSync("cmd.exe", ["/d", "/c", command], {
-      input: JSON.stringify({
-        event: "PreToolUse",
-        sessionId: "native-wrapper",
-        cwd: "D:/proj",
-        toolName: "bash",
-      }) + "\n",
-      encoding: "utf8",
-      env: hookEnv(home, { NODE_OPTIONS: `--require="${HANGER_NODE_OPTIONS_PATH}"` }),
-      windowsHide: true,
-      timeout: 6500,
+    const result = spawnHook({
+      preload: [SNAPSHOT_FAKE_PATH, HANGER_PATH],
+      payload: { event: "PostToolUse", sessionId: "slow-nonblocking", cwd: "D:/proj", toolName: "bash" },
+      env: {
+        CLAWD_TEST_REASONIX_SNAPSHOT_DELAY_MS: "3000",
+        CLAWD_TEST_HOOK_HANGER_RECORD: record,
+      },
+      home,
     });
     const elapsed = Date.now() - startedAt;
-
-    assert.strictEqual(result.error, undefined, `wrapper timeout/error: ${result.error && result.error.message}`);
     assert.strictEqual(result.status, 0);
     assert.strictEqual(result.stdout, "");
     assert.strictEqual(result.stderr, "");
-    assert.ok(elapsed >= 3000, `HTTP hanger must reach the hook safety timer (${elapsed}ms)`);
-    assert.ok(elapsed < 5000, `wrapper must finish before Reasonix blocks the turn (${elapsed}ms)`);
+    const records = readRecords(record);
+    const ready = records.find((entry) => entry.kind === "ready");
+    const request = records.find((entry) => entry.kind === "request");
+    assert.ok(ready && request, "non-blocking event must reach HTTP after its snapshot");
+    assert.ok(request.at - ready.at >= 3000, "test must exercise the slow resolver");
+    assert.ok(elapsed >= 3300 && elapsed < 6000, `non-blocking hook must retain its longer budget (${elapsed}ms)`);
   });
 
   it("never starts a POSIX process walk from blocking events", () => {

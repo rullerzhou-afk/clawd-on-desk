@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { buildPermissionUrl } = require("../hooks/server-config");
-const { classifyManagedClaudeStateHookCommand, stripUtf8Bom } = require("../hooks/json-utils");
+const { classifyManagedClaudeStateHookCommand, getClaudeHookCommand, claudeHookHasMarker, stripUtf8Bom } = require("../hooks/json-utils");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
@@ -37,11 +37,11 @@ function entriesContainCommandMarker(entries, marker) {
   if (!Array.isArray(entries)) return false;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
-    if (typeof entry.command === "string" && entry.command.includes(marker)) return true;
+    if (claudeHookHasMarker(entry, marker)) return true;
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
       if (!hook || typeof hook !== "object") continue;
-      if (typeof hook.command === "string" && hook.command.includes(marker)) return true;
+      if (claudeHookHasMarker(hook, marker)) return true;
     }
   }
   return false;
@@ -110,12 +110,12 @@ function countCommandHooksInEntries(entries, options = {}) {
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     if (entry.type === "http") continue;
-    if (typeof entry.command === "string" && !isExcluded(entry.command)) count += 1;
+    if (typeof entry.command === "string" && !isExcluded(getClaudeHookCommand(entry))) count += 1;
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
       if (!hook || typeof hook !== "object") continue;
       if (hook.type === "http") continue;
-      if (typeof hook.command === "string" && !isExcluded(hook.command)) count += 1;
+      if (typeof hook.command === "string" && !isExcluded(getClaudeHookCommand(hook))) count += 1;
     }
   }
   return count;

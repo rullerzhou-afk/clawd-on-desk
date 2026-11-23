@@ -69,6 +69,9 @@ contextBridge.exposeInMainWorld("dashboardAPI", {
   refreshKimiQuota: () => ipcRenderer.invoke("dashboard:refresh-kimi-quota"),
   focusSession: (sessionId) => ipcRenderer.send("dashboard:focus-session", sessionId),
   hideSession: (sessionId) => ipcRenderer.invoke("dashboard:hide-session", sessionId),
+  ...(process.platform === "win32" ? {
+    openSessionInTerminal: (sessionId) => ipcRenderer.invoke("dashboard:open-session-terminal", sessionId),
+  } : {}),
   openSessionFolder: (sessionId) => ipcRenderer.invoke("dashboard:open-session-folder", sessionId),
   setSessionAlias: (payload) => ipcRenderer.invoke("dashboard:set-session-alias", payload),
   setSessionAutomationOverride: (payload) =>

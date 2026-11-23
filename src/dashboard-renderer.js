@@ -27,6 +27,7 @@ let activeEdit = null;
 
 const SESSION_FOLDER_FEEDBACK_MS = 4000;
 const sessionFolderActionState = new Map();
+const sessionTerminalActionState = new Map();
 const sessionAutomationActionState = new Map();
 let sessionAutomationPickers = [];
 
@@ -606,7 +607,13 @@ function formatTokenCount(value) {
 
 function contextUsageText(session) {
   const usage = session && session.contextUsage;
-  if (!usage || !Number.isFinite(Number(usage.used))) return "";
+  if (!usage) return "";
+  if (!Number.isFinite(Number(usage.used))) {
+    // Percent-only usage (token counts unavailable): never claim "0 tokens".
+    return Number.isFinite(Number(usage.percent))
+      ? `${t("dashboardContextUsage")}: ${Math.max(0, Math.min(100, Math.round(Number(usage.percent))))}%`
+      : "";
+  }
   const used = formatTokenCount(usage.used);
   if (Number.isFinite(Number(usage.limit))) {
     const limit = formatTokenCount(usage.limit);
@@ -644,6 +651,7 @@ function quotaSeverityClass(usedPercent) {
 const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
 const PROVIDER_STALE_AFTER_MS = Object.freeze({
   kimiQuota: 7 * 60 * 1000,
+  deepseekQuota: 12 * 60 * 1000,
 });
 
 function quotaStaleAfterMs(providerKey) {
@@ -884,14 +892,23 @@ function buildQuotaSourceHeader(sourceEntry, providerEntry, baseLabel, providerK
   return parts.length ? parts.join(" · ") : null;
 }
 
-function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey, ringSlot) {
+// Mirrored in quota-ring-renderer.js; keep money formatting in sync.
+function formatBalanceAmount(amount, currency) {
+  const symbol = currency === "USD" ? "$" : "¥";
+  return symbol + (amount >= 100 ? Math.round(amount).toString() : amount.toFixed(2));
+}
+
+function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey, ringSlot, presentation = {}) {
   const half = document.createElement("div");
   half.className = "quota-half";
 
   const labelRow = document.createElement("div");
   labelRow.className = "quota-label-row";
   labelRow.appendChild(createText("span", "quota-label", labelText));
-  const percentText = `${bucket.usedPercent}%`;
+  const isBalance = presentation.kind === "balance";
+  const percentText = isBalance
+    ? t("dashboardDeepseekBalanceBaseline").replace("{amount}", formatBalanceAmount(bucket.baseline, bucket.currency))
+    : `${bucket.usedPercent}%`;
   let resetText = "";
   if (Number.isFinite(bucket.resetAt)) {
     resetText = resetStyle === "date"
@@ -914,15 +931,18 @@ function buildQuotaHalfBar(labelText, bucket, resetStyle, providerKey, ringSlot)
   // Orbit coin uses for the same logical window; the sev- class overrides it
   // on warning/hot, again exactly like the coin's fill.
   fill.className = `quota-bar-fill pv-${providerKey} rg-${ringSlot} ${quotaSeverityClass(bucket.usedPercent)}`;
-  fill.style.width = `${Math.max(0, Math.min(100, bucket.usedPercent))}%`;
+  const percent = isBalance ? 100 - bucket.usedPercent : bucket.usedPercent;
+  fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   track.appendChild(fill);
   half.appendChild(track);
 
   return half;
 }
 
-function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKey) {
+function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKey, presentation = {}) {
   if (!fiveHourBucket && !weeklyBucket) return null;
+  if (presentation.kind === "balance"
+      && !globalThis.ClawdQuotaBalance.isDrawableBalanceBucket(fiveHourBucket)) return null;
   const row = document.createElement("div");
   row.className = "quota-group-row";
   if (headerText) row.appendChild(createText("div", "quota-group-header", headerText));
@@ -930,11 +950,14 @@ function buildQuotaGroupRow(headerText, fiveHourBucket, weeklyBucket, providerKe
   halves.className = "quota-halves";
   if (fiveHourBucket) {
     halves.appendChild(buildQuotaHalfBar(
-      formatQuotaWindowLabel(fiveHourBucket, t("dashboardQuotaFiveHour")),
+      presentation.kind === "balance"
+        ? formatBalanceAmount(fiveHourBucket.amount, fiveHourBucket.currency)
+        : formatQuotaWindowLabel(fiveHourBucket, t("dashboardQuotaFiveHour")),
       fiveHourBucket,
       quotaResetStyle(fiveHourBucket, "countdown"),
       providerKey,
-      "outer"
+      "outer",
+      presentation
     ));
   }
   if (weeklyBucket) {
@@ -1095,6 +1118,18 @@ function renderQuotaSummary(snapshot) {
     kimiConnected ? buildKimiQuotaRefreshControl() : []
   );
   if (kimiSection) sections.push(kimiSection);
+
+  const deepseekRows = sources.map((source) => {
+    const provider = source.deepseekQuota;
+    const balance = provider?.group?.deepseekBalance;
+    if (!balance) return null;
+    return buildQuotaGroupRow(
+      buildQuotaSourceHeader(source, provider, null, "deepseekQuota"),
+      balance, null, "deepseekQuota", { kind: "balance" }
+    );
+  });
+  const deepseekSection = buildQuotaSection("dashboardQuotaSectionDeepseek", deepseekRows);
+  if (deepseekSection) sections.push(deepseekSection);
 
   if (!sections.length) {
     quotaSummaryEl.hidden = true;
@@ -1257,6 +1292,18 @@ function appendMeta(main, session, now) {
   badge.appendChild(document.createTextNode(badgeLabel(session.badge)));
 
   meta.appendChild(document.createTextNode(agentLabel(session.agentId, session.agentName)));
+  // Claude profile chip ("work"), right after the agent so the clipped end of
+  // this single-line row never hides it.
+  if (session.claudeProfileLabel) {
+    meta.appendChild(document.createTextNode(" "));
+    const profileBadge = document.createElement("span");
+    profileBadge.className = "profile-badge";
+    profileBadge.textContent = session.claudeProfileLabel;
+    profileBadge.title = session.claudeConfigDir
+      ? `${t("sessionClaudeProfile")}: ${session.claudeConfigDir}`
+      : t("sessionClaudeProfile");
+    meta.appendChild(profileBadge);
+  }
   if (session.codexProfileLabel) {
     meta.appendChild(document.createTextNode(" · "));
     const profileBadge = document.createElement("span");
@@ -1317,6 +1364,16 @@ function appendModel(main, session) {
   const row = createText("div", "model-row", `${t("dashboardModel")}: ${session.model}`);
   row.title = session.model;
   main.appendChild(row);
+}
+
+function appendPlanProgress(main, session) {
+  if (!session.planProgress) return;
+  const plan = session.planProgress;
+  const text = t("codexPlanProgress")
+    .replace("{completed}", plan.completed)
+    .replace("{total}", plan.total)
+    .replace("{percent}", plan.percent);
+  main.appendChild(createText("div", "plan-progress-row", text));
 }
 
 function appendContextUsage(main, session) {
@@ -1436,6 +1493,7 @@ function createCard(session, now) {
   main.className = "main";
   main.appendChild(createTitle(session));
   appendMeta(main, session, now);
+  appendPlanProgress(main, session);
   appendPath(main, session);
   appendModel(main, session);
   appendEvent(main, session, now);
@@ -1451,7 +1509,11 @@ function createCard(session, now) {
     const button = document.createElement("button");
     button.type = "button";
     const focusTargetType = session.focusTarget && session.focusTarget.type;
-    button.textContent = focusTargetType === "codex-thread"
+    button.textContent = focusTargetType === "codebuddy-ide"
+      ? t("dashboardOpenCodeBuddy")
+      : focusTargetType === "codex-app"
+      ? t("dashboardOpenCodexApp")
+      : focusTargetType === "codex-thread"
       ? t("dashboardOpenCodexSession")
       : focusTargetType === "dsh-desktop"
         ? t("dashboardOpenDshDesktop")
@@ -1518,6 +1580,37 @@ function createCard(session, now) {
       });
       actions.appendChild(openFolder);
     }
+  }
+
+  if (session.canOpenInTerminal === true && typeof window.dashboardAPI.openSessionInTerminal === "function") {
+    const terminalState = sessionTerminalActionState.get(session.id) || {};
+    const openTerminal = document.createElement("button");
+    openTerminal.type = "button";
+    openTerminal.className = "open-terminal-button";
+    openTerminal.textContent = t("dashboardOpenInTerminal");
+    openTerminal.disabled = terminalState.pending === true;
+    const feedback = createText("span", "session-action-feedback", terminalState.feedback || "");
+    feedback.setAttribute("aria-live", "polite");
+    openTerminal.addEventListener("click", async () => {
+      if (sessionTerminalActionState.get(session.id)?.pending) return;
+      sessionTerminalActionState.set(session.id, { pending: true });
+      render();
+      let feedbackText = "";
+      try {
+        const result = await window.dashboardAPI.openSessionInTerminal(session.id);
+        if (!result || result.status !== "ok") {
+          const key = result?.reason === "directory" ? "dashboardOpenTerminalDirectory"
+            : result?.reason === "opencode" ? "dashboardOpenTerminalOpencode"
+            : result?.status === "unavailable" ? "dashboardOpenTerminalUnavailable"
+            : "dashboardOpenTerminalFailed";
+          feedbackText = t(key);
+        }
+      } catch { feedbackText = t("dashboardOpenTerminalFailed"); }
+      sessionTerminalActionState.set(session.id, { pending: false, feedback: feedbackText });
+      render();
+    });
+    actions.appendChild(openTerminal);
+    actions.appendChild(feedback);
   }
 
   if (session.requiresCompletionAck === true) {

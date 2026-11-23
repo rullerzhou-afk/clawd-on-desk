@@ -19,6 +19,13 @@ const HOOK_MAP = {
   PreCompact:       { state: "sweeping",     event: "PreCompact" },
 };
 
+// A completed turn (Stop) is not the end of a WorkBuddy conversation.
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
 // WorkBuddy's own lifecycle chatter, not a blocked request for the user.
 // `idle_prompt` is a "send another message" reminder (observed on 5.2.6,
 // ~60 seconds after Stop; 5.6.2's per-turn host exits before it can fire, so it
@@ -251,11 +258,7 @@ function run() {
       // that — so no state is lost by answering early.
       writeStdoutOnce(outLine);
 
-      if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
-
       const cwd = (payload && payload.cwd) || "";
-
-      const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
 
       const body = { state, session_id: sessionId, event };
       body.agent_id = "workbuddy";
@@ -283,6 +286,18 @@ function run() {
         body.host = readHostPrefix();
         applyOrcaPaneKey(body);
       } else {
+        // #634: each hook is a fresh Node process, so the resolver's in-memory
+        // prewarm alone cannot prevent a Windows snapshot on every tool event.
+        // SessionStart refreshes the shared cache; prompt/end never spawn.
+        // WorkBuddy can send the first prompt before SessionStart: that miss
+        // omits metadata until start (or an ordinary event) populates it.
+        const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve({
+          namespace: "workbuddy",
+          sessionId,
+          cacheCwd: typeof cwd === "string" ? cwd : "",
+          lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+          cacheable: sessionId !== "default" && typeof cwd === "string" && !!cwd.trim(),
+        });
         body.source_pid = stablePid;
         if (detectedEditor) body.editor = detectedEditor;
         if (agentPid) body.agent_pid = agentPid;

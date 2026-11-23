@@ -116,6 +116,18 @@ describe("Windows NSIS Claude hook uninstall cleanup", () => {
     assert.match(nsis, /nsExec::ExecToLog 'powershell\.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "\$INSTDIR\\uninstall-claude-hooks\.ps1" -InstallDir "\$INSTDIR"'/);
   });
 
+  it("issue #1293: skips both integration cleanups during NSIS upgrades", () => {
+    const nsis = readText(NSIS_INCLUDE).replace(/\r\n/g, "\n");
+    const uninstall = nsis.match(/!macro customUnInstall\n([\s\S]*?)!macroend/);
+    assert.ok(uninstall, "customUnInstall should exist");
+
+    const guarded = uninstall[1].match(/\$\{ifNot\} \$\{isUpdated\}\n([\s\S]*?)\n\s*\$\{endIf\}/);
+    assert.ok(guarded, "customUnInstall should guard cleanup with ${ifNot} ${isUpdated}");
+    assert.match(guarded[1], /FileRead \$0 \$1/);
+    assert.match(guarded[1], /nsExec::ExecToLog '[^\n]*cleanup-integrations\.js/);
+    assert.match(guarded[1], /nsExec::ExecToLog 'powershell\.exe [^\n]*uninstall-claude-hooks\.ps1/);
+  });
+
   it("keeps the PowerShell permission port list in sync with SERVER_PORTS", () => {
     const script = readText(CLEANUP_SCRIPT);
     const match = script.match(/\$ClawdPermissionPorts\s*=\s*@\(([^)]*)\)/);
@@ -140,6 +152,39 @@ describe("Windows NSIS Claude hook uninstall cleanup", () => {
     assert.match(script, /ConvertTo-Json -InputObject \$settings -Depth 100/);
     assert.match(script, /\.PSObject\.Properties/);
     assert.match(script, /\[object\[\]\]\$nextEntries\.ToArray\(\)/);
+  });
+
+  it("issue #1293: fallback cleanup checks exec args[0] before legacy command markers", () => {
+    const script = readText(CLEANUP_SCRIPT);
+    const helper = script.slice(script.indexOf("function Test-ClawdCommandHook"), script.indexOf("function Test-ClawdPermissionUrl"));
+    assert.match(helper, /Get-JsonProperty \$Hook "args"/);
+    assert.match(helper, /\$argsProperty\.Value -is \[System\.Array\]/);
+    assert.match(helper, /\$argsProperty\.Value\[0\]/);
+    assert.match(helper, /\$ClawdCommandMarkers -ccontains \$scriptName/);
+    assert.match(script, /Test-ClawdCommandHook \$entry/);
+    assert.match(script, /Test-ClawdCommandHook \$hook/);
+  });
+
+  it("issue #1293: PowerShell removes exec state and auto-start hooks, preserving foreign args and basenames", {
+    skip: process.platform !== "win32" ? "requires Windows PowerShell" : false,
+  }, () => {
+    const command = "C:\\Program Files\\nodejs\\node.exe";
+    const exec = (script, ...args) => ({ type: "command", command, args: [script, ...args] });
+    const foreign = [exec("C:/foreign.js", "clawd-hook.js"), exec("C:/clawd-hook.js.bak"),
+      exec("C:/foreign.js", "auto-start.js"), exec("C:/auto-start.js.bak")];
+    const fixture = makeFixture(JSON.stringify({ hooks: {
+      Stop: [exec("C:/Clawd/clawd-hook.js", "Stop"), { hooks: [exec("C:\\Clawd\\clawd-hook.js", "Stop"), ...foreign] }],
+      SessionStart: [{ hooks: [exec("C:/Clawd/auto-start.js"), exec("C:/Clawd/auto-start.sh")] }],
+    } }));
+    try {
+      runCleanup(fixture);
+      assert.deepStrictEqual(readJson(fixture.settingsPath).hooks, { Stop: [{ hooks: foreign }] });
+      const backups = fs.readdirSync(fixture.claudeDir).filter((name) => name.endsWith(".bak"));
+      runCleanup(fixture);
+      assert.deepStrictEqual(fs.readdirSync(fixture.claudeDir).filter((name) => name.endsWith(".bak")), backups);
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("removes only Clawd hooks while preserving third-party hooks and array shape", {

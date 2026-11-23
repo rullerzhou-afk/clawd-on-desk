@@ -4,6 +4,7 @@ const {
   buildLatestLocalCodexProcessIds,
   isSupersededLocalCodexProcessSession,
 } = require("./state-session-dedupe");
+const { isVerifiedChildProjection } = require("./codex-subagent-presentation");
 
 const SLEEP_SEQUENCE_STATES = ["yawning", "dozing", "collapsing", "sleeping", "waking"];
 
@@ -14,6 +15,7 @@ const STATE_PRIORITY = Object.freeze({
   attention: 5,
   carrying: 4,
   juggling: 4,
+  executing: 3.5,
   working: 3,
   thinking: 2,
   idle: 1,
@@ -55,7 +57,8 @@ function resolveDominantSessionState(sessions, options = {}) {
   for (const [id, session] of normalizeSessionsIterable(sessions)) {
     hasSession = true;
     if (session && session.headless) continue;
-    if (isSupersededLocalCodexProcessSession(id, session, latestLocalCodexProcessIds)) continue;
+    if (isSupersededLocalCodexProcessSession(id, session, latestLocalCodexProcessIds)
+      && !isVerifiedChildProjection(session)) continue;
     hasNonHeadless = true;
     const state = session && session.state;
     if (getStatePriority(state, statePriority) > getStatePriority(best, statePriority)) best = state;

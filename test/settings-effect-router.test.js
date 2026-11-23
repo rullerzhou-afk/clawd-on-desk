@@ -61,6 +61,7 @@ function createHarness(options = {}) {
     clearCodexNotifyBubbles: (...args) => calls.push(["clearCodexNotifyBubbles", ...args]),
     clearCodexUserInputBubbles: (...args) => calls.push(["clearCodexUserInputBubbles", ...args]),
     clearKimiNotifyBubbles: (...args) => calls.push(["clearKimiNotifyBubbles", ...args]),
+    clearKiroDesktopReminderCards: (...args) => calls.push(["clearKiroDesktopReminderCards", ...args]),
     refreshPassiveNotifyAutoClose: () => calls.push(["refreshPassiveNotifyAutoClose"]),
     hideUpdateBubbleForPolicy: () => calls.push(["hideUpdateBubbleForPolicy"]),
     refreshUpdateBubbleAutoClose: () => calls.push(["refreshUpdateBubbleAutoClose"]),
@@ -90,6 +91,21 @@ function makeWindow(name, calls, options = {}) {
 }
 
 describe("settings-effect-router", () => {
+  it("refreshes HUD preference changes in both directions without lifecycle cleanup or permission decisions", () => {
+    const { calls, emit } = createHarness();
+    for (const changes of [
+      { sessionHudHideCompletedCodexEphemeral: true }, { sessionHudHideCompletedCodexEphemeral: false },
+      { sessionHudHideActiveCodexEphemeral: true }, { sessionHudHideActiveCodexEphemeral: false },
+      { sessionHudHideCompletedCodexEphemeral: true, sessionHudHideActiveCodexEphemeral: true },
+    ]) {
+      calls.length = 0;
+      emit(changes);
+      assert.deepStrictEqual(calls, [
+        ["updateMirrors", changes],
+        ["emitSessionSnapshot", { force: true }],
+      ]);
+    }
+  });
   it("updates mirrors before tray and dock side effects", () => {
     const calls = [];
     const mirror = {};
@@ -137,6 +153,7 @@ describe("settings-effect-router", () => {
     emit({ hideBubbles: true });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { hideBubbles: true }],
+      ["clearKiroDesktopReminderCards", "settings-policy-disabled"],
       ["syncPermissionShortcuts"],
       ["dismissInteractivePermissionBubbles"],
       ["clearCodexNotifyBubbles", undefined, "settings-policy-disabled"],
@@ -196,6 +213,7 @@ describe("settings-effect-router", () => {
     emit({ permissionBubblesEnabled: false });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { permissionBubblesEnabled: false }],
+      ["clearKiroDesktopReminderCards", "settings-policy-disabled"],
       ["syncPermissionShortcuts"],
       ["dismissInteractivePermissionBubbles"],
       ["rebuildAllMenus"],
@@ -206,6 +224,7 @@ describe("settings-effect-router", () => {
     emit({ notificationBubbleAutoCloseSeconds: 0 });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { notificationBubbleAutoCloseSeconds: 0 }],
+      ["clearKiroDesktopReminderCards", "settings-policy-disabled"],
       ["clearCodexNotifyBubbles", undefined, "settings-policy-disabled"],
       ["clearCodexUserInputBubbles", undefined, undefined, "settings-policy-disabled"],
       ["clearKimiNotifyBubbles", undefined, "settings-policy-disabled"],
@@ -419,6 +438,21 @@ describe("settings-effect-router", () => {
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { allowEdgePinning: false }],
       ["reclampPetAfterEdgePinningChange"],
+    ]);
+  });
+
+  it("delegates eye tracking changes to the injected tick transition (#1276)", () => {
+    const { calls, emit } = createHarness({
+      routerOptions: {
+        applyEyeTrackingEnabledChange: (enabled) => calls.push(["applyEyeTrackingEnabledChange", enabled]),
+      },
+    });
+
+    emit({ eyeTrackingEnabled: false });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { eyeTrackingEnabled: false }],
+      ["applyEyeTrackingEnabledChange", false],
     ]);
   });
 
@@ -830,5 +864,57 @@ describe("settings-effect-router", () => {
     emit({ theme: "calico", shortcuts: { togglePet: "Ctrl+Shift+P" } });
 
     assert.deepStrictEqual(calls, []);
+  });
+});
+
+
+for (const changes of [
+  { notificationBubbleAutoCloseSeconds: 0 },
+  { hideBubbles: true },
+  { permissionBubblesEnabled: false },
+]) {
+  it(`kiro-desktop: policy change ${Object.keys(changes)[0]} clears reminder cards`, () => {
+    const harness = createHarness();
+    harness.emit(changes);
+    assert.ok(harness.calls.some(call => call[0] === "clearKiroDesktopReminderCards"));
+    harness.router.dispose();
+  });
+}
+
+describe("issue #1323: theme appearance routing", () => {
+  it("issue #1323: commits route themeAppearance to the appearance sync", () => {
+    const synced = [];
+    const { emit } = createHarness({
+      routerOptions: {
+        syncActiveThemeAppearance: () => synced.push("sync"),
+      },
+    });
+
+    emit({ themeAppearance: { night: "dark" } });
+
+    assert.deepStrictEqual(synced, ["sync"]);
+  });
+
+  it("issue #1323: a throwing appearance sync is contained by safeCall", () => {
+    const { emit, logs } = createHarness({
+      routerOptions: {
+        syncActiveThemeAppearance: () => {
+          throw new Error("sync exploded");
+        },
+      },
+    });
+
+    assert.doesNotThrow(() => emit({ themeAppearance: { night: "light" } }));
+    assert.ok(logs.some((entry) => String(entry[0]).includes("appearance")));
+  });
+});
+
+
+describe("quota ring selection effects", () => {
+  it("remeasures and repositions when manual provider selection changes", () => {
+    const { emit, calls } = createHarness();
+    emit({ quotaRingShownProviders: ["kimiQuota"] });
+    assert.strictEqual(calls.filter(call => call[0] === "syncSessionHudVisibility").length, 1);
+    assert.strictEqual(calls.filter(call => call[0] === "repositionFloatingBubbles").length, 1);
   });
 });

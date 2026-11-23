@@ -1,0 +1,23 @@
+# APT plan review adjudication
+
+Reviewed object: original plan SHA-256 `5459e4acbc9b631859103b6512321a0542479aac7223f33dfe9e482524f6e296`, application baseline `6573eab7`. Claude job `d1f6bf88-d192-42c7-9e76-93d860b45518`, session `e1eb2dfc-36d7-4748-8519-42d2bf2e0191`, completed round 1. Backend/model/effort verified by native SDK completion: Claude / claude-opus-5-5 / max. Round 0 was stopped during open-ended research and is incomplete, not a second review. Kimi did not review.
+
+Full unmodified response: [Claude](claude-plan-r1/response-0001.md). Duplicate formal result is preserved by the exporter, not counted as another opinion. Provenance SHA-256: `2ee208fa8f204ab813e4ed5bf8c133f89262308bc5375559618a77855ad24067`. Backup status: LOCAL_ONLY until the selected documentation is committed/pushed; full private tool logs are not published.
+
+| ID | Claude source / position | 云宝 decision and evidence | Remaining validation |
+| --- | --- | --- | --- |
+| B1 | §I B1: use three /etc conffiles; remove leaves trust active | Accept. Prior rootless dpkg probe confirms preservation and purge behavior. Explicitly document the intentional keyring path deviation and freeze source/pin templates. | Full unprivileged-source and CI root lifecycle including .pref, edits, deleted files, no forced conffile flags. |
+| B2 | §I B2: release tag YAML cannot hold main-only signing trust | Accept. release-process.md already documents tag workflow semantics. Separate no-secret dispatcher from main-only publication, with protected environments. | Actual dispatcher and environment policy activation after reviewable PR. |
+| B3 | §I B3: APPIMAGE alone is untrusted; prove mount ownership | Accept. Independently read hooks/install.js:578+, locked electron-updater main exports and AppImageUpdater install path. It does replace the APPIMAGE file. Use absolute mount containment and explicit AppImageUpdater. | Unit tests for foreign env/path containment; CI asserts artifact markers. |
+| B4 | §I B4: migration needs discoverable external entry and activation order | Accept. Existing frozen versions cannot acquire new button behavior without upgrading. Update all README/install/limitations entry points and provide first-release note text. Publish existing packages/guide before app release. Keep .deb updater metadata. | Production deployment and app release are separate final actions; no issue reply sent. |
+| C1 | §II.1 ignored files | Accept. Add explicit tracked allowlists; inspect staged diff for all deliverables. | Commit inventory. |
+| C2 | §II.2 updater entry points and activeCheck | Accept. Central route must prevent even factory construction, preserve pending state and allow retry after browser open. | App routing tests and GUI limitations recorded. |
+| C3 | §II.3 quit before APT | Accept. Disk package replacement while hooks are loaded is avoidable by telling users to quit; no runtime orchestration is added. | CI actual .deb upgrade, GUI smoke remains separate. |
+| C4 | §II.4 hostname pin | Accept. Use hostname origin pin, negative default, named packages at 500. Test with injected unrelated newer package, don't rely on textual template assertions. | Real apt-cache policy under isolation. |
+| C5 | §II.5 Release/by-hash/key bytes | Accept. Immutable identity fields; all bootstrap included in binary-amd64; gpgv uses extracted bootstrap key bytes. | Tamper/incorrect key and metadata integration. |
+| C6 | §II.6 immutable assets/rollback | Accept. GitHub 1.2/1.3/1.4 asset digests were independently queried and are present. Require matching digest, numeric version sort and authenticated prior snapshot; no default rollback. | Failed staging cannot deploy; previous index authentication tests. |
+| C7 | §II.7 Pages limits | Accept. Plan records 700 MiB cap and bandwidth migration risk. Local code cannot prove CDN transition behavior. | First production HTTPS/CDN check remains explicit. |
+| C8 | §II.8 signing/support | Accept. Debian 12/13 and Ubuntu 22.04/24.04 amd64, RSA 3072+ signing subkey only, disposable CI keys. | APT consumer matrix and production key ceremony. |
+| C9 | §II.9 account custom domain | Accept. Independently queried account project Pages and user-site Pages; both returned 404. Recheck during activation. | Production endpoint redirect check. |
+
+No substantive disagreement remains; neither reviewer confidence nor the toy package probes count as app runtime acceptance. The revised plan can proceed to implementation. Claude's §III real Pages, root amd64 package, AppImage full-update and GUI requirements remain explicit acceptance gaps until actually exercised. User informed of all four blocking plan corrections before implementation.

@@ -30,6 +30,14 @@ function dispatch(handler, { method = "POST", path = "/state", nonce } = {}) {
   return result;
 }
 
+test("remote ingress rejects the local permission marker even with a valid nonce", () => {
+  const handler = createIngressRequestHandler({
+    remoteProfile: {profileId:"test"}, getAcceptedNonces:()=>["a".repeat(32)],
+    routeRequest:()=>assert.fail("local ownership marker must never enter the remote router"),
+  });
+  assert.equal(dispatch(handler,{path:"/permission/clawd-on-desk",nonce:"a".repeat(32)}).statusCode,404);
+});
+
 test("ingress rejects missing/wrong nonce as generic 404 without the Clawd header", async () => {
   const routed = [];
   const handler = createIngressRequestHandler({

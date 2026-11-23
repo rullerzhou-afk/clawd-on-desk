@@ -6,6 +6,7 @@ const os = require("os");
 const {
   MARKER,
   QODER_HOOK_EVENTS,
+  resolveQoderConfigTargets,
   registerQoderHooks,
   unregisterQoderHooks,
 } = require("../hooks/qoder-install");
@@ -38,6 +39,83 @@ afterEach(() => {
 });
 
 describe("Qoder hook installer", () => {
+  it("installs CN-only without creating an international home", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-cn-"));
+    tempDirs.push(homeDir);
+    fs.mkdirSync(path.join(homeDir, ".qoder-cn"));
+
+    const result = registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: "/node" });
+
+    assert.strictEqual(result.added, QODER_HOOK_EVENTS.length);
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".qoder")), false);
+    const settings = readJson(path.join(homeDir, ".qoder-cn", "settings.json"));
+    assert.deepStrictEqual(Object.keys(settings.hooks), QODER_HOOK_EVENTS);
+  });
+
+  it("syncs both editions idempotently and uninstalls only Clawd hooks from both", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-both-"));
+    tempDirs.push(homeDir);
+    const foreign = { matcher: "Bash", hooks: [{ type: "command", command: "my-hook" }] };
+    for (const dirname of [".qoder", ".qoder-cn"]) {
+      fs.mkdirSync(path.join(homeDir, dirname));
+      fs.writeFileSync(path.join(homeDir, dirname, "settings.json"), JSON.stringify({
+        language: dirname,
+        hooks: { Stop: [foreign] },
+        hooksConfig: { disabled: ["clawd"] },
+      }));
+    }
+    const options = { homeDir, env: {}, silent: true, nodeBin: "/node", platform: "linux" };
+    assert.strictEqual(registerQoderHooks(options).added, QODER_HOOK_EVENTS.length * 2);
+    assert.deepStrictEqual(registerQoderHooks(options), { added: 0, updated: 0, skipped: QODER_HOOK_EVENTS.length * 2 });
+    assert.strictEqual(unregisterQoderHooks(options).removed, QODER_HOOK_EVENTS.length * 2);
+    for (const dirname of [".qoder", ".qoder-cn"]) {
+      const settings = readJson(path.join(homeDir, dirname, "settings.json"));
+      assert.strictEqual(settings.language, dirname);
+      assert.deepStrictEqual(settings.hooks.Stop, [foreign]);
+      assert.deepStrictEqual(settings.hooksConfig.disabled, ["clawd"]);
+    }
+  });
+
+  it("respects per-edition config overrides and de-duplicates a shared directory", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-override-"));
+    tempDirs.push(homeDir);
+    const parentDir = path.join(homeDir, "custom-cn");
+    fs.mkdirSync(parentDir);
+    const env = { QODER_CONFIG_DIR: parentDir, QODERCN_CONFIG_DIR: parentDir };
+    assert.strictEqual(resolveQoderConfigTargets({ homeDir, env }).length, 1);
+    assert.strictEqual(registerQoderHooks({ homeDir, env, silent: true, nodeBin: "/node" }).added, QODER_HOOK_EVENTS.length);
+    assert.strictEqual(unregisterQoderHooks({ homeDir, env, silent: true }).removed, QODER_HOOK_EVENTS.length);
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".qoder-cn")), false);
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".qoder")), false);
+  });
+
+  it("keeps an explicit settingsPath isolated from all other editions", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-explicit-"));
+    tempDirs.push(homeDir);
+    const cnDir = path.join(homeDir, ".qoder-cn");
+    fs.mkdirSync(cnDir);
+    const settingsPath = makeTempSettingsFile({});
+    const options = { homeDir, env: {}, settingsPath, silent: true, nodeBin: "/node" };
+    registerQoderHooks(options);
+    unregisterQoderHooks(options);
+    assert.strictEqual(fs.existsSync(path.join(cnDir, "settings.json")), false);
+  });
+
+  it("still installs and removes CN hooks when international settings are corrupt, then reports the failure", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-partial-"));
+    tempDirs.push(homeDir);
+    for (const dirname of [".qoder", ".qoder-cn"]) fs.mkdirSync(path.join(homeDir, dirname));
+    const brokenPath = path.join(homeDir, ".qoder", "settings.json");
+    fs.writeFileSync(brokenPath, "{");
+    const cnPath = path.join(homeDir, ".qoder-cn", "settings.json");
+    const options = { homeDir, env: {}, silent: true, nodeBin: "/node" };
+    assert.throws(() => registerQoderHooks(options), /Qoder hook registration failed/);
+    assert.ok(readJson(cnPath).hooks.Stop.length > 0);
+    assert.throws(() => unregisterQoderHooks(options), /Qoder hook removal failed/);
+    assert.ok(Object.values(readJson(cnPath).hooks).every((entries) => entries.length === 0));
+    assert.strictEqual(fs.readFileSync(brokenPath, "utf8"), "{");
+  });
+
   it("exports MARKER and the Phase 1 event list (incl. permission events)", () => {
     assert.strictEqual(MARKER, "qoder-hook.js");
     assert.deepStrictEqual(QODER_HOOK_EVENTS, [

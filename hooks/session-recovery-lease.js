@@ -8,6 +8,7 @@ const { execFileSync } = require("child_process");
 const { writeJsonAtomic } = require("./json-utils");
 const { getClaudeStopDisposition } = require("./claude-stop-disposition");
 const { readPidCacheV2 } = require("./pid-cache");
+const { normalizeClaudeConfigDir } = require("./claude-config-dirs");
 
 const LEASE_VERSION = 1;
 const LEASE_DIR_NAME = "session-recovery-v1";
@@ -40,6 +41,9 @@ const ALLOWED_RECORD_KEYS = new Set([
   "sourceProcessStartIdentity",
   "cwd",
   "title",
+  // Optional: CLAUDE_CONFIG_DIR of a Claude session, so a recovered session
+  // keeps its profile label. Absent for default-profile and other agents.
+  "claudeConfigDir",
 ]);
 
 function isPositivePid(value) {
@@ -174,6 +178,11 @@ function validateRecord(record, options = {}) {
   if (cwd !== record.cwd) return null;
   const title = record.title === null ? null : normalizeTitle(record.title);
   if (title !== record.title) return null;
+  let claudeConfigDir = null;
+  if (Object.prototype.hasOwnProperty.call(record, "claudeConfigDir")) {
+    claudeConfigDir = normalizeClaudeConfigDir(record.claudeConfigDir);
+    if (!claudeConfigDir || claudeConfigDir !== record.claudeConfigDir) return null;
+  }
   if (options.filePath) {
     const expected = getLeaseFilePath(agentId, sessionId, { recoveryDir: path.dirname(options.filePath) });
     if (!expected || path.basename(expected) !== path.basename(options.filePath)) return null;
@@ -192,6 +201,7 @@ function validateRecord(record, options = {}) {
     sourceProcessStartIdentity: record.sourceProcessStartIdentity,
     cwd,
     title,
+    ...(claudeConfigDir ? { claudeConfigDir } : {}),
   };
 }
 
@@ -328,8 +338,15 @@ function keepsWindowsCacheIdentity(record, options = {}) {
   // evidence for exactly the same live, interactive cache instead of expiring
   // it while that cache can still serve another turn. This never activates an
   // inactive record; startup still verifies current process start identities.
-  return !!cached && !cached.headless
-    && cached.agentPid === record.pid && cached.stablePid === record.sourcePid
+  if (!cached || cached.headless || cached.agentPid !== record.pid) return false;
+  // #1392 transition: a cache hit moves a Claude Desktop record's reported source
+  // onto the agent, but the old disk cache still keeps its pre-upgrade anchor
+  // (sihost). When the record's source is the agent itself, the matching agent
+  // PID is the stable evidence; only a different source still has to match the
+  // cached anchor.
+  const sourceMatches = record.sourcePid === record.pid
+    || cached.stablePid === record.sourcePid;
+  return sourceMatches
     && processAlive(record.pid, options) && processAlive(record.sourcePid, options);
 }
 
@@ -590,7 +607,14 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
       ? getProcessStartIdentities(identityPids, options)
       : new Map();
     const processStartIdentity = keptProcessIdentity || identities.get(pid) || null;
-    const sourceProcessStartIdentity = keptSourceIdentity || identities.get(sourcePid) || null;
+    // A PID identifies at most one process at a time. When the adapter moved
+    // sourcePid onto the agent (a Windows Claude Desktop cache hit after #1392),
+    // the source IS the agent, but a cache hit supplies no start identity of its
+    // own. Prefer the agent's identity; fall back to whatever source evidence
+    // this body did carry instead of dropping it.
+    const sourceProcessStartIdentity = sourcePid && sourcePid === pid
+      ? (processStartIdentity || keptSourceIdentity || identities.get(sourcePid) || null)
+      : keptSourceIdentity || identities.get(sourcePid) || null;
     if (classified.active && (
       (pid && !processStartIdentity) || (sourcePid && !sourceProcessStartIdentity)
     )) {
@@ -613,6 +637,9 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
         ? (existing && existing.title) || null
         : normalizeTitle(body.session_title) || (existing && existing.title) || null,
     };
+    const claudeConfigDir = normalizeClaudeConfigDir(body.claude_config_dir)
+      || (existing && existing.claudeConfigDir) || null;
+    if (claudeConfigDir) record.claudeConfigDir = claudeConfigDir;
     writeJsonAtomic(filePath, record);
     try { fs.chmodSync(filePath, 0o600); } catch {}
     // Do not ask the directory pruner to reacquire this record's lock.

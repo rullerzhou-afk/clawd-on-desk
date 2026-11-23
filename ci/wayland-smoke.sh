@@ -54,6 +54,7 @@ WAYLAND_SOCKET="wayland-smoke"
 WESTON_PID=""
 APP_LAUNCH_PID=""
 XDISPLAY=""
+SERVER_PORT_PATTERN="23333|23334|23335|23336|23337"
 
 note() { printf '\n== %s ==\n' "$*"; }
 ok() { PASS=$((PASS + 1)); printf 'PASS %s: %s\n' "$PASS" "$*"; }
@@ -75,8 +76,8 @@ runtime_port() {
     const fs = require("fs");
     try {
       const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      const port = Number(value && value.port);
-      if (value.app !== "clawd-on-desk" || !Number.isInteger(port) || port < 23333 || port > 23337) {
+      const port = value && value.port;
+      if (value.app !== "clawd-on-desk" || !Number.isInteger(port) || port < 1 || port > 65535) {
         process.exit(1);
       }
       process.stdout.write(String(port));
@@ -89,11 +90,12 @@ runtime_port() {
 state_ok() {
   local port
   port="$(runtime_port)" || return 1
+  SERVER_PORT_PATTERN="23333|23334|23335|23336|23337|$port"
   curl -fsS --max-time 2 "http://127.0.0.1:${port}/state" >/dev/null
 }
 
 server_ports_clear() {
-  ! ss -H -ltn 2>/dev/null | grep -Eq ':(23333|23334|23335|23336|23337)[[:space:]]'
+  ! ss -H -ltn 2>/dev/null | grep -Eq ":($SERVER_PORT_PATTERN)[[:space:]]"
 }
 
 # Every AppImage launch carries this unique marker. It survives the automatic
@@ -192,7 +194,7 @@ dump_diagnostics() {
     grep -iE 'clawd|\.mount_|AppImage|relauncher' |
     grep -v grep || true
   note "diagnostics: server ports"
-  ss -tlnp 2>/dev/null | grep -E ':(23333|23334|23335|23336|23337)[[:space:]]' ||
+  ss -tlnp 2>/dev/null | grep -E ":($SERVER_PORT_PATTERN)[[:space:]]" ||
     echo "(nothing listening)"
   note "diagnostics: X clients on ${XDISPLAY:-unset}"
   [ -n "${XDISPLAY:-}" ] &&

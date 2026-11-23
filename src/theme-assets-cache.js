@@ -29,14 +29,16 @@ function externalAssetsSourceDir(themeDir) {
 
 // Bump when sanitizeSvg's output changes so cached SVGs are written again.
 // v3: the XML declaration keeps its closing "?" (v2 caches wrote `<?xml ...>`).
-const CACHE_META_VERSION = 3;
+// v4: only a leading XML declaration survives; other processing instructions
+// are removed from cached SVGs.
+const CACHE_META_VERSION = 4;
 
 function emptyCacheMeta() {
   return { version: CACHE_META_VERSION, svgs: {}, rasters: {} };
 }
 
 function normalizeCacheMeta(value) {
-  if (value && (value.version === CACHE_META_VERSION || value.version === 2)) {
+  if (value && (value.version === CACHE_META_VERSION || value.version === 3 || value.version === 2)) {
     const stale = value.version !== CACHE_META_VERSION;
     return {
       meta: {
@@ -82,7 +84,7 @@ function copyRasterToCache(sourceAbs, destAbs, stat) {
   }
 }
 
-function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
+function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs, requireCompleteAssets = false) {
   let changed = false;
   const missing = [];
   const referenced = new Set(rasterRefs.keys());
@@ -142,6 +144,7 @@ function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
       changed = true;
     } catch (e) {
       console.error(`[theme-loader] Failed to cache raster ${ref.sourceRel} for theme "${themeId}":`, e.message);
+      if (requireCompleteAssets) missing.push(ref.sourceRel);
       removeCachedRaster(cacheDir, destRel);
       if (cacheMeta.rasters[destRel]) {
         delete cacheMeta.rasters[destRel];
@@ -162,12 +165,22 @@ function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
 
 function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
   const strict = !!(opts && opts.strict);
+  // Dark appearance needs a complete cache. Light appearance keeps best-effort caching.
+  const requireCompleteAssets = !!(opts && opts.requireCompleteAssets);
   const themeCacheDir = opts && opts.themeCacheDir;
-  const sourceAssetsDir = externalAssetsSourceDir(themeDir);
+  const sourceAssetsDir = (opts && opts.sourceAssetsDir) || externalAssetsSourceDir(themeDir);
+  // The light appearance keeps its historical cache directory and meta name.
+  // Dark appearances get a sibling directory keyed by the assets directory
+  // name so a theme can hold both caches at once.
+  const cacheSubdir = (opts && opts.cacheSubdir) || "assets";
   if (!themeCacheDir) return sourceAssetsDir;
 
-  const cacheDir = path.join(themeCacheDir, themeId, "assets");
-  const cacheMetaPath = path.join(themeCacheDir, themeId, ".cache-meta.json");
+  const cacheDir = path.join(themeCacheDir, themeId, cacheSubdir);
+  const cacheMetaPath = path.join(
+    themeCacheDir,
+    themeId,
+    cacheSubdir === "assets" ? ".cache-meta.json" : `.cache-meta-${cacheSubdir}.json`
+  );
 
   let cacheMeta = emptyCacheMeta();
   let metaChanged = false;
@@ -223,15 +236,21 @@ function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
             rasterRefs.set(ref.destRel, ref);
           }
         } catch (e) {
+          if (requireCompleteAssets) {
+            const error = new Error(`Failed to cache SVG "${file}": ${e?.message ?? String(e)}`, { cause: e });
+            error.code = e?.code;
+            throw error;
+          }
           console.error(`[theme-loader] Failed to sanitize ${file}:`, e.message);
         }
       }
     }
   } catch (e) {
+    if (requireCompleteAssets) throw e;
     console.error(`[theme-loader] Failed to scan assets for theme "${themeId}":`, e.message);
   }
 
-  const rasterCopyResult = syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs);
+  const rasterCopyResult = syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs, requireCompleteAssets);
   if (rasterCopyResult.changed) metaChanged = true;
 
   if (metaChanged) {
@@ -240,10 +259,12 @@ function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
     } catch {}
   }
 
-  if (strict && rasterCopyResult.missing.length > 0) {
-    throw new Error(
+  if ((strict || requireCompleteAssets) && rasterCopyResult.missing.length > 0) {
+    const error = new Error(
       `Theme "${themeId}" missing raster dependencies: ${rasterCopyResult.missing.join(", ")}`
     );
+    error.code = "MISSING_RASTER_DEPENDENCIES";
+    throw error;
   }
 
   return cacheDir;

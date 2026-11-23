@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Merge Clawd Qoder hooks into ~/.qoder/settings.json (append-only, idempotent).
+// Merge Clawd Qoder / Qoder CN hooks into their initialized user settings.
 //
 // Phase 1 is state-only: the registered hook script posts state to Clawd and
 // always returns `{}`, so Qoder's native permission flow stays in control.
@@ -20,6 +20,32 @@ const {
 const MARKER = "qoder-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".qoder");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
+
+// Qoder CN's desktop worker and CLI share ~/.qoder-cn, independently of the
+// international edition. Never create an absent edition's home just to wire it.
+function resolveQoderConfigTargets(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const env = options.env || process.env;
+  const seen = new Set();
+  return [
+    { label: "qoder", dirname: ".qoder", override: env.QODER_CONFIG_DIR },
+    { label: "qoder-cn", dirname: ".qoder-cn", override: env.QODERCN_CONFIG_DIR },
+  ].map(({ label, dirname, override }) => {
+    const parentDir = typeof override === "string" && override.trim()
+      ? path.resolve(override.trim())
+      : path.join(homeDir, dirname);
+    return { label, parentDir, configPath: path.join(parentDir, "settings.json") };
+  }).filter(({ configPath }) => {
+    const key = (options.platform || process.platform) === "win32" ? configPath.toLowerCase() : configPath;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+const DEFAULT_CONFIG_TARGETS = Object.freeze(
+  resolveQoderConfigTargets().map((target) => Object.freeze(target))
+);
 
 const QODER_HOOK_EVENTS = [
   "SessionStart",
@@ -209,7 +235,7 @@ function readSettings(settingsPath) {
 }
 
 /**
- * Register Clawd hooks into ~/.qoder/settings.json
+ * Register Clawd hooks in every initialized Qoder edition (or one explicit file).
  * @param {object} [options]
  * @param {boolean} [options.silent]
  * @param {string} [options.settingsPath]
@@ -219,15 +245,22 @@ function readSettings(settingsPath) {
  * @returns {{ added: number, skipped: number, updated: number }}
  */
 function registerQoderHooks(options = {}) {
-  const homeDir = options.homeDir || os.homedir();
-  const settingsPath = options.settingsPath || path.join(homeDir, ".qoder", "settings.json");
-
-  // Skip if ~/.qoder/ doesn't exist (Qoder not installed / not initialized).
-  const qoderDir = path.dirname(settingsPath);
-  if (!options.settingsPath && !fs.existsSync(qoderDir)) {
-    if (!options.silent) console.log("Clawd: ~/.qoder/ not found — skipping Qoder hook registration");
-    return { added: 0, skipped: 0, updated: 0 };
+  if (!options.settingsPath) {
+    const result = { added: 0, skipped: 0, updated: 0 };
+    const errors = [];
+    for (const target of resolveQoderConfigTargets(options)) {
+      if (!fs.existsSync(target.parentDir)) continue;
+      try {
+        const counts = registerQoderHooks({ ...options, settingsPath: target.configPath });
+        for (const key of Object.keys(result)) result[key] += counts[key];
+      } catch (err) {
+        errors.push(`${target.configPath}: ${err.message}`);
+      }
+    }
+    if (errors.length) throw new Error(`Qoder hook registration failed: ${errors.join("; ")}`);
+    return result;
   }
+  const settingsPath = options.settingsPath;
 
   const settings = readSettings(settingsPath);
   const hookScript = asarUnpackedPath(path.resolve(__dirname, MARKER).replace(/\\/g, "/"));
@@ -280,7 +313,7 @@ function registerQoderHooks(options = {}) {
 }
 
 /**
- * Remove Clawd hook entries from ~/.qoder/settings.json
+ * Remove Clawd hooks from both editions (or one explicit file).
  * @param {object} [options]
  * @param {boolean} [options.silent]
  * @param {string} [options.settingsPath]
@@ -288,8 +321,20 @@ function registerQoderHooks(options = {}) {
  * @returns {{ removed: number }}
  */
 function unregisterQoderHooks(options = {}) {
-  const homeDir = options.homeDir || os.homedir();
-  const settingsPath = options.settingsPath || path.join(homeDir, ".qoder", "settings.json");
+  if (!options.settingsPath) {
+    let removed = 0;
+    const errors = [];
+    for (const target of resolveQoderConfigTargets(options)) {
+      try {
+        removed += unregisterQoderHooks({ ...options, settingsPath: target.configPath }).removed;
+      } catch (err) {
+        errors.push(`${target.configPath}: ${err.message}`);
+      }
+    }
+    if (errors.length) throw new Error(`Qoder hook removal failed: ${errors.join("; ")}`);
+    return { removed };
+  }
+  const settingsPath = options.settingsPath;
 
   let settings;
   try {
@@ -350,6 +395,8 @@ module.exports = {
   MARKER,
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_CONFIG_TARGETS,
+  resolveQoderConfigTargets,
   QODER_HOOK_EVENTS,
   buildQoderHookCommand,
   registerQoderHooks,

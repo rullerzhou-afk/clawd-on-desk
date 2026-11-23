@@ -80,10 +80,15 @@ function createSettingsEffectRouter(options = {}) {
   const syncWindowTitles = options.syncWindowTitles || noop;
   const emitSessionSnapshot = options.emitSessionSnapshot || noop;
   const cleanStaleSessions = options.cleanStaleSessions || noop;
+  const refreshPendingAttention = options.refreshPendingAttention || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
   const dismissInteractivePermissionBubbles = options.dismissInteractivePermissionBubbles || noop;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
+  const clearCodexRemoteFallbackNotices = options.clearCodexRemoteFallbackNotices || noop;
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || noop;
+  const clearClaudeTurnAskBubbles = options.clearClaudeTurnAskBubbles || noop;
+  const clearKiroDesktopReminderCards = options.clearKiroDesktopReminderCards || noop;
+  const resyncKiroDesktopReminderCards = options.resyncKiroDesktopReminderCards || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
   const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
@@ -94,12 +99,15 @@ function createSettingsEffectRouter(options = {}) {
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
+  const applyEyeTrackingEnabledChange = options.applyEyeTrackingEnabledChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
+  const syncActiveThemeAppearance = options.syncActiveThemeAppearance || noop;
   const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const refreshDisplayedVisual = options.refreshDisplayedVisual || noop;
+  const refreshPetPresentation = options.refreshPetPresentation || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
   const disableMobilePermissionObservation = options.disableMobilePermissionObservation || noop;
@@ -189,6 +197,11 @@ function createSettingsEffectRouter(options = {}) {
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
     }
+    if ("themeAppearance" in changes) {
+      // Prefs are already committed here, so the runtime reads the new value
+      // itself; no appearance argument needs to be threaded through commands.
+      safeCall(logWarn, "Clawd: theme appearance sync failed:", syncActiveThemeAppearance);
+    }
     if (
       "petAccessory" in changes
       || "petMouthAccessory" in changes
@@ -209,10 +222,13 @@ function createSettingsEffectRouter(options = {}) {
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
       safeCall(logWarn, "Clawd: window title sync failed:", syncWindowTitles);
     }
-    if ("sessionAliases" in changes) {
+    // Localized display labels live in snapshots. Refresh after mirrors and
+    // dictionaries, also coalescing a simultaneous alias change into one send.
+    // Claude profile labels come from agents["claude-code"].configDirs.
+    if ("lang" in changes || "sessionAliases" in changes || "agents" in changes) {
       safeCall(
         logWarn,
-        "Clawd: session alias snapshot broadcast failed:",
+        "Clawd: session title snapshot broadcast failed:",
         emitSessionSnapshot,
         { force: true }
       );
@@ -247,6 +263,22 @@ function createSettingsEffectRouter(options = {}) {
     }
 
     // 2. Reactive side effects.
+    if ("agents" in changes) {
+      safeCall(logWarn, "Clawd: pending attention refresh failed:", refreshPendingAttention);
+    }
+    const suppressKiroReminders = changes.notificationBubbleAutoCloseSeconds === 0
+      || changes.hideBubbles === true
+      || changes.permissionBubblesEnabled === false;
+    if (suppressKiroReminders) {
+      safeCall(logWarn, "Clawd: clear Kiro reminders failed:", clearKiroDesktopReminderCards, "settings-policy-disabled");
+    }
+    const resumeKiroReminders = changes.notificationBubbleAutoCloseSeconds > 0
+      || changes.hideBubbles === false
+      || changes.permissionBubblesEnabled === true
+      || changes.agents?.["kiro-desktop"]?.permissionsEnabled === true;
+    if (!suppressKiroReminders && resumeKiroReminders) {
+      safeCall(logWarn, "Clawd: resync Kiro reminders failed:", resyncKiroDesktopReminderCards);
+    }
     if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {
       safeCall(logWarn, "Clawd: syncPermissionShortcuts failed:", syncPermissionShortcuts);
     }
@@ -267,6 +299,7 @@ function createSettingsEffectRouter(options = {}) {
       try {
         clearCodexNotifyBubbles(undefined, "settings-policy-disabled");
         clearCodexUserInputBubbles(undefined, undefined, "settings-policy-disabled");
+        clearClaudeTurnAskBubbles(undefined, "settings-policy-disabled");
         clearKimiNotifyBubbles(undefined, "settings-policy-disabled");
       } catch (err) {
         warn(logWarn, "Clawd: clear notification bubbles failed:", err);
@@ -279,6 +312,21 @@ function createSettingsEffectRouter(options = {}) {
         logWarn,
         "Clawd: refresh notification bubble timers failed:",
         refreshPassiveNotifyAutoClose
+      );
+    }
+    // A remote Codex fallback notice is owned by the notification channel but
+    // also disappears with the Codex bubble gate. Clear both queued and shown
+    // notices so a later re-enable cannot resurrect a stale one.
+    if (
+      (("permissionBubblesEnabled" in changes) && changes.permissionBubblesEnabled === false) ||
+      (("hideBubbles" in changes) && changes.hideBubbles === true) ||
+      (("notificationBubbleAutoCloseSeconds" in changes) && changes.notificationBubbleAutoCloseSeconds === 0)
+    ) {
+      safeCall(
+        logWarn,
+        "Clawd: clear Codex remote fallback notices failed:",
+        clearCodexRemoteFallbackNotices,
+        "settings-policy-disabled"
       );
     }
     if (
@@ -337,6 +385,7 @@ function createSettingsEffectRouter(options = {}) {
       // would leave the transparent window (and its auto-hide hot zone) sized
       // for coins that no longer draw.
       || "quotaRingHiddenProviders" in changes
+      || "quotaRingShownProviders" in changes
     ) {
       try {
         syncSessionHudVisibility();
@@ -352,6 +401,15 @@ function createSettingsEffectRouter(options = {}) {
         emitSessionSnapshot({ force: true });
       } catch (err) {
         warn(logWarn, "Clawd: quota merge mode re-emit failed:", err);
+      }
+    }
+    if ("sessionHudHideCompletedCodexEphemeral" in changes || "sessionHudHideActiveCodexEphemeral" in changes) {
+      // Rebuild the snapshot immediately;
+      // never run lifecycle cleanup, acknowledge completion or touch approvals.
+      safeCall(logWarn, "Clawd: Codex ephemeral HUD preference refresh failed:",
+        emitSessionSnapshot, { force: true });
+      if ("sessionHudHideActiveCodexEphemeral" in changes) {
+        safeCall(logWarn, "Clawd: Codex ephemeral pet preference refresh failed:", refreshPetPresentation);
       }
     }
     if ("sessionHudCleanupDetached" in changes && changes.sessionHudCleanupDetached === true) {
@@ -391,6 +449,16 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
       safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
+    }
+    if ("eyeTrackingEnabled" in changes) {
+      // #1276: park the gaze forward (or force a resend when re-enabled) so
+      // the toggle applies without waiting for the next cursor move.
+      safeCall(
+        logWarn,
+        "Clawd: eyeTrackingEnabled change failed:",
+        applyEyeTrackingEnabledChange,
+        changes.eyeTrackingEnabled
+      );
     }
     if ("idleVisual" in changes) {
       safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);

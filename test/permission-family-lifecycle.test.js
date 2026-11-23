@@ -196,6 +196,14 @@ function postPermission(ctx, body) {
   });
 }
 
+async function waitFor(predicate, message, timeout = 5000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeout) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function makeRouteRuntimeHarness(overrides = {}) {
   const harness = makeRuntimeHarness();
   const calls = {
@@ -336,6 +344,264 @@ describe("opencode-family external lifecycle runtime", () => {
 });
 
 describe("opencode-family lifecycle route → real runtime", () => {
+  for (const exitCode of [0, 1]) {
+    it(`does not create a stale v1 card when native replied during review (exit ${exitCode})`, async () => {
+      const startedPath = path.join(
+        os.tmpdir(),
+        `clawd-opencode-review-${process.pid}-${Date.now()}-${exitCode}.started`
+      );
+      tempLogPaths.add(startedPath);
+      const harness = makeRouteRuntimeHarness({
+        getPermissionAutomationMode: () => "auto-tools",
+        getPermissionReviewConfig: () => ({
+          command: [
+            process.execPath,
+            "-e",
+            `require("fs").writeFileSync(${JSON.stringify(startedPath)}, "started");setTimeout(() => process.exit(${exitCode}), 250);`,
+          ],
+          timeoutMs: 5000,
+        }),
+      });
+      const requested = {
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+        session_id: "opencode:ses-review-race",
+        tool_name: "bash",
+        tool_input: { command: "echo review-race" },
+        request_id: "per-review-race",
+        bridge_url: "http://127.0.0.1:43210",
+        bridge_token: "token-review-race",
+      };
+
+      const requestPromise = postPermission(harness.ctx, requested);
+      await waitFor(() => fs.existsSync(startedPath), "v1 review command did not start");
+      const lifecycle = await postPermission(harness.ctx, {
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+        permission_event: "replied",
+        session_id: "ses-review-race",
+        request_id: "per-review-race",
+        lifecycle_bridge_url: "http://127.0.0.1:43210/",
+        lifecycle_bridge_token: "token-review-race",
+      });
+      assert.strictEqual(lifecycle.res.statusCode, 200);
+      await requestPromise;
+      await waitFor(
+        () => harness.logs.some((line) => line.includes("skipping stale bubble")),
+        "v1 review did not finish after native reply"
+      );
+      assert.deepStrictEqual(harness.api.pendingPermissions, []);
+      assert.deepStrictEqual(harness.calls.showPermissionBubble, []);
+      harness.api.cleanup();
+    });
+  }
+
+  it("requires every v1 lifecycle identity field before marking an in-flight review", async () => {
+    const startedPath = path.join(
+      os.tmpdir(),
+      `clawd-opencode-review-identity-${process.pid}-${Date.now()}.started`
+    );
+    tempLogPaths.add(startedPath);
+    const harness = makeRouteRuntimeHarness({
+      getPermissionAutomationMode: () => "auto-tools",
+      getPermissionReviewConfig: () => ({
+        command: [
+          process.execPath,
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(startedPath)}, "started");setTimeout(() => process.exit(0), 350);`,
+        ],
+        timeoutMs: 5000,
+      }),
+    });
+    const requested = {
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+      session_id: "opencode:ses-review-identity",
+      tool_name: "bash",
+      tool_input: { command: "echo identity" },
+      request_id: "per-review-identity",
+      bridge_url: "http://127.0.0.1:43210",
+      bridge_token: "token-review-identity",
+    };
+    const requestPromise = postPermission(harness.ctx, requested);
+    await waitFor(() => fs.existsSync(startedPath), "v1 identity review command did not start");
+
+    const identity = {
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+      permission_event: "replied",
+      session_id: "ses-review-identity",
+      request_id: "per-review-identity",
+      lifecycle_bridge_url: "http://127.0.0.1:43210/",
+      lifecycle_bridge_token: "token-review-identity",
+    };
+    for (const delta of [
+      { agent_id: "mimocode" },
+      { request_id: "per-other" },
+      { session_id: "ses-other" },
+      { lifecycle_bridge_url: "http://127.0.0.1:43211" },
+      { lifecycle_bridge_token: "token-other" },
+    ]) {
+      await postPermission(harness.ctx, { ...identity, ...delta });
+      assert.deepStrictEqual(harness.api.pendingPermissions, [], JSON.stringify(delta));
+      assert.strictEqual(
+        harness.logs.some((line) => line.includes("during external review")),
+        false,
+        JSON.stringify(delta)
+      );
+    }
+
+    await postPermission(harness.ctx, identity);
+    await requestPromise;
+    await waitFor(
+      () => harness.logs.some((line) => line.includes("skipping stale bubble")),
+      "matching lifecycle did not suppress the stale card"
+    );
+    assert.deepStrictEqual(harness.api.pendingPermissions, []);
+    assert.deepStrictEqual(harness.calls.showPermissionBubble, []);
+    harness.api.cleanup();
+  });
+
+  it("unregisters a v1 review after normal completion before a matching lifecycle reply", async () => {
+    const startedPath = path.join(
+      os.tmpdir(),
+      `clawd-opencode-review-unregister-normal-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.started`
+    );
+    const finishedPath = startedPath.replace(/\.started$/, ".finished");
+    tempLogPaths.add(startedPath);
+    tempLogPaths.add(finishedPath);
+    const requestId = `per-review-unregister-normal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const rawSessionId = `opencode:ses-review-unregister-normal-${Date.now()}`;
+    const harness = makeRouteRuntimeHarness({
+      getPermissionAutomationMode: () => "auto-tools",
+      getPermissionReviewConfig: () => ({
+        command: [
+          process.execPath,
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(startedPath)}, "started");setTimeout(() => { require("fs").writeFileSync(${JSON.stringify(finishedPath)}, "finished"); process.exit(0); }, 180);`,
+        ],
+        timeoutMs: 5000,
+      }),
+    });
+    try {
+      const requestPromise = postPermission(harness.ctx, {
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+        session_id: rawSessionId,
+        tool_name: "bash",
+        tool_input: { command: "echo unregister-normal" },
+        request_id: requestId,
+        bridge_url: "http://127.0.0.1:43210",
+        bridge_token: "token-review-unregister-normal",
+      });
+      await waitFor(() => fs.existsSync(startedPath), "normal unregister review did not start");
+      await waitFor(() => fs.existsSync(finishedPath), "normal unregister review did not finish");
+      await waitFor(
+        () => harness.logs.some((line) => line.includes("showing bubble")),
+        "normal unregister review did not settle"
+      );
+      await requestPromise;
+      const lifecycleIdentity = {
+        agentId: "opencode",
+        requestId,
+        sessionId: rawSessionId.slice("opencode:".length),
+        bridgeUrl: "http://127.0.0.1:43210/",
+        bridgeToken: "token-review-unregister-normal",
+      };
+      if (harness.api.pendingPermissions.length > 0) {
+        // The harness's bubble stub does not run auto-approval; clear the
+        // normal-completion card so the lifecycle route exercises the
+        // in-flight-review registry rather than dismissing the card first.
+        for (const entry of [...harness.api.pendingPermissions]) {
+          assert.strictEqual(harness.api.removePendingPermission(entry, "test-card-cleanup"), true);
+        }
+      }
+      assert.deepStrictEqual(harness.api.pendingPermissions, []);
+
+      const before = harness.logs.filter((line) => line.includes("during external review")).length;
+      const lifecycle = await postPermission(harness.ctx, {
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+        permission_event: "replied",
+        session_id: lifecycleIdentity.sessionId,
+        request_id: lifecycleIdentity.requestId,
+        lifecycle_bridge_url: lifecycleIdentity.bridgeUrl,
+        lifecycle_bridge_token: lifecycleIdentity.bridgeToken,
+      });
+      assert.strictEqual(lifecycle.res.statusCode, 200);
+      assert.strictEqual(
+        harness.logs.filter((line) => line.includes("during external review")).length,
+        before
+      );
+    } finally {
+      harness.api.cleanup();
+    }
+  });
+
+  it("unregisters a v1 review after cancellation before a matching lifecycle reply", async () => {
+    let permissionsEnabled = true;
+    const startedPath = path.join(
+      os.tmpdir(),
+      `clawd-opencode-review-unregister-cancel-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.started`
+    );
+    const finishedPath = startedPath.replace(/\.started$/, ".finished");
+    tempLogPaths.add(startedPath);
+    tempLogPaths.add(finishedPath);
+    const requestId = `per-review-unregister-cancel-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const rawSessionId = `opencode:ses-review-unregister-cancel-${Date.now()}`;
+    const harness = makeRouteRuntimeHarness({
+      getPermissionAutomationMode: () => "auto-tools",
+      getPermissionReviewConfig: () => ({
+        command: [
+          process.execPath,
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(startedPath)}, "started");setTimeout(() => { require("fs").writeFileSync(${JSON.stringify(finishedPath)}, "finished"); process.exit(0); }, 180);`,
+        ],
+        timeoutMs: 5000,
+      }),
+      isAgentPermissionsEnabled: () => permissionsEnabled,
+    });
+    try {
+      const requestPromise = postPermission(harness.ctx, {
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+        session_id: rawSessionId,
+        tool_name: "bash",
+        tool_input: { command: "echo unregister-cancel" },
+        request_id: requestId,
+        bridge_url: "http://127.0.0.1:43210",
+        bridge_token: "token-review-unregister-cancel",
+      });
+      await waitFor(() => fs.existsSync(startedPath), "cancel unregister review did not start");
+      permissionsEnabled = false;
+      await waitFor(() => fs.existsSync(finishedPath), "cancel unregister review did not finish");
+      await waitFor(
+        () => harness.logs.some((line) => line.includes("family-bubbles-disabled")),
+        "cancel unregister review did not settle"
+      );
+      await requestPromise;
+      assert.deepStrictEqual(harness.api.pendingPermissions, []);
+
+      const before = harness.logs.filter((line) => line.includes("during external review")).length;
+      const lifecycle = await postPermission(harness.ctx, {
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+        permission_event: "replied",
+        session_id: rawSessionId.slice("opencode:".length),
+        request_id: requestId,
+        lifecycle_bridge_url: "http://127.0.0.1:43210/",
+        lifecycle_bridge_token: "token-review-unregister-cancel",
+      });
+      assert.strictEqual(lifecycle.res.statusCode, 200);
+      assert.strictEqual(
+        harness.logs.filter((line) => line.includes("during external review")).length,
+        before
+      );
+    } finally {
+      harness.api.cleanup();
+    }
+  });
+
   it("canonicalizes raw/prefixed family sessions and clears only the exact pending request", async () => {
     const harness = makeRouteRuntimeHarness({
       doNotDisturb: true,
@@ -399,6 +665,7 @@ describe("opencode-family lifecycle route → real runtime", () => {
     assert.deepStrictEqual(harness.resolved.map(({ meta }) => meta), [{
       reason: "resolved-externally",
       hasPendingForSession: false,
+      behavior: "no-decision",
     }]);
     assertSecretAbsentFromLifecycleLogs(harness, "token_route");
     harness.api.cleanup();

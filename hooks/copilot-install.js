@@ -18,11 +18,17 @@ const path = require("path");
 const os = require("os");
 const {
   readJsonFile,
+  stripUtf8Bom,
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
+  quotePowerShellSingleArg,
+  parsePowerShellEnvCommand,
+  normalizeHookScriptPath,
+  remoteHookScriptKey,
+  getCliOptionValue,
 } = require("./json-utils");
-const { resolveNodeBin } = require("./server-config");
+const { resolveNodeBin, ROUTING_NONCE_RE } = require("./server-config");
 
 const MARKER = "copilot-hook.js";
 
@@ -68,12 +74,14 @@ const COPILOT_STATE_HOOK_EVENTS = [
   "userPromptSubmitted",
   "preToolUse",
   "postToolUse",
+  "postToolUseFailure",
   "sessionEnd",
   "errorOccurred",
   "agentStop",
   "subagentStart",
   "subagentStop",
   "preCompact",
+  "notification",
 ];
 
 const COPILOT_PERMISSION_HOOK_EVENTS = [
@@ -147,7 +155,7 @@ function buildCopilotHookCommands(nodeBin, hookScript, eventName, options = {}) 
   // PowerShell needs `&` to invoke a quoted exe path as a command, otherwise
   // the quoted string is parsed as a literal.
   const powershell = remoteEnv
-    ? `${Object.entries(remoteEnv).map(([key, value]) => `$env:${key}='${String(value).replace(/'/g, "''")}'`).join("; ")}; & ${command}`
+    ? `${Object.entries(remoteEnv).map(([key, value]) => `$env:${key}=${quotePowerShellSingleArg(value)}`).join("; ")}; & ${command}`
     : `& ${command}`;
   return { bash, powershell };
 }
@@ -267,6 +275,12 @@ function entryHasMarker(entry) {
   return false;
 }
 
+// Copilot ignores a BOM-prefixed hooks.json even though our JSON reader accepts it.
+function readCopilotHooksConfig(hooksPath) {
+  const text = fs.readFileSync(hooksPath, "utf8");
+  return { settings: JSON.parse(stripUtf8Bom(text)), hadBom: text.charCodeAt(0) === 0xfeff };
+}
+
 /**
  * Register Clawd hooks into <copilot-home>/hooks/hooks.json.
  *
@@ -312,8 +326,9 @@ function registerCopilotHooks(options = {}) {
     || "node";
 
   let settings = {};
+  let hadBom = false;
   try {
-    settings = readJsonFile(hooksPath);
+    ({ settings, hadBom } = readCopilotHooksConfig(hooksPath));
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read hooks.json: ${err.message}`);
@@ -326,7 +341,7 @@ function registerCopilotHooks(options = {}) {
   let added = 0;
   let updated = 0;
   let skipped = 0;
-  let changed = false;
+  let changed = hadBom;
   let permissionSkippedDueToUserHook = false;
 
   // Pre-compute the cross-file safe-v1 signal once before the per-event
@@ -420,28 +435,53 @@ function registerCopilotHooks(options = {}) {
   return { added, updated, skipped, configChanged: changed, permissionSkippedDueToUserHook };
 }
 
+function unregisterRemoteOwnedCopilotHooks(options = {}) {
+  const { hooksDir, routingNonce } = options;
+  if (typeof hooksDir !== "string" || !hooksDir || typeof routingNonce !== "string" || !ROUTING_NONCE_RE.test(routingNonce)) {
+    throw new Error("Remote owned uninstall requires --hooks-dir and --routing-nonce");
+  }
+  const platform = options.platform || process.platform;
+  const script = remoteHookScriptKey(hooksDir, "copilot-hook.js", platform);
+  return unregisterCopilotHooks({
+    ...options,
+    ownsEntry: (entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const powershell = parsePowerShellEnvCommand(entry.powershell);
+      if (powershell && powershell.args.length === 3
+        && normalizeHookScriptPath(powershell.args[1], platform) === script) return true;
+      if (typeof entry.bash !== "string") return false;
+      // Only literal env prefixes and the exact three quoted invocation tokens.
+      const command = entry.bash.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:1|'(?:[^']|'\\'')*') )*/, "");
+      const bash = /^"([^"`$]*)" "([^"`$]*)" "([^"`$]*)"$/.exec(command);
+      return !!bash && normalizeHookScriptPath(bash[2], platform) === script;
+    },
+  });
+}
+
 function unregisterCopilotHooks(options = {}) {
   const copilotDir = resolveCopilotHome(options);
   const hooksPath = options.hooksPath || path.join(copilotDir, "hooks", "hooks.json");
 
   let settings = {};
+  let hadBom = false;
   try {
-    settings = readJsonFile(hooksPath);
+    ({ settings, hadBom } = readCopilotHooksConfig(hooksPath));
   } catch (err) {
     if (err.code === "ENOENT") return { removed: 0, changed: false, configChanged: false, hooksPath };
     throw new Error(`Failed to read hooks.json: ${err.message}`);
   }
 
-  if (!settings.hooks || typeof settings.hooks !== "object") {
+  if ((!settings.hooks || typeof settings.hooks !== "object") && !hadBom) {
     return { removed: 0, changed: false, configChanged: false, hooksPath };
   }
 
   let removed = 0;
-  let changed = false;
-  for (const event of Object.keys(settings.hooks)) {
+  let changed = hadBom;
+  const isManagedEntry = options.ownsEntry || entryHasMarker;
+  for (const event of Object.keys(settings.hooks || {})) {
     const entries = settings.hooks[event];
     if (!Array.isArray(entries)) continue;
-    const next = entries.filter((entry) => !entryHasMarker(entry));
+    const next = entries.filter((entry) => !isManagedEntry(entry));
     if (next.length === entries.length) continue;
     removed += entries.length - next.length;
     changed = true;
@@ -477,6 +517,7 @@ module.exports = {
   buildCopilotHookEntry,
   registerCopilotHooks,
   unregisterCopilotHooks,
+  unregisterRemoteOwnedCopilotHooks,
 };
 
 // Lazy-getter exports for back-compat — values reflect current env at access time.
@@ -492,7 +533,12 @@ Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
 // CLI: `node hooks/copilot-install.js [--remote]`.
 if (require.main === module) {
   try {
-    if (process.argv.includes("--uninstall")) unregisterCopilotHooks({});
+    if (process.argv.includes("--remote-uninstall-owned")) {
+      unregisterRemoteOwnedCopilotHooks({
+        hooksDir: getCliOptionValue(process.argv, "--hooks-dir"),
+        routingNonce: getCliOptionValue(process.argv, "--routing-nonce"),
+      });
+    } else if (process.argv.includes("--uninstall")) unregisterCopilotHooks({});
     else registerCopilotHooks({ remote: process.argv.includes("--remote") });
   } catch (err) {
     console.error(err.message);

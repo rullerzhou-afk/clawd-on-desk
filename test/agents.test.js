@@ -164,6 +164,9 @@ describe("Agent config modules — data integrity", () => {
     assert.strictEqual(qoder.capabilities.permissionApproval, false);
     assert.strictEqual(qoder.capabilities.interactiveBubble, false);
     assert.strictEqual(qoder.capabilities.notificationHook, true);
+    assert.ok(qoder.processNames.win.includes("qoder cn.exe"));
+    assert.ok(qoder.processNames.win.includes("qoderclicn.exe"));
+    assert.ok(!qoder.startupRecoveryProcessNames.win.includes("qoder cn.exe"));
   });
 
   it("codewhale is state-only and exposes only passive notifications", () => {

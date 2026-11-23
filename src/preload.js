@@ -1,8 +1,26 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-// Parse theme config from additionalArguments (synchronous, available on first load)
-const themeArg = process.argv.find(a => a.startsWith("--theme-config="));
-const themeConfig = themeArg ? JSON.parse(themeArg.slice("--theme-config=".length)) : null;
+// The config must be available synchronously before the first paint, but a
+// sandboxed preload cannot read files, and Windows caps the launch command
+// line at 32,767 characters. Ask main over sync IPC first; keep the old
+// additionalArguments path as a fallback for external launches and fixtures.
+function readThemeConfig() {
+  if (typeof ipcRenderer.sendSync === "function") {
+    try {
+      const fromMain = ipcRenderer.sendSync("renderer-config:get-pet");
+      if (fromMain != null) return fromMain;
+    } catch {}
+  }
+  const themeArg = process.argv.find(a => a.startsWith("--theme-config="));
+  if (!themeArg) return null;
+  try {
+    return JSON.parse(themeArg.slice("--theme-config=".length));
+  } catch {
+    return null;
+  }
+}
+
+const themeConfig = readThemeConfig();
 
 contextBridge.exposeInMainWorld("themeConfig", themeConfig);
 
@@ -33,6 +51,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onMiniModeChange: (cb) => ipcRenderer.on("mini-mode-change", (_, enabled, edge, options) => cb(enabled, edge, options)),
   onMiniClip: (cb) => ipcRenderer.on("mini-clip", (_, info) => cb(info)),
   onLowPowerIdleModeChange: (cb) => ipcRenderer.on("low-power-idle-mode-change", (_, enabled) => cb(enabled)),
+  onPetHiddenChange: (cb) => ipcRenderer.on("pet-hidden-change", (_, hidden) => cb(hidden)),
   onSystemWake: (cb) => ipcRenderer.on("system-wake", (_, payload) => cb(payload)),
   // Reaction control (from main, relayed from hit window)
   onStartDragReaction: (cb) => ipcRenderer.on("start-drag-reaction", (_, requestOrDirection, legacyDirection) => cb(requestOrDirection, legacyDirection)),

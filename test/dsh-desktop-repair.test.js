@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -904,7 +905,7 @@ test("an invalid inspection record stops a two-step repair before any command", 
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));
@@ -922,7 +923,7 @@ test("an inspection record invalidated after add keeps the record during converg
   const cli = makeCli(harness, {
     afterAdd: () => {
       fs.mkdirSync(path.dirname(latch), { recursive: true });
-      fs.symlinkSync(path.join(harness.root, "missing-inspection-record"), latch);
+      linkForRejection(path.join(harness.root, "missing-inspection-record"), latch);
     },
   });
   const result = await installDeepSeekHarnessBridge(orchOptions(harness, cli, { operation: "explicit-repair" }));

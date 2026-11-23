@@ -411,6 +411,32 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   assert.strictEqual(result.commit.agents.codex.permissionMode, "intercept");
 });
 
+test("settings agent actions enable installed KiroCrew without automatic override", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.kirocrew = {
+    ...(snapshot.agents.kirocrew || {}),
+    integrationInstalled: true,
+    enabled: false,
+  };
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "kirocrew", flag: "enabled", value: true },
+    {
+      snapshot,
+      syncIntegrationForAgent: (agentId, options) => calls.push({ agentId, options }),
+      startMonitorForAgent: (agentId) => calls.push({ startMonitorForAgent: agentId }),
+    }
+  );
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    { agentId: "kirocrew", options: {} },
+    { startMonitorForAgent: "kirocrew" },
+  ]);
+  assert.strictEqual(Object.hasOwn(calls[0].options, "automatic"), false);
+  assert.strictEqual(result.commit.agents.kirocrew.enabled, true);
+});
+
 test("settings agent actions fail closed when the Codex auto-start gate cannot sync", () => {
   const snapshot = prefs.getDefaults();
   const calls = [];
@@ -1234,4 +1260,32 @@ test("Hermes WSL Unpair propagates warnings without disabling the global gate", 
   assert.strictEqual(result.warning, "disable failed");
   assert.strictEqual(result.commit, undefined);
   assert.strictEqual(snapshot.agents.hermes.enabled, true);
+});
+
+test("settings agent actions preserve sanitized skipped targets metadata", async () => {
+  const result = await agentCommands.installAgentIntegration({ agentId: "deepseek-harness" }, {
+    snapshot: prefs.getDefaults(),
+    syncIntegrationForAgent: async () => ({
+      status: "skipped",
+      reason: "no-applicable-target",
+      message: "No applicable DeepSeek Harness target (web: web-not-used; desktop: desktop-profile-uninitialized); open the DeepSeek Harness desktop app once to initialize its profile",
+      targets: {
+        web: { role: "not-applicable", reason: "web-not-used", result: null },
+        desktop: {
+          role: "not-applicable",
+          reason: "desktop-profile-uninitialized",
+          result: null,
+          internalDebugOnly: { ignore: true },
+        },
+      },
+    }),
+  });
+
+  assert.strictEqual(result.status, "skipped");
+  assert.strictEqual(result.reason, "no-applicable-target");
+  assert.match(result.message, /desktop-profile-uninitialized/);
+  assert.deepStrictEqual(result.targets, {
+    web: { role: "not-applicable", reason: "web-not-used" },
+    desktop: { role: "not-applicable", reason: "desktop-profile-uninitialized" },
+  });
 });

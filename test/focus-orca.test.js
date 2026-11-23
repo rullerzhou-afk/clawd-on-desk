@@ -839,9 +839,14 @@ describe("Windows Orca window fallback", () => {
       // Gating those two off must not also lock out the console recovery further
       // down, which is an identity signal rather than a guess: its reason
       // whitelist has to accept the Orca branch's negative outcomes.
+      const recoveryList = script.slice(
+        script.indexOf("$consoleRecoveryReasons = @("),
+        script.indexOf("$wtHwndFromHookInvalid")
+      );
+      assert.match(recoveryList, /'orca-window-missing'/);
+      assert.match(recoveryList, /'orca-window-ambiguous'/);
       const conhostGate = script.slice(script.indexOf("$pendingConsoleHwnd -ne [IntPtr]::Zero) {"));
-      assert.match(conhostGate, /\$reason -eq 'orca-window-missing'/);
-      assert.match(conhostGate, /\$reason -eq 'orca-window-ambiguous'/);
+      assert.match(conhostGate, /\$consoleRecoveryReasons -contains \$reason/);
       // The WT title guess stays locked out, though — for an Orca session it can
       // only ever name an unrelated terminal.
       assert.ok(script.includes("if (-not $focused -and $reason -eq 'no-parent-window') {"),

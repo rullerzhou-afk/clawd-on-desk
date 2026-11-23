@@ -47,7 +47,7 @@ function buildSettingsAgentOrderExports() {
 
   function isAgentCollapsible(agent) {
     const caps = agent && agent.capabilities ? agent.capabilities : {};
-    return !!(caps.permissionApproval || caps.interactiveBubble || caps.notificationHook);
+    return !!(caps.permissionApproval || caps.interactiveBubble || caps.notificationHook || caps.approvalReminder);
   }
 
   function getAgentEventSourceBadgeKey(agent) {

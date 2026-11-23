@@ -1,5 +1,7 @@
 "use strict";
 
+const path = require("path");
+
 // ── Windows: detect whether the foreground window is fullscreen ──
 //
 // The topmost watchdog (topmost-runtime.js) re-asserts the pet/hit windows to
@@ -52,6 +54,15 @@ const DESKTOP_SHELL_WINDOW_CLASSES = new Set([
 ]);
 // Ample for real class names; matches win-foreground-terminal.js.
 const CLASS_NAME_BUF_LEN = 256;
+
+// #1282: only add tools verified on a real machine (Snipping Tool 11.2608).
+// Validate third-party tools individually before adding them. This marker only
+// gates Clawd's topmost writes; it does not change the fullscreen verdict.
+const SCREEN_CAPTURE_OVERLAY_CLASS = "xamlwindow";
+const SCREEN_CAPTURE_OVERLAY_EXES = new Set(["snippingtool.exe"]);
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+// Windows extended-length paths allow 32767 characters plus the terminator.
+const IMAGE_NAME_BUF_LEN = 32768;
 
 // #871: the geometry test above silently assumes the monitor reserves a taskbar
 // strip. A secondary display usually shows no taskbar, and an auto-hidden
@@ -116,9 +127,10 @@ function createForegroundFullscreenProbe(options = {}) {
   let GetClassNameW;
   let monitorInfoSize;
   let user32;
+  let koffi;
   let addressOf = null;
   try {
-    const koffi = options.koffi || require("koffi");
+    koffi = options.koffi || require("koffi");
     // #935: HWND -> stable numeric address for the identity above. Optional —
     // its absence only costs identity (probe answers plain true), never the
     // fullscreen verdict itself.
@@ -167,7 +179,48 @@ function createForegroundFullscreenProbe(options = {}) {
     if (typeof options.onError === "function") options.onError(err);
   }
 
+  // Process inspection is optional: a missing binding must only cost the
+  // capture marker, leaving fullscreen detection and auto-hide intact.
+  let GetWindowThreadProcessId, OpenProcess, QueryFullProcessImageNameW, CloseHandle;
+  try {
+    const kernel32 = koffi.load("kernel32.dll");
+    GetWindowThreadProcessId = user32.func("uint32 __stdcall GetWindowThreadProcessId(void* hWnd, _Out_ uint32* lpdwProcessId)");
+    OpenProcess = kernel32.func("void* __stdcall OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)");
+    QueryFullProcessImageNameW = kernel32.func("bool __stdcall QueryFullProcessImageNameW(void* hProcess, uint32 dwFlags, _Out_ uint16_t* lpExeName, _Inout_ uint32* lpdwSize)");
+    CloseHandle = kernel32.func("bool __stdcall CloseHandle(void* hObject)");
+  } catch (err) {
+    if (typeof options.onError === "function") options.onError(err);
+  }
+
   let lastObservation = { reliable: false, foregroundId: null, fullscreenId: null };
+
+  function isScreenCaptureOverlay(hwnd, className) {
+    // Most fullscreen windows are unrelated; don't open their processes.
+    // CloseHandle is bound last, so its presence also confirms initialization.
+    if (className.toLowerCase() !== SCREEN_CAPTURE_OVERLAY_CLASS || !CloseHandle) return false;
+    let hProcess = null;
+    try {
+      const pidOut = [0];
+      GetWindowThreadProcessId(hwnd, pidOut);
+      if (!pidOut[0]) return false;
+      hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pidOut[0]);
+      if (!hProcess) return false; // expected miss: e.g. an elevated capture tool
+      const nameBuf = new Uint16Array(IMAGE_NAME_BUF_LEN);
+      const sizeOut = [IMAGE_NAME_BUF_LEN];
+      if (!QueryFullProcessImageNameW(hProcess, 0, nameBuf, sizeOut)) return false;
+      let imagePath = "";
+      for (let i = 0; i < sizeOut[0]; i++) imagePath += String.fromCharCode(nameBuf[i]);
+      return SCREEN_CAPTURE_OVERLAY_EXES.has(path.win32.basename(imagePath).toLowerCase());
+    } catch (err) {
+      // A failed process read must never undo the fullscreen verdict.
+      if (typeof options.onCallError === "function") options.onCallError(err);
+      return false;
+    } finally {
+      if (hProcess) {
+        try { CloseHandle(hProcess); } catch { /* best-effort */ }
+      }
+    }
+  }
 
   function getWindowId(hwnd) {
     if (!addressOf) return null;
@@ -218,8 +271,8 @@ function createForegroundFullscreenProbe(options = {}) {
       // pre-#719 behavior, erring toward "fullscreen" for a covering window.
       const classBuf = new Uint16Array(CLASS_NAME_BUF_LEN);
       const classLen = GetClassNameW(hwnd, classBuf, CLASS_NAME_BUF_LEN);
+      let className = "";
       if (classLen > 0) {
-        let className = "";
         for (let i = 0; i < classLen; i++) className += String.fromCharCode(classBuf[i]);
         if (isDesktopShellWindowClass(className)) return recordNotFullscreen(foregroundId);
       }
@@ -232,12 +285,15 @@ function createForegroundFullscreenProbe(options = {}) {
         const style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         if (isMaximizedNormalWindow(style)) return recordNotFullscreen(foregroundId);
       }
+      const captureOverlay = isScreenCaptureOverlay(hwnd, className);
       // Fullscreen: report the window's identity, not just the verdict (#935).
       if (foregroundId != null) {
         lastObservation = { reliable: true, foregroundId, fullscreenId: foregroundId };
+        if (captureOverlay) lastObservation.captureOverlay = true;
         return foregroundId;
       }
       lastObservation = { reliable: true, foregroundId: null, fullscreenId: true };
+      if (captureOverlay) lastObservation.captureOverlay = true;
       return true;
     } catch (err) {
       // Any FFI hiccup at call time: behave as "not fullscreen" so the

@@ -49,6 +49,8 @@ const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const sizeContextListeners = new Set();
 const agentActivityListeners = new Set();
+const quotaRingProvidersListeners = new Set();
+const deepseekBalanceStatusListeners = new Set();
 const recapChangedListeners = new Set();
 const updateCheckStatusListeners = new Set();
 const requestedTabListeners = new Set();
@@ -95,6 +97,16 @@ ipcRenderer.on("settings:text-scale-context-changed", () => {
 ipcRenderer.on("settings:size-context-changed", () => {
   for (const cb of sizeContextListeners) {
     try { cb(); } catch (err) { console.warn("size context listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:quota-ring-providers-changed", (_event, providers) => {
+  for (const cb of quotaRingProvidersListeners) {
+    try { cb(providers); } catch (err) { console.warn("quota provider listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:deepseek-balance-status-changed", (_event, status) => {
+  for (const cb of deepseekBalanceStatusListeners) {
+    try { cb(status); } catch (err) { console.warn("DeepSeek balance status listener threw:", err); }
   }
 });
 ipcRenderer.on("settings:agent-activity", (_event, payload) => {
@@ -150,6 +162,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   reconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-reconnect"),
   disconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-disconnect"),
   forgetKimiQuotaCredential: () => ipcRenderer.invoke("settings:kimi-quota-forget"),
+  getDeepseekBalanceStatus: () => ipcRenderer.invoke("settings:deepseek-balance-status"),
+  connectDeepseekBalance: (apiKey) => ipcRenderer.invoke("settings:deepseek-balance-connect", { apiKey }),
+  reconnectDeepseekBalance: () => ipcRenderer.invoke("settings:deepseek-balance-reconnect"),
+  disconnectDeepseekBalance: () => ipcRenderer.invoke("settings:deepseek-balance-disconnect"),
+  forgetDeepseekBalanceCredential: () => ipcRenderer.invoke("settings:deepseek-balance-forget"),
   getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
   getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
   getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options"),
@@ -192,6 +209,8 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   openDashboard: () => ipcRenderer.send("settings:open-dashboard"),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
   pickAgentDiscoveryPath: (kind) => ipcRenderer.invoke("settings:pick-agent-discovery-path", { kind }),
+  getClaudeConfigDirs: () => ipcRenderer.invoke("settings:claude-config-dirs"),
+  pickClaudeConfigDir: () => ipcRenderer.invoke("settings:pick-claude-config-dir"),
   detectAgentInstallations: (opts) => ipcRenderer.invoke("settings:detect-agent-installations", opts),
   getDshNotices: () => ipcRenderer.invoke("settings:dsh-notices"),
   acknowledgeDshNotice: (profile, id) => ipcRenderer.invoke("settings:dsh-notice-ack", { profile, id }),
@@ -200,6 +219,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   clearUpdateError: () => ipcRenderer.invoke("settings:clear-update-error"),
   copyUpdateError: (copyText) => ipcRenderer.invoke("settings:copy-update-error", copyText),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
+  getStartupRenderState: () => ipcRenderer.invoke("settings:get-startup-render-state"),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
   listOfficialThemes: () => ipcRenderer.invoke("settings:list-official-themes"),
@@ -222,10 +242,23 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   confirmRemoveTheme: (themeId) =>
     ipcRenderer.invoke("settings:confirm-remove-theme", themeId),
   getMobileConnectionInfo: () => ipcRenderer.invoke("settings:mobile-connection-info"),
-  regenerateMobileToken: () => ipcRenderer.invoke("settings:regenerate-mobile-token"),
+  getMobileDevices: () => ipcRenderer.invoke("settings:mobile-devices"),
+  revokeMobileDevice: (id) => ipcRenderer.invoke("settings:revoke-mobile-device", id),
+  revokeMobileLegacy: () => ipcRenderer.invoke("settings:revoke-mobile-legacy"),
+  refreshMobilePairCode: () => ipcRenderer.invoke("settings:refresh-mobile-pair-code"),
   resetMobileAccess: () => ipcRenderer.invoke("settings:reset-mobile-access"),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
+  },
+  onDeepseekBalanceStatusChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    deepseekBalanceStatusListeners.add(cb);
+    return () => deepseekBalanceStatusListeners.delete(cb);
+  },
+  onQuotaRingProvidersChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    quotaRingProvidersListeners.add(cb);
+    return () => quotaRingProvidersListeners.delete(cb);
   },
   onAgentActivity: (cb) => {
     if (typeof cb !== "function") return () => {};

@@ -213,6 +213,59 @@ describe("updateSession: Notification hook gate", () => {
     assert.deepStrictEqual(ctx._soundsPlayed, ["confirm"], "Gemini notification must play confirm sound");
   });
 
+  it("lets Copilot Notification alert while storing idle and recording the event when the flag is on", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("copilot-1", "notification", "Notification", { agentId: "copilot-cli" });
+
+    const session = api.sessions.get("copilot-1");
+    assert.strictEqual(session.agentId, "copilot-cli");
+    assert.strictEqual(session.state, "idle");
+    assert.deepStrictEqual(session.recentEvents.map((entry) => entry.event), ["Notification"]);
+    const stateChanges = ctx._rendererEvents.filter(([ch]) => ch === "state-change");
+    assert.ok(stateChanges.some(([, state]) => state === "notification"));
+    assert.deepStrictEqual(ctx._soundsPlayed, ["confirm"]);
+
+    mock.timers.tick(defaultTheme.timings.autoReturn.notification + 1);
+    assert.strictEqual(api.getCurrentState(), "idle");
+    assert.deepStrictEqual(ctx._soundsPlayed, ["confirm"], "auto-return must not repeat the bell");
+  });
+
+  it("mutes Copilot Notification while storing idle and recording the event when the flag is off", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: false });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("copilot-1", "notification", "Notification", { agentId: "copilot-cli" });
+
+    const session = api.sessions.get("copilot-1");
+    assert.strictEqual(session.agentId, "copilot-cli");
+    assert.strictEqual(session.state, "idle");
+    assert.deepStrictEqual(session.recentEvents.map((entry) => entry.event), ["Notification"]);
+    const stateChanges = ctx._rendererEvents.filter(([ch]) => ch === "state-change");
+    assert.ok(stateChanges.length >= 1);
+    assert.ok(stateChanges.every(([, state]) => state !== "notification"));
+    assert.deepStrictEqual(ctx._soundsPlayed, []);
+  });
+
+  it("returns the Copilot session to working on postToolUse after Notification", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    ctx = makeCtx({ notificationHookEnabled: true });
+    api = require("../src/state")(ctx);
+
+    api.updateSession("copilot-1", "notification", "Notification", { agentId: "copilot-cli" });
+    assert.strictEqual(api.sessions.get("copilot-1").state, "idle");
+
+    api.updateSession("copilot-1", "working", "postToolUse", { agentId: "copilot-cli" });
+    assert.strictEqual(api.sessions.get("copilot-1").state, "working");
+    assert.deepStrictEqual(
+      api.sessions.get("copilot-1").recentEvents.map((entry) => entry.event),
+      ["Notification", "postToolUse"]
+    );
+  });
+
   it("mutes Qoder state-only permission notifications when the per-agent flag is off", () => {
     // Qoder is state-only: hooks/qoder-hook.js maps its PermissionRequest /
     // PermissionDenied events to a Clawd Notification event, so they ride this

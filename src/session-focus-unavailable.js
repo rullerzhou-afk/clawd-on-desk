@@ -16,6 +16,9 @@
     )) {
       return "sessionFocusUnavailableRemote";
     }
+    if (session && session.focusUnavailableReason === "linux-wayland-window-raise") {
+      return "sessionFocusUnavailableLinuxWayland";
+    }
     return "sessionFocusUnavailableMissingTerminalInfo";
   }
 

@@ -140,7 +140,7 @@ function buildAnimationPreviewPosterDescriptor(filename, theme, absPath, { fs = 
       posterVersion: ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION,
       size: stat.size,
       mtime: Math.round(stat.mtimeMs),
-      cacheKey: `${ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION}|${themeId}|${safeFilename}|${stat.size}|${Math.round(stat.mtimeMs)}`,
+      cacheKey: `${ANIMATION_OVERRIDE_PREVIEW_POSTER_VERSION}|${themeId}|${safeFilename}|${stat.size}|${Math.round(stat.mtimeMs)}|${absPath}`,
     };
   } catch {
     return null;
@@ -315,7 +315,8 @@ function createSettingsAnimationOverridesMain(options = {}) {
 
   function resolveAnimationAssetsDir(theme = getActiveTheme()) {
     if (!theme) return null;
-    const themeAssetsDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
+    const themeAssetsDir = theme._assetsSourceDir
+      || (theme._themeDir ? path.join(theme._themeDir, "assets") : null);
     if (themeAssetsDir && fs.existsSync(themeAssetsDir)) return themeAssetsDir;
     const idleFile = theme.states && theme.states.idle && theme.states.idle[0];
     if (!idleFile) return null;
@@ -632,10 +633,14 @@ function createSettingsAnimationOverridesMain(options = {}) {
 
   function listAnimationOverrideAssets(theme = getActiveTheme()) {
     if (!theme) return [];
+    // Overrides are stored by filename and must stay valid when the theme
+    // switches between light and dark. The selectable name set therefore comes
+    // from the light package; dark may mirror it (and may add extra files that
+    // the picker must not expose).
     const dirs = [];
-    const primaryDir = resolveAnimationAssetsDir(theme);
-    const sourceDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
-    for (const dir of [primaryDir, sourceDir]) {
+    const primaryDir = theme._builtin ? resolveAnimationAssetsDir(theme) : null;
+    const lightDir = theme._themeDir ? path.join(theme._themeDir, "assets") : null;
+    for (const dir of [primaryDir, lightDir]) {
       if (!dir || !fs.existsSync(dir)) continue;
       if (!dirs.includes(dir)) dirs.push(dir);
     }
@@ -975,6 +980,10 @@ function createSettingsAnimationOverridesMain(options = {}) {
     if (thinking) {
       thinking.sectionId = "work";
       workCards.push(thinking);
+    }
+    if (hasOwnStateFiles("executing")) {
+      const executing = buildStateCard("executing", "executing", themeOverrideMap, { sectionId: "work" });
+      if (executing) workCards.push(executing);
     }
     workCards.push(...buildTierCardGroup(
       "workingTiers",

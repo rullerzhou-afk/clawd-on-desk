@@ -1,6 +1,7 @@
 "use strict";
 
 const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+const { taggedFallbackTag } = globalThis.ClawdSessionHudTaggedFallback;
 
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
@@ -20,7 +21,8 @@ let sessionActionFeedbackTimer = null;
 const hudEl = document.getElementById("hud");
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
+  return !!session && !session.headless && session.state !== "sleeping"
+    && !session.hiddenFromHud && !session.hudHiddenByPreference;
 }
 
 function t(key) {
@@ -110,6 +112,7 @@ function orderedHudSessions(currentSnapshot) {
 const STATE_CHIP_MAP = {
   thinking: { key: "sessionThinking", cls: "chip-thinking" },
   working: { key: "sessionWorking", cls: "chip-working" },
+  executing: { key: "sessionExecuting", cls: "chip-working" },
   juggling: { key: "sessionJuggling", cls: "chip-juggling" },
 };
 
@@ -126,15 +129,26 @@ function makeChipInfo(entry) {
   return entry ? { label: t(entry.key), cls: entry.cls } : null;
 }
 
+function hasActiveSubagents(session) {
+  return Number.isSafeInteger(session && session.activeSubagentCount) && session.activeSubagentCount > 0;
+}
+
+function showUnreadCompletion(session) {
+  return !hasActiveSubagents(session) && !session.pendingAttention && session.badge === "done" && unreadSessions.has(session.id);
+}
+
 function stateChipInfo(session) {
   if (snapshot.hudShowStateLabels === false) {
     return session && session.startupRecovered
       ? { label: t("sessionRecovered"), cls: "chip-recovered" }
       : null;
   }
+  if (session.badge === "interrupted") return { label: t("sessionBadgeInterrupted"), cls: "chip-interrupted" };
+  if (session.pendingAttention) return makeChipInfo(EVENT_CHIP_MAP.PermissionRequest);
   const rawEvent = session && session.lastEvent && session.lastEvent.rawEvent;
   const eventChip = makeChipInfo(EVENT_CHIP_MAP[rawEvent]);
-  if (eventChip && session.badge !== "done" && session.badge !== "interrupted") return eventChip;
+  if (eventChip && (hasActiveSubagents(session) || (session.badge !== "done" && session.badge !== "interrupted"))) return eventChip;
+  if (hasActiveSubagents(session)) return makeChipInfo(STATE_CHIP_MAP[session.effectiveState] || STATE_CHIP_MAP.juggling);
 
   if (session.badge === "running") {
     const stateChip = makeChipInfo(STATE_CHIP_MAP[session.state]);
@@ -155,23 +169,33 @@ function stateChipInfo(session) {
 function usageChipInfo(session) {
   if (snapshot.hudShowContextUsage === false) return null;
   const usage = session && session.contextUsage;
-  if (!usage || !Number.isFinite(Number(usage.used))) return null;
-  const usedLabel = formatTokenCount(usage.used);
+  if (!usage) return null;
+  const usedKnown = Number.isFinite(Number(usage.used));
   const percentKnown = Number.isFinite(Number(usage.percent));
+  if (!usedKnown && !percentKnown) return null;
   if (percentKnown) {
     const percent = Math.max(0, Math.min(100, Math.round(Number(usage.percent))));
     const hasLimit = Number.isFinite(Number(usage.limit));
+    let title;
+    if (usedKnown && hasLimit) {
+      title = t("sessionHudContextUsageTooltip")
+        .replace("{used}", formatTokenCount(usage.used))
+        .replace("{limit}", formatTokenCount(usage.limit))
+        .replace("{percent}", percent);
+    } else if (usedKnown) {
+      title = t("sessionHudContextUsageTooltipUnknownLimit").replace("{used}", formatTokenCount(usage.used));
+    } else {
+      // Token counts unavailable (e.g. Qoder tokenCountsAvailable:false):
+      // show only the percentage, never a misleading "0 tokens" tooltip.
+      title = `${percent}%`;
+    }
     return {
       label: `${percent}%`,
       cls: percent >= 90 ? "usage-hot" : (percent >= 75 ? "usage-warm" : "usage-neutral"),
-      title: hasLimit
-        ? t("sessionHudContextUsageTooltip")
-          .replace("{used}", usedLabel)
-          .replace("{limit}", formatTokenCount(usage.limit))
-          .replace("{percent}", percent)
-        : t("sessionHudContextUsageTooltipUnknownLimit").replace("{used}", usedLabel),
+      title,
     };
   }
+  const usedLabel = formatTokenCount(usage.used);
   return {
     label: usedLabel,
     cls: "usage-neutral",
@@ -265,7 +289,7 @@ function createRowForSession(session, now) {
   left.className = "left";
 
   const dot = document.createElement("span");
-  dot.className = `dot dot-${session.badge || "idle"}`;
+  dot.className = `dot dot-${hasActiveSubagents(session) && session.badge !== "interrupted" ? "running" : (session.badge || "idle")}`;
   left.appendChild(dot);
 
   if (session.iconUrl) {
@@ -292,7 +316,26 @@ function createRowForSession(session, now) {
     : sessionTitle;
   const shortTitle = shortenHudTitle(fullTitle);
   title.className = feedbackText ? "title session-inline-feedback" : "title";
-  title.textContent = feedbackText || shortTitle;
+  const fallbackTag = !feedbackText && taggedFallbackTag(session);
+  if (fallbackTag) {
+    // Reserve the entire separator/tag, yielding project text and elapsed time
+    // first when the compact HUD cannot fit every secondary field.
+    title.classList.add("title-tagged-fallback");
+    left.classList.add("left-tagged-fallback");
+    row.classList.add("row-tagged-fallback");
+    const suffix = ` · ${fallbackTag}`;
+    const label = document.createElement("span");
+    label.className = "title-fallback-label";
+    label.textContent = fullTitle.slice(0, -suffix.length);
+    const tag = document.createElement("span");
+    tag.className = "title-fallback-tag";
+    tag.textContent = suffix;
+    title.appendChild(label);
+    title.appendChild(tag);
+    title.title = fullTitle;
+  } else {
+    title.textContent = feedbackText || shortTitle;
+  }
   if (feedbackText) {
     title.title = feedbackText;
     title.setAttribute("aria-live", "polite");
@@ -306,7 +349,7 @@ function createRowForSession(session, now) {
   right.className = "right";
   let hasRightContent = false;
 
-  if (!feedbackText && session.badge === "done" && unreadSessions.has(session.id)) {
+  if (!feedbackText && showUnreadCompletion(session)) {
     const bell = document.createElement("span");
     bell.className = "completion-bell unread-bell";
     bell.innerHTML = BELL_SVG;
@@ -360,6 +403,17 @@ function createRowForSession(session, now) {
     }
   }
 
+  if (!feedbackText && session.claudeProfileLabel) {
+    const profileChip = document.createElement("span");
+    profileChip.className = "profile-chip";
+    profileChip.textContent = session.claudeProfileLabel;
+    profileChip.title = session.claudeConfigDir
+      ? `${t("sessionClaudeProfile")}: ${session.claudeConfigDir}`
+      : t("sessionClaudeProfile");
+    right.appendChild(profileChip);
+    hasRightContent = true;
+  }
+
   const chipInfo = feedbackText ? null : stateChipInfo(session);
   if (chipInfo) {
     const chip = document.createElement("span");
@@ -390,7 +444,35 @@ function createRowForSession(session, now) {
   }
 
   row.appendChild(left);
-  if (hasRightContent) row.appendChild(right);
+  if (hasRightContent) {
+    if (fallbackTag) {
+      // The elapsed column contributes zero to the grid's intrinsic floor;
+      // mandatory chips retain their complete width while time can ellipsize.
+      right.classList.add("right-tagged-fallback");
+      right.style.gridTemplateColumns = Array.from(right.children, (child) =>
+        child.className === "elapsed" ? "minmax(0, 1fr)" : "max-content").join(" ");
+    }
+    row.appendChild(right);
+  }
+
+  if (!feedbackText && session.planProgress) {
+    const plan = session.planProgress;
+    const progressText = t("codexPlanProgress")
+      .replace("{completed}", plan.completed)
+      .replace("{total}", plan.total)
+      .replace("{percent}", plan.percent);
+    // An absolute 2px overlay uses no horizontal flex space, including at
+    // 160% HUD scale. The full steps/percentage stay available on hover.
+    const track = document.createElement("div");
+    track.className = "plan-progress-track";
+    track.setAttribute("aria-label", progressText);
+    const fill = document.createElement("div");
+    fill.className = "plan-progress-fill";
+    fill.style.width = String(Math.max(0, Math.min(100, plan.percent))) + "%";
+    track.appendChild(fill);
+    row.appendChild(track);
+    row.title = row.title ? row.title + " · " + progressText : progressText;
+  }
 
   row.addEventListener("click", () => {
     unreadSessions.delete(session.id);

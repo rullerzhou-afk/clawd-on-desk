@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Clawd — Qoder hook (Phase 1: state-only).
 //
-// Registered in ~/.qoder/settings.json by hooks/qoder-install.js. Reads the
+// Registered in Qoder / Qoder CN settings.json by hooks/qoder-install.js. Reads the
 // hook payload from stdin (JSON with hook_event_name), POSTs a state event to
 // the running Clawd server, and ALWAYS writes `{}` to stdout. Clawd never
 // answers a Qoder permission decision in Phase 1, so PermissionRequest /
@@ -26,7 +26,11 @@ const HOOK_MAP = {
   UserPromptSubmit:   { state: "thinking",     event: "UserPromptSubmit" },
   PreToolUse:         { state: "working",      event: "PreToolUse" },
   PostToolUse:        { state: "working",      event: "PostToolUse" },
-  PostToolUseFailure: { state: "error",        event: "PostToolUseFailure" },
+  // A failed call is per-tool progress, so working avoids flashing the pet's
+  // error animation and briefly marking the row as error. A subsequent Stop
+  // marks the turn done. Without another event, the working timeout can leave
+  // it interrupted.
+  PostToolUseFailure: { state: "working",      event: "PostToolUseFailure" },
   Stop:               { state: "attention",    event: "Stop" },
   Notification:       { state: "notification", event: "Notification" },
   // State-only: Qoder's permission events are surfaced as a passive Clawd
@@ -110,15 +114,15 @@ function isQoderAgentCommandLine(cmd) {
   const normalized = cmd.toLowerCase().replace(/\\/g, "/");
   return normalized.includes("node_modules/.bin/qodercli")
     || normalized.includes("node_modules/.bin/qoder")
-    || /(^|[\s"'/])qoder(cli|-cli)?(\.js)?($|[\s"'/])/.test(normalized);
+    || /(^|[\s"'/])qoder(cn|cli(?:cn)?|-cli)?(\.(?:js|exe|cmd))?($|[\s"'/])/.test(normalized);
 }
 
 const config = getPlatformConfig();
 const defaultResolve = createPidResolver({
   agentNames: {
-    win: new Set(["qoder.exe", "qodercli.exe", "qoder-cli.exe"]),
-    mac: new Set(["qoder", "qodercli", "qoder-cli"]),
-    linux: new Set(["qoder", "qodercli", "qoder-cli"]),
+    win: new Set(["qoder.exe", "qodercli.exe", "qoder-cli.exe", "qoder cn.exe", "qodercn.exe", "qoderclicn.exe"]),
+    mac: new Set(["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"]),
+    linux: new Set(["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"]),
   },
   agentCmdlineCheck: isQoderAgentCommandLine,
   platformConfig: config,

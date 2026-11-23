@@ -56,6 +56,10 @@ const {
   normalizePathList,
 } = require("./prefs");
 const {
+  MIN_TIMEOUT_MS: PERMISSION_REVIEW_MIN_TIMEOUT_MS,
+  MAX_TIMEOUT_MS: PERMISSION_REVIEW_MAX_TIMEOUT_MS,
+} = require("./permission-review-command");
+const {
   MAX_CUSTOM_APPLICATIONS,
   normalizeCustomApplications,
 } = require("./custom-applications");
@@ -92,6 +96,7 @@ const {
   requireEnum,
   requireString,
   requirePlainObject,
+  requireStringArray,
 } = require("./settings-validators");
 const { listIdleVisualOptions } = require("./idle-visual");
 const {
@@ -117,6 +122,11 @@ const {
   repairAgentIntegration,
 } = require("./settings-actions-agents");
 const {
+  addClaudeConfigDir,
+  removeClaudeConfigDir,
+  setClaudeConfigDirLabel,
+} = require("./settings-actions-claude-config-dirs");
+const {
   ANIMATION_OVERRIDES_EXPORT_VERSION,
   ONESHOT_OVERRIDE_STATES,
   importAnimationOverrides,
@@ -134,6 +144,7 @@ const {
   manageClaudeHooksAutomatically,
   openAtLogin,
   repairLocalServer,
+  restartClawd,
   uninstallHooks,
 } = require("./settings-actions-system");
 const {
@@ -203,6 +214,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "grok-build",
   "kiro-cli",
   "kirocrew",
+  "kiro-desktop",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -331,6 +343,8 @@ const updateRegistry = {
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
+  claudeTurnAskReminder: requireBoolean("claudeTurnAskReminder"),
+  claudeTurnAskReminderMinutes: requireIntegerInRange("claudeTurnAskReminderMinutes", 1, 120),
   testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
@@ -351,6 +365,23 @@ const updateRegistry = {
         return {
           status: "error",
           message: `petTint entry "${themeId}" must map a safe theme id to a non-default catalog tint id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  themeAppearance(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "themeAppearance must be a theme-to-appearance object" };
+    }
+    for (const [themeId, appearance] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || (appearance !== "light" && appearance !== "dark")
+      ) {
+        return {
+          status: "error",
+          message: `themeAppearance entry "${themeId}" must map a safe theme id to light or dark`,
         };
       }
     }
@@ -421,6 +452,8 @@ const updateRegistry = {
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
+  sessionHudHideCompletedCodexEphemeral: requireBoolean("sessionHudHideCompletedCodexEphemeral"),
+  sessionHudHideActiveCodexEphemeral: requireBoolean("sessionHudHideActiveCodexEphemeral"),
   sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
   quotaRingDisplayMode: requireEnum("quotaRingDisplayMode", ["used", "remaining"]),
   quotaAlertsEnabled: requireBoolean("quotaAlertsEnabled"),
@@ -450,6 +483,17 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  quotaRingShownProviders: {
+    commandOnly: true,
+    validate(value) {
+      // Matches prefs.normalizeQuotaRingShownProviders and geometry.RING_MAX_COINS;
+      // the command limits provider choices, while geometry limits actual coins.
+      return value === null || (Array.isArray(value) && value.length <= 3
+        && value.every((key) => typeof key === "string" && key.trim()))
+        ? { status: "ok" }
+        : { status: "error", message: "Choose at most 3 quota providers" };
+    },
+  },
   claudeQuotaCollectionEnabled: {
     validate: requireBoolean("claudeQuotaCollectionEnabled"),
     effect(value, deps = {}) {
@@ -459,9 +503,13 @@ const updateRegistry = {
       return deps.setClaudeQuotaCollectionEnabled(value);
     },
   },
-  // Only the dedicated, trusted Kimi quota IPC path may change this opt-in.
+  // Only dedicated, trusted credential IPC paths may change these opt-ins.
   // Generic settings:update/applyBulk/hydrate are intentionally rejected by
   // the controller's commandOnly boundary.
+  deepseekBalanceCollectionEnabled: {
+    validate: requireBoolean("deepseekBalanceCollectionEnabled"),
+    commandOnly: true,
+  },
   kimiQuotaCollectionEnabled: {
     validate: requireBoolean("kimiQuotaCollectionEnabled"),
     commandOnly: true,
@@ -472,6 +520,22 @@ const updateRegistry = {
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   destructiveActionReminder: requireBoolean("destructiveActionReminder"),
+  // Names an executable that Clawd runs when automation is about to allow a
+  // tool request. Command-only for the same reason the automation modes are:
+  // a generic settings:update must not be able to introduce process execution.
+  // The prefs file is the only writer in this first release (#995).
+  permissionReviewCommand: {
+    validate: requireStringArray("permissionReviewCommand"),
+    commandOnly: true,
+  },
+  permissionReviewTimeoutMs: {
+    validate: requireIntegerInRange(
+      "permissionReviewTimeoutMs",
+      PERMISSION_REVIEW_MIN_TIMEOUT_MS,
+      PERMISSION_REVIEW_MAX_TIMEOUT_MS
+    ),
+    commandOnly: true,
+  },
   // Permission automation is safety-sensitive: the command path owns its
   // warning/confirmation gate and the coupled mode + dismissal commit. Keep
   // the validators available for defensive command validation, but reject
@@ -554,8 +618,25 @@ const updateRegistry = {
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
-  freeRoam: requireBoolean("freeRoam"),
+  eyeTrackingEnabled: requireBoolean("eyeTrackingEnabled"),
+  freeRoam(value, deps = {}) {
+    const base = requireBoolean("freeRoam")(value);
+    if (base.status !== "ok") return base;
+    if (value && deps.snapshot && deps.snapshot.idleActivities === true) {
+      return { status: "error", message: "freeRoam and idleActivities are mutually exclusive; use setIdleBehavior to switch." };
+    }
+    return { status: "ok" };
+  },
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
+  idleActivities(value, deps = {}) {
+    const base = requireBoolean("idleActivities")(value);
+    if (base.status !== "ok") return base;
+    if (value && deps.snapshot && deps.snapshot.freeRoam === true) {
+      return { status: "error", message: "freeRoam and idleActivities are mutually exclusive; use setIdleBehavior to switch." };
+    }
+    return { status: "ok" };
+  },
+  idleActivityFrequency: requireEnum("idleActivityFrequency", ["low", "medium", "high"]),
   keepSizeAcrossDisplays: {
     validate: requireBoolean("keepSizeAcrossDisplays"),
     effect(value, deps = {}) {
@@ -569,6 +650,8 @@ const updateRegistry = {
   },
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
+  petAlwaysOnTop: requireBoolean("petAlwaysOnTop"),
+  disableHardwareAcceleration: requireBoolean("disableHardwareAcceleration"),
   mobilePreviewEnabled: {
     validate: requireBoolean("mobilePreviewEnabled"),
     lockKey: "mobilePreview",
@@ -875,6 +958,18 @@ function setKimiQuotaCollectionEnabled(payload) {
 }
 setKimiQuotaCollectionEnabled.lockKey = "kimiQuota";
 
+function setDeepseekBalanceCollectionEnabled(payload) {
+  const enabled = typeof payload === "boolean" ? payload : payload && payload.enabled;
+  if (typeof enabled !== "boolean") {
+    return {
+      status: "error",
+      message: "setDeepseekBalanceCollectionEnabled.enabled must be a boolean",
+    };
+  }
+  return { status: "ok", commit: { deepseekBalanceCollectionEnabled: enabled } };
+}
+setDeepseekBalanceCollectionEnabled.lockKey = "deepseekBalance";
+
 // Permission automation writer. A plain settings:update cannot reach this
 // field; both automatic modes require confirmation at the data layer, including
 // an auto-tools -> unattended escalation. Turning automation off is always
@@ -949,7 +1044,7 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
 
   const snapshot = deps.snapshot || {};
   if (snapshot.mobilePermissionPreviewEnabled === enabled) {
-    // Check before rotating so a double click cannot invalidate the token twice.
+    // Check before resetting so a double click cannot revoke access twice.
     return { status: "ok", noop: true };
   }
   if (!enabled) {
@@ -975,7 +1070,10 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
     // Reset is deliberately before the Settings commit: a reset failure must
     // leave disclosure disabled. The controller preserves these phase fields
     // if the later preference persistence fails.
-    deps.resetMobileAccess();
+    try { deps.resetMobileAccess(); }
+    catch (err) {
+      return { status: "error", message: err.message, partialReset: err.legacyRevoked === true };
+    }
     return {
       status: "ok",
       tokenReset: true,
@@ -986,7 +1084,7 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
   if (typeof deps.disconnectMobilePreviewClients !== "function") {
     return { status: "error", message: "mobile client reconnect is unavailable" };
   }
-  // Keeping the token authorizes all existing holders, but currently-open
+  // Keeping access authorizes paired devices and legacy holders; currently-open
   // sockets must still cross an explicit reconnect boundary before the broader
   // projection can begin flowing.
   deps.disconnectMobilePreviewClients();
@@ -998,23 +1096,54 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
   };
 }
 
-function regenerateMobileToken(_payload, deps = {}) {
-  if (typeof deps.regenerateMobileToken !== "function") {
-    return { status: "error", message: "mobile token regeneration is unavailable" };
+function refreshMobilePairCode(_payload, deps = {}) {
+  if (typeof deps.refreshMobilePairCode !== "function") {
+    return { status: "error", message: "mobile pairing is unavailable" };
   }
-  return { status: "ok", token: deps.regenerateMobileToken() };
+  try { deps.refreshMobilePairCode(); return { status: "ok" }; }
+  catch (err) { return { status: "error", message: err.message }; }
 }
 
 function resetMobileAccess(_payload, deps = {}) {
   if (typeof deps.resetMobileAccess !== "function") {
     return { status: "error", message: "mobile access reset is unavailable" };
   }
-  return { status: "ok", token: deps.resetMobileAccess() };
+  try { deps.resetMobileAccess(); return { status: "ok" }; }
+  catch (err) { return { status: "error", message: err.message, partialReset: err.legacyRevoked === true }; }
+}
+
+function revokeMobileDevice(payload, deps = {}) {
+  if (!payload || typeof payload.id !== "string" || payload.id.length !== 18 || !/^d_[a-f0-9]{16}$/.test(payload.id)) {
+    return { status: "error", message: "Invalid mobile device ID" };
+  }
+  if (typeof deps.revokeMobileDevice !== "function") {
+    return { status: "error", message: "mobile device revocation is unavailable" };
+  }
+  try {
+    const result = deps.revokeMobileDevice(payload.id);
+    return { status: "ok", mayHoldLegacy: result.mayHoldLegacy === true };
+  } catch (err) {
+    return { status: "error", message: err.message };
+  }
+}
+
+function revokeMobileLegacy(_payload, deps = {}) {
+  if (typeof deps.revokeMobileLegacy !== "function") {
+    return { status: "error", message: "mobile legacy revocation is unavailable" };
+  }
+  try {
+    deps.revokeMobileLegacy();
+    return { status: "ok" };
+  } catch (err) {
+    return { status: "error", message: err.message, partialRevoke: err.legacyRevoked === true };
+  }
 }
 
 setMobilePermissionPreviewEnabled.lockKey = "mobilePreview";
-regenerateMobileToken.lockKey = "mobilePreview";
+refreshMobilePairCode.lockKey = "mobilePreview";
 resetMobileAccess.lockKey = "mobilePreview";
+revokeMobileDevice.lockKey = "mobilePreview";
+revokeMobileLegacy.lockKey = "mobilePreview";
 
 function setBubbleCategoryEnabled(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -1197,6 +1326,11 @@ function buildThemeScopedPrefsCommit(themeId, snapshot) {
     delete nextPetTint[themeId];
     nextCommit.petTint = nextPetTint;
   }
+  if (current.themeAppearance && current.themeAppearance[themeId] !== undefined) {
+    const nextAppearance = { ...current.themeAppearance };
+    delete nextAppearance[themeId];
+    nextCommit.themeAppearance = nextAppearance;
+  }
   if (current.petAccessory && current.petAccessory[themeId] !== undefined) {
     const nextPetAccessory = { ...current.petAccessory };
     delete nextPetAccessory[themeId];
@@ -1308,6 +1442,7 @@ function applyThemeSelection(themeId, variantIdInput, overrideMap, deps) {
         petTint: activeTheme._capabilities.petTint === true,
         accessories: activeTheme._capabilities.accessories === true,
         mouthAccessories: activeTheme._capabilities.mouthAccessories === true,
+        darkAppearance: activeTheme._capabilities.darkAppearance === true,
       }
     : null;
 
@@ -1353,6 +1488,19 @@ function setThemeSelection(payload, deps) {
     commit: { theme: themeId, themeVariant: nextVariantMap },
     customizationCapabilities: selection.customizationCapabilities,
   };
+}
+
+function setIdleBehavior(payload, deps = {}) {
+  const mode = typeof payload === "string" ? payload : payload && payload.mode;
+  if (!["none", "roam", "activities"].includes(mode)) {
+    return { status: "error", message: "setIdleBehavior.mode must be none, roam, or activities" };
+  }
+  const commit = { freeRoam: mode === "roam", idleActivities: mode === "activities" };
+  const snapshot = deps.snapshot || {};
+  if (snapshot.freeRoam === commit.freeRoam && snapshot.idleActivities === commit.idleActivities) {
+    return { status: "ok", noop: true };
+  }
+  return { status: "ok", commit };
 }
 
 // #509: default idle visual picker.
@@ -1498,6 +1646,7 @@ const REMOTE_SSH_TRUSTED_PROFILE_FIELDS = Object.freeze([
   "isolatedRuntime",
 ]);
 const REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS = Object.freeze([
+  "remotePlatform",
   "lastDeployedAt",
   "managedDeployTargets",
   "detectedRemoteNodeBin",
@@ -1519,10 +1668,10 @@ function preserveTrustedRemoteProfileFields(target, source) {
   }
 }
 
-function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
+function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now(), remotePlatform = "posix") {
   if (!input || typeof input !== "object") return null;
   const nodeBin = input.nodeBin || input.detectedRemoteNodeBin;
-  if (!isValidDetectedRemoteNodeBin(nodeBin)) return null;
+  if (!isValidDetectedRemoteNodeBin(nodeBin, remotePlatform)) return null;
 
   const out = {
     detectedRemoteNodeBin: nodeBin,
@@ -1545,7 +1694,7 @@ function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
 }
 
 function copyRemoteNodeDetection(target, source) {
-  if (!target || !source || !isValidDetectedRemoteNodeBin(source.detectedRemoteNodeBin)) return;
+  if (!target || !source || !isValidDetectedRemoteNodeBin(source.detectedRemoteNodeBin, target.remotePlatform || "posix")) return;
   target.detectedRemoteNodeBin = source.detectedRemoteNodeBin;
   if (isValidDetectedRemoteNodeVersion(source.detectedRemoteNodeVersion)) {
     target.detectedRemoteNodeVersion = source.detectedRemoteNodeVersion;
@@ -1559,6 +1708,10 @@ function copyRemoteNodeDetection(target, source) {
 }
 
 function remoteSshAddProfile(payload, deps) {
+  if (payload && payload.tunnelMode !== undefined
+    && payload.tunnelMode !== "reverse" && payload.tunnelMode !== "stdio") {
+    return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
+  }
   const profile = sanitizeRemoteSshProfile(payload);
   if (!profile) {
     const detail = validateRemoteSshProfile(payload || {});
@@ -1581,6 +1734,10 @@ function remoteSshAddProfile(payload, deps) {
 function remoteSshUpdateProfile(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "remoteSsh.update: payload must be an object" };
+  }
+  if (payload && payload.tunnelMode !== undefined
+    && payload.tunnelMode !== "reverse" && payload.tunnelMode !== "stdio") {
+    return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
   }
   const profile = sanitizeRemoteSshProfile(payload);
   if (!profile) {
@@ -1648,6 +1805,7 @@ function remoteSshUpdateProfile(payload, deps) {
   const managedDeployTargets = normalizeManagedDeployTargets(prev.managedDeployTargets);
   if (managedDeployTargets.length) profile.managedDeployTargets = managedDeployTargets;
   if (drift === null) {
+    if (prev.remotePlatform !== undefined) profile.remotePlatform = prev.remotePlatform;
     if (Number.isFinite(prev.lastDeployedAt)) {
       profile.lastDeployedAt = prev.lastDeployedAt;
     }
@@ -1685,13 +1843,39 @@ function remoteSshBeginIdentityRotation(payload, deps) {
   const idx = next.profiles.findIndex((profile) => profile.id === id);
   if (idx === -1) return { status: "error", message: "remoteSsh.beginIdentityRotation: profile not found" };
   const current = next.profiles[idx];
+  const remotePlatform = payload.remotePlatform || "posix";
+  if (payload.expectedTarget && (
+    deployTargetDrift(deployTargetFingerprint(current), deployTargetFingerprint(payload.expectedTarget))
+    || (current.sshTransportMode || "auto") !== (payload.expectedTarget.sshTransportMode || "auto")
+  )) {
+    return { status: "error", reason: "profile_changed", message: "SSH target changed during platform discovery; retry deployment." };
+  }
+  if (remotePlatform !== "posix" && remotePlatform !== "win32") {
+    return { status: "error", message: "remoteSsh.beginIdentityRotation: invalid remote platform" };
+  }
   if (current.identityTxn && current.identityTxn.phase !== "committed") {
+    if ((current.identityTxn.remotePlatform || "posix") !== remotePlatform) {
+      if (Object.values(current.identityTxn.steps || {}).some((step) => step.status === "done" || step.status === "failed")) {
+        return { status: "error", reason: "identity_txn_platform_mismatch", message: "The pending identity transaction belongs to another remote platform; resolve it before deploying." };
+      }
+      const previousTxn = current.identityTxn;
+      // A platform retry continues the original rotation and its grace period.
+      // A null source stays revoked; the 1ms expiry is only a schema placeholder.
+      const txn = createIdentityTxn({ ...current, identityTxn: null, routingNonce: previousTxn.fromNonce }, {
+        remotePlatform,
+        now: () => previousTxn.startedAt,
+        previousNonceTtlMs: 1,
+      });
+      if (previousTxn.fromNonce) txn.previousExpiresAt = previousTxn.previousExpiresAt;
+      next.profiles[idx] = { ...current, identityTxn: txn };
+      return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
+    }
     return { status: "ok", noop: true, identityTxn: current.identityTxn };
   }
   // Randomness and time sources are main-process authority. Never accept
   // renderer-supplied options here, even though the IPC boundary also blocks
   // this internal command.
-  const txn = createIdentityTxn(current);
+  const txn = createIdentityTxn(current, { remotePlatform });
   next.profiles[idx] = { ...current, identityTxn: txn };
   return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
 }
@@ -1754,6 +1938,9 @@ function remoteSshBeginRuntimeModeSwitch(payload, deps) {
     return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch.runtimeMode is invalid" };
   }
   const current = next.profiles[idx];
+  if (current.remotePlatform === "win32" && runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED) {
+    return { status: "error", reason: "windows_profile_isolated_unsupported" };
+  }
   if (current.identityTxn && current.identityTxn.phase !== "committed") {
     return {
       status: "error",
@@ -1913,12 +2100,17 @@ function remoteSshMarkDeployed(payload, deps) {
     return { status: "ok", noop: true, reason: "profile_deleted" };
   }
   const current = next.profiles[idx];
-  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  const remotePlatform = payload.remotePlatform || "posix";
+  if (remotePlatform !== "posix" && remotePlatform !== "win32") {
+    return { status: "error", message: "remoteSsh.markDeployed: invalid remote platform" };
+  }
+  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt, remotePlatform);
   const targetAtDeployStart = expectedTarget && typeof expectedTarget === "object"
     ? expectedTarget
     : current;
   const ownedTarget = sanitizeManagedDeployTarget({
     ...deployTargetFingerprint(targetAtDeployStart),
+    ...(payload.remotePlatform !== undefined ? { remotePlatform } : {}),
     ...(payload.sshTransportHint ? { sshTransportHint: payload.sshTransportHint } : {}),
     ...(remoteNode || {}),
     ...(isValidInstallId(payload.installId) && typeof payload.remoteHome === "string"
@@ -1967,6 +2159,7 @@ function remoteSshMarkDeployed(payload, deps) {
   // survive.
   const updatedProfile = {
     ...current,
+    ...(payload.remotePlatform !== undefined ? { remotePlatform } : {}),
     lastDeployedAt: deployedAt,
     managedDeployTargets: ownedTargets,
   };
@@ -2006,16 +2199,16 @@ function remoteSshMarkRemoteNode(payload, deps) {
   if (typeof id !== "string" || !id) {
     return { status: "error", message: "remoteSsh.markRemoteNode.id must be a non-empty string" };
   }
-  const remoteNode = normalizeRemoteNodeDetection(payload);
-  if (!remoteNode) {
-    return { status: "error", message: "remoteSsh.markRemoteNode.nodeBin must be an absolute POSIX path" };
-  }
   const next = _remoteSshSnapshot(deps);
   const idx = next.profiles.findIndex((p) => p.id === id);
+  const current = idx === -1 ? null : next.profiles[idx];
+  const remoteNode = normalizeRemoteNodeDetection(payload, Date.now(), (current && current.remotePlatform) || "posix");
+  if (!remoteNode) {
+    return { status: "error", message: `remoteSsh.markRemoteNode.nodeBin must be an absolute ${current && current.remotePlatform === "win32" ? "Windows" : "POSIX"} path` };
+  }
   if (idx === -1) {
     return { status: "ok", noop: true, reason: "profile_deleted" };
   }
-  const current = next.profiles[idx];
   if (expectedTarget && typeof expectedTarget === "object") {
     const drift = deployTargetDrift(
       deployTargetFingerprint(current),
@@ -2707,7 +2900,33 @@ function setTextScaleForDisplay(payload, deps) {
   return { status: "ok", commit: { textScaleByDisplay: next } };
 }
 
+function setQuotaRingProviderShown(payload, deps = {}) {
+  if (!payload || typeof payload.key !== "string" || !payload.key.trim()
+    || typeof payload.shown !== "boolean") {
+    return { status: "error", message: "A provider key and shown flag are required" };
+  }
+  const snapshot = deps.snapshot || {};
+  // The UI passes the actual visible set for the first toggle. After that,
+  // durable selections win over stale UI lists and preserve absent providers.
+  // Keep this provider-choice cap in sync with the validator above, prefs'
+  // normalization and quota-ring-geometry.RING_MAX_COINS.
+  const current = Array.isArray(snapshot.quotaRingShownProviders)
+    ? snapshot.quotaRingShownProviders : payload.currentShownProviders;
+  if (!Array.isArray(current) || current.length > 3
+    || current.some((key) => typeof key !== "string" || !key.trim())) {
+    return { status: "error", message: "Current quota selection must contain at most 3 provider keys" };
+  }
+  const key = payload.key.replace(/\0/g, "").trim().slice(0, 64);
+  const next = [...new Set(current)].filter((entry) => entry !== key);
+  if (payload.shown) next.push(key);
+  if (next.length > 3 || !key) {
+    return { status: "error", message: "Choose at most 3 quota providers" };
+  }
+  return { status: "ok", commit: { quotaRingShownProviders: next } };
+}
+
 const commandRegistry = {
+  setQuotaRingProviderShown,
   addCustomApplication,
   removeTheme,
   installHooks,
@@ -2723,10 +2942,14 @@ const commandRegistry = {
   removeCustomApplication,
   repairAgentIntegration,
   setAgentCustomDiscoveryPaths,
+  addClaudeConfigDir,
+  removeClaudeConfigDir,
+  setClaudeConfigDirLabel,
   setAgentCustomPermissionUrl,
   uninstallAgentIntegration,
   repairLocalServer,
   repairDoctorIssue,
+  restartClawd,
   resizePet,
   registerShortcut,
   resetShortcut,
@@ -2735,10 +2958,13 @@ const commandRegistry = {
   setAgentPermissionMode,
   setAllBubblesHidden,
   setKimiQuotaCollectionEnabled,
+  setDeepseekBalanceCollectionEnabled,
   setPermissionAutomationMode,
   setMobilePermissionPreviewEnabled,
-  "mobilePreview.regenerateToken": regenerateMobileToken,
+  "mobilePreview.refreshPairCode": refreshMobilePairCode,
   "mobilePreview.resetAccess": resetMobileAccess,
+  "mobilePreview.revokeDevice": revokeMobileDevice,
+  "mobilePreview.revokeLegacy": revokeMobileLegacy,
   setBubbleCategoryEnabled,
   "sessionCleanup.setTriple": setSessionCleanupTriple,
   setSessionAlias,
@@ -2751,6 +2977,7 @@ const commandRegistry = {
   setWideHitboxOverride,
   setThemeSelection,
   setIdleVisual,
+  setIdleBehavior,
   "officialTheme.commitInstall": officialThemeCommitInstall,
   "officialTheme.uninstall": officialThemeUninstall,
   "remoteSsh.add": remoteSshAddProfile,

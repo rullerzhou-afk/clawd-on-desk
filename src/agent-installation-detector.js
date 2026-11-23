@@ -14,6 +14,7 @@ const zcode = require("../hooks/zcode-install");
 const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
 const grok = require("../hooks/grok-install");
+const qoder = require("../hooks/qoder-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication, isLaunchable } = require("./custom-applications");
 
@@ -43,6 +44,62 @@ const GEMINI_PRODUCT_ARTIFACT_FILES = Object.freeze([
   "installation_id",
   "projects.json",
 ]);
+
+// Product-owned artifacts for the hook-config agents whose settings file is
+// also the registry Clawd writes into (#958 ruled the file alone out as
+// evidence). Each list is closed: files or directories that only the product
+// creates — auth stores and runtime data — never anything Clawd or a generic
+// tool would write. Sources:
+// - ZCode: official FAQ (zcode-ai.com/newdocs/qa) — ~/.zcode/v2/ holds the
+//   per-device credentials.json, telemetry-state.json and provider config;
+//   ~/.zcode/cli/exec/ stores terminal command output and "ZCode recreates it
+//   as needed".
+// - Qoder: the CLI device-flow auth store lives at ~/.qoder/.auth/ (user
+//   credential file inside); projects/, logs/, bin/ and state.json are
+//   runtime data the CLI maintains itself. Clawd only ever writes
+//   ~/.qoder/settings.json.
+// - CodeBuddy: official docs (codebuddy.ai/docs/cli/codebuddy-dir) mark
+//   logs/, projects/, sessions/, history.jsonl, traces/, shell-snapshots/,
+//   local_storage/, usage-data/, debug/, tasks/, teams/, blobs/, channels/,
+//   computer-use/ and file-history/ as "maintained automatically by
+//   CodeBuddy Code". Clawd only ever writes ~/.codebuddy/settings.json.
+// Pin the documented file/directory kinds as well as the names: a directory
+// named credentials.json or a file named logs is not that product artifact.
+// null retains the existing kind compatibility where the contract is unpinned;
+// in particular, do not infer Qoder .auth's kind from the leading dot/name.
+// Artifact symlinks retain their existing acceptance policy independently.
+const HOOK_CONFIG_AGENT_PRODUCT_ARTIFACTS = Object.freeze({
+  qoder: Object.freeze({
+    ".auth": null,
+    projects: "dir",
+    logs: "dir",
+    bin: "dir",
+    "state.json": "file",
+  }),
+  zcode: Object.freeze({
+    [path.join("v2", "credentials.json")]: "file",
+    [path.join("v2", "telemetry-state.json")]: "file",
+    [path.join("v2", "config.json")]: "file",
+    [path.join("cli", "exec")]: "dir",
+  }),
+  codebuddy: Object.freeze({
+    projects: "dir",
+    sessions: "dir",
+    logs: "dir",
+    "history.jsonl": "file",
+    "file-history": "dir",
+    traces: "dir",
+    "shell-snapshots": "dir",
+    local_storage: "dir",
+    "usage-data": "dir",
+    debug: "dir",
+    tasks: "dir",
+    teams: "dir",
+    blobs: "dir",
+    channels: "dir",
+    "computer-use": "dir",
+  }),
+});
 
 function dirExists(fsImpl, dirPath) {
   if (!dirPath) return false;
@@ -169,6 +226,12 @@ function resolveAgentPaths(descriptor, options) {
   const homeDir = options.homeDir || os.homedir();
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
+
+  if (descriptor.agentId === "qoder") {
+    const configTargets = qoder.resolveQoderConfigTargets({ homeDir, env, platform });
+    const primary = configTargets.find((target) => dirExists(options.fs || fs, target.parentDir)) || configTargets[0];
+    return finalizeAgentPaths(descriptor, { ...primary, configTargets }, options);
+  }
 
   if (descriptor.agentId === "copilot-cli") {
     const parentDir = copilot.resolveCopilotHome({ homeDir, env });
@@ -378,6 +441,25 @@ function detectOwnedHookConfigInstallation(descriptor, paths, options) {
     && hookConfigHasProductContent(descriptor.agentId, classified.parsed, descriptor.marker)) {
     return installationResult(true, "high", "config-file", `${paths.configPath} contains product configuration`);
   }
+
+  // Second evidence path (#1203 follow-up to the #958 review): auth stores and
+  // runtime data that only the product itself creates. An empty or Clawd-only
+  // settings file no longer hides a genuinely used product, while a folder
+  // that only appeared because some tool created it empty stays insufficient.
+  for (const [artifact, expectedKind] of Object.entries(HOOK_CONFIG_AGENT_PRODUCT_ARTIFACTS[descriptor.agentId] || {})) {
+    const artifactPath = path.join(paths.parentDir, artifact);
+    const artifactInfo = lstatPath(fsImpl, artifactPath);
+    if (artifactInfo.kind === "symlink"
+      || artifactInfo.kind === expectedKind
+      || (expectedKind === null && (artifactInfo.kind === "dir" || artifactInfo.kind === "file"))) {
+      return installationResult(
+        true,
+        "high",
+        "product-artifact",
+        `${artifactPath} is product-owned ${descriptor.agentName} data`
+      );
+    }
+  }
   return insufficient(`${paths.parentDir} exists without accepted ${descriptor.agentName} product evidence`);
 }
 
@@ -516,9 +598,14 @@ function detectInstallation(descriptor, paths, options) {
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
     case "zcode":
-    case "qoder":
     case "codebuddy":
       return detectOwnedHookConfigInstallation(descriptor, paths, options);
+    case "qoder": {
+      const results = paths.configTargets.map((target) => detectOwnedHookConfigInstallation(descriptor, target, options));
+      return results.find((result) => result.detectedInstalled === true)
+        || results.find((result) => result.detectedInstalled === null)
+        || results[0];
+    }
     case "reasonix":
       for (const target of paths.configTargets || []) {
         if (dirExists(fsImpl, target.parentDir)) {
@@ -526,6 +613,17 @@ function detectInstallation(descriptor, paths, options) {
         }
       }
       return notFound();
+    case "kiro-desktop": {
+      const homeDir = options.homeDir || os.homedir();
+      if ((options.platform || process.platform) === "darwin") {
+        const applications = ["/Applications/Kiro.app", path.join(homeDir, "Applications", "Kiro.app")];
+        const application = applications.find(filename => dirExists(fsImpl, filename));
+        if (application) return installationResult(true, "high", "desktop-app", `${application} exists`);
+      }
+      const sessionsDir = path.join(homeDir, ".kiro", "sessions");
+      if (dirExists(fsImpl, sessionsDir)) return installationResult(true, "medium", "sessions-dir", `${sessionsDir} exists`);
+      return notFound();
+    }
     case "kiro-cli":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       if (dirExists(fsImpl, paths.configPath)) return installationResult(true, "medium", "config-dir", `${paths.configPath} exists`);

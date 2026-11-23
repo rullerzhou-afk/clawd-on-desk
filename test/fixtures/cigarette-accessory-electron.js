@@ -1,8 +1,9 @@
 "use strict";
 
 const path = require("node:path");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const themeLoader = require("../../src/theme-loader");
+const { createRendererConfigChannel } = require("../../src/renderer-config-channel");
 
 const HTML = path.join(__dirname, "cigarette-accessory-electron.html");
 const ROOT = path.join(__dirname, "..", "..");
@@ -59,13 +60,32 @@ async function assertProductionStack(win) {
     "cigarette SVG root did not fill object height within one device pixel");
 
   await win.webContents.executeJavaScript(`document.getElementById("cigarette").style.visibility = "hidden"`);
-  const baseline = await win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 });
+  const baseline = await capturePaintedPixel(win);
   await win.webContents.executeJavaScript(`document.getElementById("cigarette").style.visibility = "visible"`);
-  const stacked = await win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 });
+  const stacked = await capturePaintedPixel(win);
   assert(
     baseline.toDataURL() === stacked.toDataURL(),
     "transparent mouth object canvas obscured the real pet layer beneath it"
   );
+}
+
+async function capturePaintedPixel(win) {
+  // Allow a rendering cycle for visibility changes before invalidating.
+  await win.webContents.executeJavaScript(`new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  })`);
+  // invalidate() may re-emit a cached frame. Wait for an offscreen paint surface
+  // before capturing the pixel; the visual assertion is never retried.
+  await new Promise((resolve, reject) => {
+    const painted = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      win.webContents.removeListener("paint", painted);
+      reject(new Error("cigarette compositor frame timed out"));
+    }, 5000);
+    win.webContents.once("paint", painted);
+    win.webContents.invalidate();
+  });
+  return win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 }, { stayHidden: true, stayAwake: true });
 }
 
 async function inspect(win, seconds) {
@@ -121,6 +141,11 @@ async function assertProductionRendererBootsMouthObject() {
     },
   };
 
+  // Mirror the real app: the production preload reads this over sync IPC, so
+  // an argv-only fixture would leave sendSync without a responder.
+  const rendererConfigChannel = createRendererConfigChannel({ ipcMain });
+  rendererConfigChannel.setPetConfig(config);
+
   const win = new BrowserWindow({
     show: false,
     width: 200,
@@ -130,7 +155,6 @@ async function assertProductionRendererBootsMouthObject() {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
-      additionalArguments: [`--theme-config=${JSON.stringify(config)}`],
     },
   });
   try {
@@ -176,6 +200,14 @@ async function assertProductionRendererBootsMouthObject() {
     assert(result.assetFile === "cigarette.svg", "production renderer selected the wrong mouth asset");
     assert(result.width > 0 && result.height > 0, "production renderer gave the cigarette an empty layout");
     assert(result.rootWidth === "100%" && result.rootHeight === "100%", "production cigarette root did not fill its object");
+    const clock = await win.webContents.executeJavaScript(`new Promise((resolve) => {
+      const root = document.getElementById("clawd-mouth-accessory").contentDocument.documentElement;
+      const start = root.getCurrentTime();
+      const paused = root.animationsPaused();
+      setTimeout(() => resolve({ paused, stillPaused: root.animationsPaused(), elapsed: root.getCurrentTime() - start }), 500);
+    })`);
+    assert(clock.paused && clock.stillPaused, "production cigarette SMIL timeline was not held paused");
+    assert(clock.elapsed >= 0.2 && clock.elapsed <= 1.5, `production cigarette clock advanced by ${clock.elapsed} seconds`);
   } finally {
     if (!win.isDestroyed()) win.destroy();
   }
@@ -187,7 +219,7 @@ async function main() {
     show: false,
     width: 160,
     height: 160,
-    webPreferences: { backgroundThrottling: false },
+    webPreferences: { backgroundThrottling: false, offscreen: true },
   });
   try {
     await win.loadFile(HTML);

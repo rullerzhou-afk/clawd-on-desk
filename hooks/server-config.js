@@ -10,6 +10,7 @@ const SERVER_PORT_COUNT = 5;
 const SERVER_PORTS = Array.from({ length: SERVER_PORT_COUNT }, (_, i) => DEFAULT_SERVER_PORT + i);
 const STATE_PATH = "/state";
 const PERMISSION_PATH = "/permission";
+const LOCAL_PERMISSION_PATH = "/permission/clawd-on-desk";
 const DEFAULT_HOOK_HTTP_TIMEOUT_MS = 100;
 const REMOTE_HOOK_HTTP_TIMEOUT_MS = 5000;
 const REMOTE_IDENTITY_FILENAME = "clawd-remote.json";
@@ -36,8 +37,14 @@ const SECURE_TRANSPORT_FAILURE_REASONS = new Set([
 ]);
 
 function normalizePort(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]{0,4}$/.test(value))) return null;
   const port = Number(value);
-  return Number.isInteger(port) && SERVER_PORTS.includes(port) ? port : null;
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+function normalizeRemotePort(value) {
+  const port = normalizePort(value);
+  return SERVER_PORTS.includes(port) ? port : null;
 }
 
 function defaultRuntimeConfigPath(options = {}) {
@@ -167,6 +174,20 @@ function envFlagEnabled(value) {
   return !!value && !/^(0|false)$/i.test(String(value));
 }
 
+function isRemoteHookRuntime({ argv = process.argv, env = process.env } = {}) {
+  return !!env.CLAWD_REMOTE || argv.slice(2).includes("--clawd-ssh-remote");
+}
+
+function applySshRemoteFlag({ argv = process.argv, env = process.env, scriptDir = __dirname, homedir = os.homedir() } = {}) {
+  if (!argv.slice(2).includes("--clawd-ssh-remote")) return;
+  env.CLAWD_REMOTE = "1";
+  env.CLAWD_SSH_REMOTE = "1";
+  env.CLAWD_REMOTE_IDENTITY_PATH = path.join(scriptDir, REMOTE_IDENTITY_FILENAME);
+  env.CLAWD_SSH_SECURE_MARKER_PATH = path.join(scriptDir, SSH_SECURE_MARKER_FILENAME);
+  env.CLAWD_HOST_PREFIX_PATH = path.join(scriptDir, HOST_PREFIX_FILENAME);
+  env.CLAWD_REMOTE_LAST_LOG_PATH = path.join(homedir, ".clawd", "remote-last-error.log");
+}
+
 function isSshSecureMode(options = {}) {
   if (options.sshSecure === true) return true;
   if (options.sshSecure === false) return false;
@@ -197,7 +218,7 @@ function readRemoteIdentity(options = {}) {
   } catch {
     return { ok: false, reason: "identity-unreadable", filePath };
   }
-  const port = normalizePort(raw && raw.remotePort);
+  const port = normalizeRemotePort(raw && raw.remotePort);
   if (!raw
     || typeof raw !== "object"
     || Array.isArray(raw)
@@ -230,6 +251,17 @@ function readRemoteIdentity(options = {}) {
 
 function resolveSecureTransport(options = {}) {
   if (!isSshSecureMode(options)) return { secure: false, identity: null };
+  if ((options.argv || process.argv).slice(2).includes("--clawd-ssh-remote")) {
+    let markerValid = false;
+    try {
+      markerValid = (options.readFileSync || fs.readFileSync)(resolveSshSecureMarkerPath(options), "utf8").trim()
+        === SSH_SECURE_MARKER_FILENAME;
+    } catch {}
+    if (!markerValid) {
+      recordSecureTransportFailure("identity-invalid", options);
+      return { secure: true, identity: null, reason: "identity-invalid" };
+    }
+  }
   const identity = options.remoteIdentity && options.remoteIdentity.ok !== undefined
     ? options.remoteIdentity
     : readRemoteIdentity(options);
@@ -377,6 +409,22 @@ function readRuntimeConfig(options = {}) {
 function readRuntimePort(options = {}) {
   const config = readRuntimeConfig(options);
   return config ? config.port : null;
+}
+
+// Only a live runtime may supply an out-of-range static HTTP hook URL.
+// A server caller passes its actual listener explicitly; standalone installers
+// must not republish a crashed instance's dynamic port from disk.
+function resolveInstallServerPort(explicitPort, options = {}) {
+  const explicit = normalizePort(explicitPort);
+  if (explicit) return explicit;
+  const runtime = readRuntimeIdentity(options);
+  if (runtime.ok) {
+    const alive = options.isProcessAlive || ((pid) => {
+      try { process.kill(pid, 0); return true; } catch (err) { return err.code === "EPERM"; }
+    });
+    if (SERVER_PORTS.includes(runtime.port) || alive(runtime.ownerPid)) return runtime.port;
+  }
+  return normalizeRemotePort(readRuntimePort(options)) || DEFAULT_SERVER_PORT;
 }
 
 // Strict identity for the zero-spawn resolver gate. ok=true means the file is a
@@ -546,8 +594,9 @@ function splitPortCandidates(preferredPort, options = {}) {
 }
 
 function buildPermissionUrl(port, routingNonce, transport = "path") {
-  const safePort = normalizePort(port) || DEFAULT_SERVER_PORT;
   const nonce = ROUTING_NONCE_RE.test(routingNonce || "") ? routingNonce : "";
+  const safePort = (nonce ? normalizeRemotePort(port) : normalizePort(port)) || DEFAULT_SERVER_PORT;
+  if (!nonce && !SERVER_PORTS.includes(safePort)) return `http://127.0.0.1:${safePort}${LOCAL_PERMISSION_PATH}`;
   if (nonce && transport === "query") {
     return `http://127.0.0.1:${safePort}${PERMISSION_PATH}?nonce=${nonce}`;
   }
@@ -562,6 +611,10 @@ function buildPermissionUrl(port, routingNonce, transport = "path") {
 // contains "/permission" and must never be rewritten or deleted.
 function isManagedPermissionUrl(value) {
   if (typeof value !== "string") return false;
+  // Match before URL normalization: dot segments, encoded paths and backslashes
+  // must not turn a foreign URL into our exact ownership marker.
+  const local = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/permission\/clawd-on-desk$/.exec(value);
+  if (local && local[0] === value) return normalizePort(local[1]) !== null;
   try {
     const parsed = new URL(value);
     const port = Number(parsed.port);
@@ -1363,6 +1416,9 @@ async function resolveNodeBinAsync(options = {}) {
 }
 
 module.exports = {
+  LOCAL_PERMISSION_PATH,
+  normalizeLocalPort: normalizePort,
+  resolveInstallServerPort,
   APPIMAGE_HOOK_MARKER_FILE,
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -1396,6 +1452,8 @@ module.exports = {
   defaultRuntimeConfigPath,
   isManagedPermissionUrl,
   isRemoteHookMode,
+  isRemoteHookRuntime,
+  applySshRemoteFlag,
   isSshSecureMode,
   discoverClawdPort,
   getPortCandidates,

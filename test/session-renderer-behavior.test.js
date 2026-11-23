@@ -171,6 +171,7 @@ function translations() {
     dashboardKimiQuotaEmpty: "No quota data yet. Click refresh to fetch it.",
     dashboardKimiQuotaRefreshShort: "Refresh",
     dashboardModel: "Model",
+    dashboardContextUsage: "Context usage",
   };
 }
 
@@ -298,6 +299,7 @@ async function loadHud(sessions, openResult = { status: "ok" }) {
     clearTimeout: () => { feedbackTimeout = null; },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-focus-unavailable.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-hud-tagged-fallback.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-hud-renderer.js"), "utf8"), context);
   await flush();
   snapshotListener({ sessions, orderedIds: sessions.map((entry) => entry.id) });
@@ -337,6 +339,17 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
   assert.deepStrictEqual(jumpButtons(cards[1]), []);
   assert.deepStrictEqual(jumpButtons(cards[2]).map((button) => button.disabled), [true]);
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
+});
+
+test("HUD and Dashboard render context usage with a percentage alone", async () => {
+  const rows = [session("qoder", { agentId: "qoder", contextUsage: { percent: 37 } })];
+  const hud = await loadHud(rows);
+  const [chip] = byClass(hud.root, "usage-chip");
+  assert.equal(chip?.textContent, "37%");
+  assert.equal(chip?.title, "37%");
+
+  const dashboard = await loadDashboard(rows);
+  assert.deepEqual(byClass(dashboard.root, "context-usage-row").map((row) => row.textContent), ["Context usage: 37%"]);
 });
 
 test("Dashboard labels a DSH desktop target as opening the app, not the terminal", async () => {
@@ -699,6 +712,17 @@ test("Dashboard keeps session automation failure feedback visible after rerender
     byClass(root, "session-automation-feedback")[0].textContent,
     "Could not update session automation."
   );
+});
+
+test("completed temporary chat preference changes HUD rows while Dashboard keeps the same sessions", async () => {
+  const rows = [session("active", { state: "working" }),
+    session("completed-temporary", { badge: "done", hudHiddenByPreference: true })];
+  const hud = await loadHud(rows);
+  assert.strictEqual(byClass(hud.root, "row").length, 1);
+  const dashboard = await loadDashboard(rows);
+  assert.strictEqual(byClass(dashboard.root, "card").length, 2);
+  hud.pushSnapshot(rows.map(row => ({ ...row, hudHiddenByPreference: false })));
+  assert.strictEqual(byClass(hud.root, "row").length, 2);
 });
 
 test("HUD unfocusable click explains why and offers folder only for local non-webui", async () => {

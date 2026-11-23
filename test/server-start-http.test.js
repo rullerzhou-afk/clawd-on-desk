@@ -35,7 +35,7 @@ function makeFakeServerFactory({ occupied = [] } = {}) {
     server.close = function close() { server.listening = false; };
     server.address = function address() {
       return server.listening
-        ? { address: "127.0.0.1", port: listenCalls[listenCalls.length - 1] }
+        ? { address: "127.0.0.1", port: listenCalls[listenCalls.length - 1] || 45000 }
         : null;
     };
     return server;
@@ -54,6 +54,9 @@ function makeApi({ occupied = [], candidates = [23333, 23334, 23335], runtimePor
     writeRuntimeConfig: () => true,
     clearRuntimeConfig: () => true,
     readRuntimePort: () => runtimePort,
+    readRuntimeIdentity: () => null,
+    readLocalServerPortHint: () => null,
+    writeLocalServerPortHint: () => true,
   });
   return { api, listenCalls };
 }
@@ -79,10 +82,10 @@ test("startHttpServer resolves the actually-bound port when the first candidate 
 });
 
 test("startHttpServer resolves null when every candidate port is occupied", async () => {
-  const { api, listenCalls } = makeApi({ occupied: [23333, 23334, 23335] });
+  const { api, listenCalls } = makeApi({ occupied: [23333, 23334, 23335, 0] });
   const port = await api.startHttpServer();
   assert.strictEqual(port, null);
-  assert.deepStrictEqual(listenCalls, [23333, 23334, 23335]);
+  assert.deepStrictEqual(listenCalls, [23333, 23334, 23335, 0]);
 });
 
 test("startHttpServer resolves null when listen() throws synchronously", async () => {

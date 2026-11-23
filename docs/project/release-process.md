@@ -6,7 +6,7 @@ Use this flow when preparing a Clawd app release.
 
 1. Update `package.json` to the release version.
 2. Add `docs/releases/release-vX.Y.Z.md` and a matching `!` allowlist line in
-   `.gitignore` (for example `!docs/releases/release-v1.3.0.md`). Without the
+   `.gitignore` (for example `!docs/releases/release-v1.6.0.md`). Without the
    allowlist, `git add` silently skips the note and CI's `validate-release`
    skips all three platform builds.
 3. Run the local tests that match the change scope. For full release prep, run:
@@ -23,11 +23,18 @@ inside Clawd. Before tagging, refresh the bundled catalog snapshot with
 `npm run update:official-theme-snapshot` and commit the diff if the snapshot
 changed. Confirm the packaged resources still contain no
 `themes/hash-sage/**` or `themes/whale-chan/**` payload and that `npm run audit:assets` reports the
-tracked-tree budget within policy. On a pull request, the
+tracked binary/media total within policy. On a pull request, the
 `audit:pr-history-assets` gate additionally proves no large official-theme
 media entered the PR's reachable history.
 
 4. Run the `Build & Release` workflow manually on `main`.
+
+Before this step, have the Apple Developer account holder sign in to
+developer.apple.com and accept any updated agreement shown there or in App
+Store Connect. Until an updated agreement is accepted, notarization fails with
+HTTP 403 "A required agreement is missing or has expired" even though signing
+succeeds (this happened on the v1.7.0 manual build). After accepting, rerun only
+the failed macOS job.
 
 For macOS Developer ID certificate creation, App Store Connect Team API key
 setup, local verification, and the exact GitHub Actions secret names, follow
@@ -75,32 +82,261 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v1.3.0 Draft Smoke Checklist
+### v1.7.0 Draft Smoke Checklist
 
-Use the draft release installer or package artifact, not `npm start`, and record
-platform, architecture, host version, and result for each selected check.
-Windows applicable required items are the primary publish gate; unavailable
-macOS/Linux hardware must be recorded as **Not tested** in the release notes.
+Run checks from the draft release installer or package artifact. Record the
+platform, architecture, host version, and result for each check. The applicable
+Windows checks are the primary publish gate. Record unavailable macOS or Linux
+hardware as **Not tested** in the release notes.
 
 #### 本版必测（Required for this release）
 
-These checks cover changes since v1.2.0 and the recurring release gates; CI
-artifact evidence can satisfy static package checks, while GUI and host checks
-need the actual packaged app.
+Run the recurring gates and the v1.7.0 behavior matrix on the draft packages.
+Use real hosts for checks that exercise host behavior.
 
-- **All platforms:** download the matching draft asset and confirm the packaged app shows `1.3.0` metadata.
-- **All targets:** confirm packaged resources include `app.asar.unpacked/hooks`, `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`, `app.asar.unpacked/themes`, NOTICE, and the bundled official catalog snapshot, with no optional official-theme media or retired `sidecars/cc-connect-clawd` / `cc-connect-clawd(.exe)` payload.
-- **Windows x64/ARM64:** confirm separate architecture-specific NSIS installers and the intended user/machine installation paths.
-- **All targets:** inspect native-package and Koffi prune/smoke manifests for exactly one matching `koffi.node`, a successful packaged positive call, no foreign native payload, and no unreviewed exception.
-- **All targets:** confirm updater metadata versions and listed artifact filenames identify `1.3.0` and match the generated assets.
-- **macOS x64/arm64:** download each DMG through a browser to retain quarantine, install without a Privacy & Security override, and validate the copied app with `codesign`, `spctl`, and `stapler` as described in the signing guide.
-- **Windows/macOS/Linux:** fresh-install and launch the packaged app with a visible pet and no error dialog.
-- **Windows/macOS/Linux:** save the v1.2.0 prefs before upgrading, install over v1.2.0, and confirm the app launches while preserving agent installation/enabled flags and theme/animation choices except the documented Codex migration.
-- **Windows/macOS/Linux:** confirm Settings -> About shows `v1.3.0`, sourced from `app.getVersion()`, with every v1.3.0 contributor and all previous contributors.
-- **Windows; macOS on available architectures:** validate a real v1.2.0 → v1.3.0 updater pair including Restart Now and Later/quit/reopen, recording versions and asset hashes rather than treating a source run or mocked updater as acceptance.
-- **Codex/DSH/OpenCode/MiMo supported platforms:** exercise manual Allow/Deny and DND, disabled bubbles, disconnect, and Clawd shutdown as applicable, confirming each no-decision path returns to the host without inventing Allow/Deny or a remote timeout decision.
+**Recurring release gates**
+
+- **All targets** — the packaged app shows `1.7.0` metadata, and About shows `v1.7.0` from `app.getVersion()`.
+- **All targets** — packaged resources contain the expected hooks, agents, extensions, themes, `NOTICE.md`, and the official catalog snapshot, with no retired Telegram sidecar or unshipped official-theme payload.
+- **All targets** — native-package/Koffi manifests show exactly one matching native addon, the packaged positive-call smoke passes, and no foreign native payload is present.
+- **All targets** — updater metadata versions and artifact names match `1.7.0` and the generated assets.
+- **Windows x64/arm64** — validate separate architecture-specific NSIS installers and the intended user/machine installation paths.
+- **macOS x64/arm64** — validate signing, quarantine, `codesign`, `spctl`, and notarization/stapler evidence when the signed assets are available. Otherwise record **Not tested**.
+- **Windows/macOS/Linux** — fresh-install and launch the packaged app with a visible pet and no error dialog.
+- **Windows/macOS/Linux** — upgrade a real v1.6.0 installation to v1.7.0 and confirm the app launches and preserves the documented v1.6.0 settings. Both versions use prefs schema 21.
+- **Windows and available macOS architectures after publishing** — use the updater for a real v1.6.0 → v1.7.0 upgrade, including Restart Now and Later/quit/reopen, and record versions and asset hashes. On Windows, use a real desktop session (the v1.6.0 installer stalled in an earlier SSH test).
+- **Packaged native update flows** — after a download finishes, let the bubble expire or choose Later and verify the tray retains Update Ready. Reopen the install choice from About or a manual check without another release lookup or download. Verify a scheduled check preserves progress or ready status and that a superseded bubble leaves newer UI visible. Cover Windows NSIS, available macOS architectures, and Linux AppImage separately.
+- **Windows/macOS/Linux** — uninstall the draft and verify removal of Clawd-owned integrations while preserving third-party hooks and other agent settings.
+- **All supported permission hosts** — verify manual native Allow/Deny fallback after DND, disabled bubbles, disconnect, shutdown, or no-decision paths, and confirm timeouts and remote failures produce no automated decision.
+
+**v1.7.0 new behavior matrix**
+
+Record platform, architecture, host version and result for each item. Use the draft packages on the specified hosts and mark unavailable checks **Not tested**. Use isolated profiles and fixtures for cases that require invasive host or updater changes.
+
+*Remote SSH*
+
+1. **macOS/Linux/Windows client → POSIX remote (#1355, #1366)** — upgrade an existing v1.6.0 profile, connect using reverse forwarding, exercise state and approval, then repair, disconnect and uninstall while preserving third-party hooks and settings.
+2. **macOS/Linux/Windows client → real POSIX SSH gateway (#1366)** — select Jump host mode, deploy and verify state and approvals across concurrent sessions, then drop the tunnel and confirm reconnects carry only new traffic and the old bridge exits after heartbeat loss, disconnect, profile deletion, app quit or a switch back to reverse forwarding.
+3. **Windows client → POSIX gateway (#1366)** — complete an entire Jump host mode deployment, including verification, and confirm the Windows command-length limit is not hit.
+4. **macOS/Linux/Windows client → POSIX gateway (#1366, #1404)** — replace the remote Node executable and check that a missing or non-executable old binary stops retries before the bridge is ready and prompts for Deploy / Repair Hooks. Run the repair, then reconnect in the same Clawd process and confirm the bridge starts with the new Node path.
+5. **POSIX and Windows remotes (#1355, #1383)** — put a foreign loopback HTTP approval hook before Clawd's entry, confirm Deploy / Repair Hooks verifies Clawd's own hook and leaves the foreign entry intact, and check every progress step has a readable name.
+6. **macOS/Linux/Windows clients (#1366)** — verify Jump host mode rejects Windows remotes and single-session transports (including Codespaces) before changing remote hooks or monitors, fails safely with a forced PTY, and reports an occupied bridge port without mixing two profiles' traffic.
+7. **Windows local and remote DeepSeek Harness (#1363, #1374)** — check bare and versioned registry names, a custom install path and the Command registry fallback, then verify the exact install is registered over SSH and missing files or look-alike names do not qualify.
+
+*Agent integrations*
+
+8. **macOS/Windows Codex Desktop (#1272, #1401)** — restart the background process during a live turn, resume it with fresh activity, and verify the HUD row and focus target recover with the new process, including a herdr sample where available.
+9. **macOS/Windows Codex (#1272, #1370, #1373, #1401)** — restart the computer and check only current-boot work appears, sample Windows shutdown with Fast Startup separately, and compare an active cancellation with an unseen session's Interrupt, which should clear the startup wait without creating a row or waking the pet.
+10. **macOS/Windows/Linux Codex (#1397, #1398)** — mix official hooks and JSONL for a parent with delegated work and verify child rows settle, the parent completion cues once, and Slack and Telegram skip child and Guardian completions.
+11. **macOS/Windows/Linux Claude Code (#1329, #1358)** — install, relabel, repair and remove an extra config folder, check its badge in all three surfaces and verify other hooks, the primary quota source and shutdown cleanup of the watcher.
+12. **Windows/Linux Claude Code (#1329, #1358)** — on Windows deduplicate case variants of the same path and check the NSIS uninstall removes extra-folder hooks, and on Linux register two genuinely distinct case-sensitive folders while separately testing the documented symlink alias limitation in a fixture.
+13. **macOS/Windows Claude Desktop (#1372, #1403)** — verify finished local rows clear and return on the next message, each of the three pending card/reminder/reply cases holds the row, CLI and VS Code rows keep their own lifetime, and Projects (beta) does not emit local hooks.
+14. **macOS/Windows/Linux Copilot and Cursor (#1348, #1381)** — cover Copilot CLI and VS Code prewarm, first prompt, repeated start during approval and end (including an unseen end at a full table), and check the Cursor Dashboard model row with and without a supplied model.
+15. **macOS/Windows DeepSeek Harness (#1362, #1378)** — upgrade the old plugin, restart the desktop app once, click a desktop session with web tabs also open, and check only the desktop chat changes once, including the fallback on cold start or without the browser bridge.
+16. **macOS/Windows Qoder Desktop (#1393, #1399)** — verify live title and usage updates without blocking Qoder's writes, delegated children collapsing into the parent, early child events, tool failures, timeout and keep-awake after the parent finishes, and repeat with Codex disabled.
+17. **macOS/Windows CodeBuddy IDE (#1386, #1402, #1407)** — with stable and Insiders both running, select the proper edition from the Dashboard, test chat links and the window fallback, and verify Telegram copies IDE replies for manual paste. On Windows verify a minimized window comes forward and switches to the clicked conversation, the two editions stay separate, a new conversation is clickable after its first message but before any tool call, and the card survives a finished turn and a window reload; after a Clawd restart, the next prompt brings back a card that opens the right edition before any tool call.
+18. **Linux/WSL CodeBuddy IDE and all-platform CLI (#1386, #1402)** — verify Linux/WSL IDE sessions fall back to the terminal, CLI stays on terminal focus on every platform, and prompt-derived titles show up to 40 characters on IDE and CLI alike (including Windows).
+19. **macOS/Windows/Linux Settings (#1391, #1396)** — exercise skipped installs from a card, in bulk and on retry, covering missing, uninitialized and multiple desktop installations, dismissal, stale notices and a return to the Settings page.
+
+*Pet, themes and Linux focus*
+
+20. **macOS/Windows/Linux Free roam (#1349, #1356)** — start, stop and turn with an accessory, during Mini Mode entry and during a one-shot animation, and verify the walk and accessory following settle smoothly.
+21. **macOS/Windows/Linux themes (#1361, #1404)** — switch system colors live, pick a color scheme by hand, and check a theme without dark resources. Block creation of the dark cache directory or make a dark SVG or raster unwritable in the cache, then verify Clawd starts with the same theme’s light assets and logs the cause. Verify v1.6.0 can still load the light assets.
+22. **macOS/Windows/Linux Meeting Mode (#1390)** — start with open local and remote approvals, share a real screen, check open and new requests go back to the agent without a Clawd decision, then allow the timer to expire and check restoration after a real suspend across the deadline.
+23. **macOS/Windows/Linux Meeting Mode (#1390)** — check the tray end item, show shortcut, Wake, app restart, full-screen auto-hide, and start with the pet already hidden or DND enabled, then exit Mini Mode while a meeting runs and check DND stays on.
+24. **macOS Meeting Mode (#1390)** — click the Dock icon during an active meeting and confirm it ends early and restores the previous settings, then separately exercise macOS app hide, opening Settings and activating Clawd again.
+25. **Linux Plasma 6 Wayland (#1246)** — raise a minimized Konsole and select the right tab, check KWin cleanup and XWayland fallback, then verify focus availability and the disabled-button explanation on another Wayland desktop and sample normal focus on X11.
+
+*Windows, updates and quota*
+
+26. **Windows x64/arm64 installer (#1367)** — use real desktop sessions for v1.6.0 upgrades in writable per-user and all-users installs, and test per-user access denied, retry after restoring access, cancel, and a silent old-uninstaller failure with the expected exit status and next-launch version.
+27. **Windows/macOS/Linux update checks (#1360, #1375)** — from v1.7.0 exercise structured and text-only 5xx, 429, a confirmed missing asset, offline, available and up-to-date responses, and check that any offered package matches platform and architecture.
+28. **Windows NTFS and macOS/Linux sample (#1376)** — verify high-ID file replacement in Codex rotation, archiving and approval routing, Kiro IDE log continuation, Qoder/WorkBuddy title updates and Hermes install checks, and sample an ordinary POSIX append.
+29. **macOS/Windows/Linux quota ring (#1385)** — upgrade from v1.6.0 with at least four quota sources and a saved exclusion, verify the automatic order and three-coin cap, then check the fourth selection is disabled and a new provider stays Dashboard-only after manual selection, including HUD spacing on Windows at 150% scaling.
+30. **macOS Keychain, Windows DPAPI and Linux with/without a keyring (#1388)** — connect a test DeepSeek key, check 401 handling, 429/5xx retries, sleep/wake, disconnect with the credential retained and forgetting it, and verify secure-storage failure leaves no key, app exit leaves no request and diagnostics/mirrors expose no private balance data.
+31. **macOS/Windows/Linux Kimi (#1389)** — upgrade with a connected key, then refresh manually, disconnect and reconnect without losing the quota ring selection.
+32. **macOS/Windows/Linux downgrade** — on a disposable profile, save once in v1.6.0 after using v1.7.0, upgrade again and verify the four new preferences reset while extra Claude hooks and the encrypted DeepSeek key remain.
+
+*Release package contents*
+
+33. **All targets** — extract each release package and verify it contains the standalone `hooks/remote-ssh-stdio-bridge.js`, the updated `NOTICE.md` and the catalog 13 snapshot, then start offline without a catalog cache and check Clawd Dev Life 1.2.0 and Clawd Alive 1.0.0 are listed.
+
+#### 老功能抽测（Regression sampling）
+
+Sample a few historical items on each release and record items not run as **Not tested**.
+The v1.6.0, v1.5.0, v1.4.0 and v1.3.0 matrices below preserve their release-time
+coverage. Keep the recurring release gates above required for v1.7.0.
+
+##### v1.6.0 historical required matrix
+
+These checks were required for v1.5.0 → v1.6.0 and now serve as regression
+sampling. The numbering and observations below are from the v1.6.0 checklist.
+
+**v1.6.0 new behavior matrix**
+
+Record platform, architecture, host version and result for each item. Items that need hardware or a host that is not available stay **Not tested**; a Codex CLI Bash/apply_patch approval round trip on a Windows remote host, Kiro IDE on Windows and Linux, the Claude Desktop question card on Windows, a real iPhone scan and a real Linux desktop have not been validated before this checklist is run.
+
+*Windows installer, updates and hooks*
+
+1. **Windows, upgrade from v1.5.0 (#882, #1298, #1341):** on a real desktop session (the installer stalls in an SSH session), upgrade with one remaining Clawd process and with several. The installer closes them instead of showing "Clawd on Desk cannot be closed". The old v1.5.0 uninstaller still clears the agent hooks once (on a computer that is also a Remote SSH host it clears the remote hooks too; back them up and restore or redeploy afterwards); after the first launch of v1.6.0 every integration that was installed and enabled has its hook back and a real Claude Code session reports state. Disabled integrations are not written back. A later same-version overwrite install keeps the hooks, and a real uninstall removes only Clawd's entries.
+2. **Windows, Claude Code hook without PowerShell (#1297):** with Claude Code 2.1.160 or later and an absolute Node `.exe` path, and a profile path that has spaces, Chinese characters or a single quote, the hook starts Node directly and Claude Code events arrive; an older Claude Code keeps the PowerShell form. A machine with Grok Build keeps the PowerShell path, a Cursor import of Claude hooks no longer reports (enable the Cursor integration instead), and macOS and Linux hook commands are unchanged.
+3. **Windows, window close and shutdown (#1340):** an external close request on either pet window (taskbar preview X, Alt+F4, a window manager) is ignored; the tray and right-click Hide and Quit, and the update "Restart Now" still close it. With Clawd running, click Restart (or sign out) once on the Windows desktop and confirm "This app is preventing shutdown" does not appear.
+4. **Windows, screenshots (#1294):** with the system snipping tool (Win+Shift+S) and "Auto-hide in fullscreen" off, the pet does not rise above the overlay, does not walk and does not hide; with it on, the pet hides as before and comes back after the capture; a third-party screenshot tool is not covered. Also run with "Keep the pet on top of other windows" on and off.
+5. **Windows, Antigravity and Linux tmux (#1271, #1318):** the agy status line shows under the default install directory (it contains a space) and with a Chinese user name; on Linux, an agent started inside tmux jumps to the right pane from its session row.
+
+*Remote SSH*
+
+6. **Windows remote host (#1319, #1320, #1324, #1331; issue #1316):** against a real Windows host, Deploy, Repair and Uninstall Claude Code, Codex, Copilot and DeepSeek Harness (desktop) with ordinary, spaced, Chinese, single-quote and curly-quote paths; third-party hook entries stay. A real event from each returns to the local pet and a real approval round trip works where the agent supports it (a Windows remote Codex CLI Bash/apply_patch approval round trip has not been run on real hardware). Cut the network in the middle of a deploy: the next attempt reports an unknown or needs-inspection result and never replays silently or releases the lock by itself.
+7. **Windows remote host with DeepSeek Harness:** with the same Windows user signed in on the desktop, install from a normal and from an elevated SSH session, check lease expiry and an unknown result, uninstall the recorded `DSH_HOME`, restart the DSH desktop app after a plugin generation change, and confirm a changed approval identity only hands back to the native prompt.
+8. **POSIX remote host (macOS or Linux):** Deploy again and send one real Claude Code and one real Codex event; the pet receives them, and Uninstall removes only Clawd's entries. Behavior matches v1.5.0. A third-party local HTTP approval hook ahead of Clawd's is a known limitation (deploy reports a verification failure) and is not part of this check.
+
+*Codex*
+
+9. **Codex automation (#1337, #1338; Windows, macOS, WSL and Remote SSH):** with the default way, ordinary MCP tools, `codex_apps`, Bash and apply_patch combinations, session overrides, dangerous-action reminders, DND, a disconnect and quitting Clawd all behave: plain MCP from WSL and Remote SSH follows automation, local MCP still goes back to Codex, `codex_apps` stays with Codex, nothing makes an unexpected decision. For a Remote SSH request that goes back to Codex (not WSL or local), on macOS a native-fallback reminder (subject to DND and the bubble switches) appears after a short delay, merges per session, shows only "Got it", and folds away on the next exact tool or turn end.
+10. **Codex setting migration (#1338; Windows and macOS):** upgrade from v1.5.0 once with Auto and once with Intercept; "Send every approval to Clawd" (AI Coding Tools → Codex → Advanced) matches the old choice, survives restart, and a downgrade-save-upgrade round trip keeps it.
+11. **Codex Desktop titles (#1253, #1314; Windows and macOS):** after Codex renames or auto-titles an internal thread, late events do not bring it back; ordinary side chats and rewritten templates still show; the HUD title refreshes within about 1.5 seconds.
+
+*Other agents*
+
+12. **Kiro IDE (#1339; macOS, then Windows and Linux when available):** Install and Uninstall from Settings keep third-party hooks and touch only `~/.kiro/hooks/clawd-on-desk.json`; Kiro CLI and KiroCrew files are untouched. In a trusted workspace a tool confirmation shows the read-only card ("Go to Kiro" and "Got it"; it cannot approve for you), it folds away after you confirm in Kiro and does not ring again, and a first launch with old pending items does not alert.
+13. **Copilot CLI (#1343, #1344; all platforms, also over SSH):** a path permission, a web fetch confirmation and an `ask_user` question keep the pet in "waiting for you" until the matching tool, your next message, the end of the session, a process exit or the two-hour limit; a command approval alerts once. The "Alert me when it waits for input" switch in the Copilot card turns it off. After a remote Deploy, restart the Copilot session first. On Windows, start with a local Copilot `hooks.json` saved with a UTF-8 BOM: after Clawd starts (or Repair), the BOM is gone, third-party entries are kept and real events arrive.
+14. **Claude Desktop question card (#1327, #1328; macOS, Windows when available):** the end-of-turn question shows a read-only card in the HUD without changing the pet state or ringing; clicking only brings Claude forward; a remote card only closes. With "Remind me about unanswered Claude questions" (Settings → Notifications) on, each question reminds once, answering cancels the timer, and the 1 to 120 minute bounds hold.
+15. **Notifications (Claude Code and Codex):** trigger one real notification in each and confirm there is exactly one sound, not two, and no repeated bell from Kiro waiting.
+
+*Phone pairing*
+
+16. **QR pairing (#1315; Windows or macOS with a real iPhone and an Android phone):** scan the QR code in Settings → Permissions & approval → LAN approval; pairing succeeds, and when the code expires or is refreshed the code and QR change within about 5 seconds. An iOS Home Screen app opens Safari from the scan (known).
+17. **Phone page (#1321, #1322, #1332, #1345; #1299):** open `http://<address>:<port>/` and land on the phone page; the Home Screen app shows as "· PWA" in the paired list; the page follows the desktop language in all seven languages after a reload with no `__CLAWD_` placeholder left over, and unknown languages fall back; a write failure while rotating an expired code or renaming a PWA does not break a valid connection.
+18. **Phone safety:** an unpaired phone sees only the static shell, a pairing socket receives no sessions, a client cannot forge a decision, and turning preview off removes the cards at once.
+
+*Pet*
+
+19. **Hidden pet and accessories (#1300, #1301, #1303, #1304, #1305; all platforms):** wear both accessories, then hide manually, hide through full-screen auto-hide, switch themes, use Mini mode and sleep and wake: the pet, eyes and accessories return, and free roam waits about 8 seconds. Hidden CPU and paint are measurably lower. On Windows with mixed display scales, drawing, position and eyes stay correct across displays.
+20. **macOS Spaces and the on-top switch (#1287):** turn "Keep the pet on top of other windows" off, restart, and check normal and native full-screen switching, hide and show, a theme change and the right-click menu. Entering full screen hides the pet even when "Auto-hide in fullscreen" is off (the row still shows off); approval prompts stay visible as designed.
+21. **Eye tracking (#1285, #1312; all platforms, Cloudling too):** turn "Follow the mouse cursor" (Settings → Pet) off and the eyes look straight ahead; turn it on again without moving the mouse and they return to the cursor; the spin-dizzy egg still works.
+22. **Idle behavior (#1302, #1309; all platforms):** "When idle" (Settings → Pet) offers Stay put, Free roam and Idle activities, which are mutually exclusive, with "How often" at the default Sometimes, the first activity starts about 20–30 s after idle and later ones every 60–100 s (Rarely: 30–45 s, then 120–180 s; Often: 12–18 s, then 30–50 s); a real agent task, a pending confirmation, a drag, a menu or deep sleep wins, and an old free-roam setting is kept.
+23. **Linux GNOME XWayland (#1308, #1350, #1352; also X11):** repeated right-clicks, a right-click after a drag and quitting while the menu is pending all behave; the menu closes and the desktop is clickable afterwards; clicks pass through after a window move or resize. Right-click and right-click during a drag (#1265) also work on Windows and macOS.
+24. **Theme start-up (#1306, #1307):** a normal start is not slower on all three platforms; with a deliberately broken user theme the error names the real cause.
+
+*Updates*
+
+25. **Update ready stays (#1296, #1311; Windows, macOS, AppImage):** after a download finishes, let the bubble expire or choose Later: the tray keeps "Update Ready", About or the tray opens the install choice without another lookup or download; a scheduled check does not replace a download or ready state; after an updater error a retry checks again. A real A to B check can only run after publishing.
+
+*Settings and themes*
+
+26. **Settings (#1256, #1317; Windows and macOS at 125% and 1366×768, all seven languages):** the (i) hints stay put and disappear on page change; IM channels and LAN approval keep the scroll position when a switch changes; the Footprints year view is smooth and the highlighted cell shades are right.
+27. **Official and community themes (catalog 10):** online, Settings → Theme lists Doraemon and Clawd Dev Life (light and dark) with the community badge and author; offline with no cache the bundled snapshot lists the same; download one community theme on macOS.
+
+*Release pipeline*
+
+28. **CI (#1346, #1347):** on `main`, a Wayland smoke run shows an apt cache hit and still runs the real XWayland checks; the Windows test job passes the #882 installer cases with both PowerShell versions.
+29. **Clean checkout/docs:** in a clean checkout, `npm run verify:release` and `npm run audit:assets` pass, all six READMEs and the contributor artwork are current, `NOTICE.md` lists `qrcode-generator`, and the bundled official theme snapshot matches the published catalog before tagging.
+30. **Downgrade sample:** save settings in v1.5.0 over v1.6.0 once and upgrade again; the six new settings (Follow the mouse cursor, Keep the pet on top of other windows, When idle, How often, Remind me about unanswered Claude questions and Remind after) are back to defaults and the Codex approval choice is kept.
+
+##### v1.5.0 historical required matrix
+
+These are the required checks from the v1.5.0 release for changes from
+v1.4.0 → v1.5.0. They remain here as regression sampling, not as fixed v1.6.0
+gates; CI artifact evidence can satisfy static functional checks, while GUI and
+host checks need the actual packaged app. The numbering below is the v1.5.0 one.
+
+*Release pipeline and Linux updates*
+
+1. **APT rehearsal (before tagging):** on `main`, manually run `Publish APT source` with `publish=true`, `initial=false` to rehearse the second publication, then on clean Ubuntu 22.04 and 24.04 systems run `apt update` and confirm an old by-hash URL still returns 200.
+2. **APT release event (after publishing):** confirm `Request APT publication` starts by itself and `publish-apt.yml` runs on `main`; the site lists 1.5.0, keeps 1.4.0 and 1.3.0 and retires 1.2.0, previous by-hash URLs still work, and the 1.5.0 package stays well under the 180 MiB package and 700 MiB site limits. Record how long the app notification precedes the source.
+3. **APT tag guard:** `gh workflow run publish-apt.yml --ref v1.5.0 -f publish=true` from the tag must not deploy to `apt-production`.
+4. **Linux `.deb` on a real desktop (after publishing):** on Ubuntu 22.04 or 24.04 with a graphical session, install a release-candidate deb stamped `1.4.99` (`--config.extraMetadata.version=1.4.99`). About → Check for updates and the tray each show "Update with APT", open `https://apt.clawdondesk.com/`, show no authorization window, and install nothing on quit. Then follow the guide and upgrade for real.
+5. **Linux AppImage and other installs:** an AppImage started with the default `TMPDIR` offers Download (not Open Downloads), and both Download → Restart Now and Later → quit and reopen work. An unpacked directory or another non-deb/AppImage install shows "Open Downloads" and opens the latest release page. Homebrew keeps `brew upgrade --cask clawd-on-desk`. On Windows and macOS, About and the tray still use the native updater.
+
+*Ports, displays and platforms*
+
+6. **Windows reserved ports:** on an isolated Windows test machine (never a main machine), make 23333–23337 unbindable and start the packaged app. Doctor → Local server passes, a real Claude Code session reports state and a manual approval works through `/permission/clawd-on-desk`, and a normal quit and restart reuse the same port. Release the ports and confirm the app returns to 23333 and migrates the URL back. Cover legacy-all-reserved, a saved dynamic hint, runtime publication failure and restart; hooks and managed Remote SSH must point at the real port, and phone preview's five LAN ports must fail visibly when blocked.
+7. **WSL with a dynamic port:** with the local server outside 23333–23337, WSL Pair reports the dynamic-port limitation instead of a NAT/mirrored-networking problem.
+8. **macOS displays:** plug and unplug an external display, change resolution or scale, switch the main display, wake from sleep and move windows in different orders, including Mini mode and a full-screen app. Clicks and drags land on the pet, and the log shows no repeated `repair-mac-drift` or `mac-repair-limit`.
+9. **Windows and Linux displays:** the same plug and unplug leaves the pet draggable and clickable.
+10. **Linux X11:** on Xorg and on a GNOME Wayland session that restarts into XWayland, idle eyes follow a cursor that leaves the pet across screens, and drag, the right-click menu and HUD click-reveal still work. Record mixed DPI, CPU and the query-failure fallback; do not claim native Wayland cursor tracking, and keep KDE and fractional scaling **Not tested** unless run.
+
+*Codex*
+
+11. **Codex subagents (all three platforms):** a local Codex parent that stops first with one and with two subagents, and a parent SessionEnd, each give exactly one completion cue (none under DND). A new turn, monitor stop or eviction does not replay an old cue, the pet and HUD return to the parent's own state afterwards, a subagent silent for 20 minutes is released, and restarting Clawd mid-run restores juggling while a child is still writing. Also check the documented difference: the Dashboard and any enabled Telegram/Slack message, phone notification and Discord presence treat the parent's Stop as done.
+12. **Windows rollout reading:** a Codex rollout kept open for appending whose modified time does not change while its size grows still shows child start and end, and a hot file plus many cold files advance within the polling budget.
+13. **Codex temporary chats:** on Windows and macOS with Codex Desktop, try the two collapse switches alone and together with a temporary parent thread, subagents and a pending question; completion sounds still play. Clicking a temporary row activates only the verified Codex app (restoring it if minimized) and fails closed when it cannot be verified, with no CLI start or wrong resume; Linux shows it as unavailable.
+14. **Codex plan progress:** official and log updates interleaved, an update after Stop in the same turn, and a new turn that clears the plan; the HUD bar and Dashboard line never carry an old plan.
+15. **HUD layout:** on Windows and macOS at high text scale in all seven languages (Windows at 125% display scale and 160% HUD text), an untitled-chat tag, the plan bar and juggling or question chips together do not overlap or clip.
+
+*Claude Code and other agents*
+
+16. **Claude "Handling tools":** on all three platforms with real Claude Code, run a multi-tool round including a Bash call that needs approval, covering serial and parallel tools, result-before-start, batches, deny or interrupt, subagents, errors and completion. Clawd, Calico, Cloudling and Mini show the working art, a third-party theme works with and without `states.executing`, and the phone preview badge and finished-task notification are right.
+17. **ZCode:** on Windows and macOS with real ZCode (restart ZCode after hook installation), answer an `AskUserQuestion` in the bubble and in the terminal. DND, a disconnected bubble and unsupported shapes make no decision, and ExitPlanMode flashes for about five seconds. Record the ZCode version; 3.16.3 was verified on macOS only.
+18. **Reasonix on Windows:** default, spaced, Chinese, special-character and no-8.3-alias install paths, CLI and desktop. Doctor is healthy, a first message after a long idle still delivers state, blocking hooks stay inside Reasonix's five seconds, and an entry written by v1.4.0 is rewritten in place with no duplicate.
+19. **WorkBuddy on Windows:** two rounds in a row (5.6.2 exits after each round): cards do not stick, no PowerShell window flashes on tool events, the process cache is reused across hooks, and multiple sessions or an app exit and reopen do not cross-attribute.
+20. **OpenCode serve on Windows:** with a real `opencode serve` session, Dashboard "Open in new terminal" opens Windows Terminal on the exact session and folder for normal, spaced and `'` paths; a missing Windows Terminal shows an error; the button is absent on macOS and Linux and for TUI and v2 sessions. Do not record a launch submission as confirmed focus.
+21. **Curly quotes in Windows paths:** in a folder whose name contains `’`, `‘`, `‚` or `‛`, "Open in new terminal", right-click New Session and dragging a folder onto the pet all work on real Windows PowerShell 5.1. A name such as `a’; Write-Output marker; ’b` runs nothing extra, and Codex, Antigravity, Copilot and DeepSeek Harness hook launchers with such a path still start.
+22. **DeepSeek Harness:** on Windows with the desktop app and Clawd running, a real DSH self-update is not blocked by an `app.asar` handle and Clawd still discovers the app. After upgrading Clawd the bridge regenerates and the restart notice appears; after restarting DSH, renaming a session updates the HUD title, and later events do not overwrite it. With a named session running, restart Clawd and trigger a tool event: the HUD gets the title back without another rename.
+23. **Installation detection:** on Windows and macOS, real Qoder, ZCode and CodeBuddy installs are still detected (for example `~/.zcode/cli/exec` as a directory and `~/.qoder/state.json` as a file). With no other product evidence, a wrong-type entry is not: `~/.zcode/v2/credentials.json` as a directory, or `~/.codebuddy/logs` as a regular file. An empty directory or zero-byte file of the right type still counts.
+
+*Phone preview*
+
+24. **Pairing:** on Windows and macOS, enable phone preview, read the pairing code in Settings → Permissions & approval → LAN approval and enter it on a real phone. The device row goes from "Waiting for first connection" to "Last seen {time}" and the phone receives live session updates (the row has no online indicator), "Refresh pairing code" invalidates the old code, and an expired code is rejected.
+25. **Migration and revoke:** with a phone paired on v1.4.0, upgrade and reload its old page: it migrates, and the list shows "Migrated from the old version" and "Devices paired before the update (old shared token)". "Revoke old token" does not drop the migrated phone; revoking one device disconnects it at once and returns it to pairing, and revoking a migrated one offers to revoke the old token too. "Reset phone access" disconnects every phone, closes the old link with 1008, and a new code pairs.
+26. **iOS:** on a real iPhone, a Safari tab and the Home Screen app pair separately and appear as two devices. On/off, lock screen and process reclaim, a rotation window and a desktop restart keep the credentials, and an old Home Screen app upgrades (possibly after two refreshes) and converges.
+27. **Several tabs and permission summaries:** one frozen page and another that promotes credentials do not kick each other. Permission summaries are off by default, both consent paths ("Reset access and enable", "Keep access and enable") behave as the dialog says, turning them off removes the cards at once, and no phone message can allow or deny.
+28. **Misbehaving connections:** from the LAN, a connection with a wrong token or failed pairing that sends a malformed frame, a reserved opcode or a message over 4,096 bytes causes no crash or error dialog in Clawd, and a valid phone stays connected.
+29. **Phone downgrade sample:** after installing v1.4.0 over v1.5.0 once, the old shared link still works there; after returning to v1.5.0, code-paired phones work again.
+
+*Settings and themes*
+
+30. **Settings geometry:** on Windows and macOS at 1366×768 and 125% scale, walk through both AI Coding Tools subpages, the three Permissions & approval subpages and their collapsed areas. Keyboard use, old navigation, the Codex "Change" link, Doctor "Fix it" and the quota entries are all reachable.
+31. **Seven languages:** in English, Español, Português, 中文, 繁體中文, 한국어 and 日本語, expand a connected AI Coding Tools card: the group labels never overlap the first line of text and line up across groups.
+32. **Disconnect and Fix it:** "Disconnect …" → Uninstall → Cancel changes nothing, and confirming returns the card to Discover and add; turning off Claude Code's "Manage hooks automatically" offers the three-way dialog. With a disabled Codex hook or a trimmed Claude `settings.json`, the status sentence turns amber with "Fix it", which opens Doctor and clears after repair.
+33. **Permissions subpages:** switch between the three subpages, especially away from and back to IM channels; the first Settings open after upgrading from v1.4.0 restores the last tab; keyboard focus works, and a screen reader does not read the (i) toggle as part of a switch's name.
+34. **Windows hardware acceleration:** switch it on and off, cancel back to the original value and restart twice. The "Not applied yet" note and the Restart Clawd button match the real start state, a machine that shows the black square renders correctly after the restart, and macOS and Linux do not show the switch.
+35. **Update failure details:** a forced update failure shows the error code, HTTP status and host with "Repair suggestion (for reference only)", and the copied details keep secrets redacted.
+36. **Themes:** on all three platforms, install, select, go offline, remove from the catalog and uninstall an official theme (and a community one when the catalog has one); category and credit stay correct. Settings → Theme loads the two official themes with no empty "Community themes" group, falls back to the bundled list offline, and an older app reading the new catalog still works.
+37. **Clean checkout/docs:** in a clean checkout, `npm run verify:release` and `npm run audit:assets` pass, all six READMEs and the contributor artwork are current, and the bundled official theme snapshot matches the published catalog before tagging.
+
+##### v1.4.0 historical required matrix
+
+These are the required checks from the v1.4.0 release for changes from
+v1.3.0 → v1.4.0. They remain here as regression sampling, not as fixed v1.5.0
+gates; CI artifact evidence can satisfy static functional checks, while GUI and
+host checks need the actual packaged app.
+
+1. **External review:** on three supported platforms, exercise Qwen, Copilot, Hermes, and OpenCode where their real permission paths are available; cover a slow review, a gate-mode change, and no-decision fallback without turning a review failure into Allow/Deny.
+2. **External-review command contract:** cover exit 0/1/2, another exit code, missing/non-executable command, timeout, concurrency, oversized payload, broken output/disconnect, and Clawd quit cleanup.
+3. **Codex Auto on Windows WSL/Remote:** combine WSL and Remote SSH requests with Auto, the external review, session overrides, DND, and no-decision; verify that Clawd only overrides Codex's automatic reviewer for the documented global Bash/apply_patch auto-allow exception.
+4. **OpenCode/MiMo v1 permission race:** while external review is pending, answer Allow/Reject in the native permission UI and confirm review completion creates no stale Clawd approval bubble and submits no second decision; cover no-decision fallback.
+5. **v1 question boundaries:** cover single and multi-question/multi-select prompts, DND, closed/disconnected Clawd, and quit; native UI must retain unanswered questions and ordered `string[][]` answers.
+6. **Phone preview:** cover pairing, retained pairing, reset, default-off, revoke, native read-only behavior, DND, and hidden/closed Clawd; record that the historical #893 real-phone checklist was not rerun.
+7. **KiroCrew gateway:** with the gateway stopped, install/uninstall and restart; cover the mutation lock, foreign config, and two main agents plus a child gateway session; assert that a child agent has no working-session row and startup sync does not reopen a hook the user disabled in KiroCrew.
+8. **Qoder CN:** on Windows, cover Qoder CN and international Qoder coexistence, Doctor, real events, and uninstall without creating a missing home; record macOS/Linux CN as **Not tested** if not run.
+9. **OpenCode v1/v2:** cover upgrade, repeated no-op sync, v1 cleanup, v2-only `plugins` registration, removal of Clawd-owned old `plugin` entries, preservation of foreign tuple/options, and `opencode service restart`.
+10. **Windows Codex Desktop:** cover five SessionStart causes, the short-lived wrapper, the shared app-server, and conservative focus boundaries, including the first ordinary message that may lack process metadata.
+11. **Codex lifecycle:** on all three platforms, cover late SessionStart, progress, Stop, Interrupt, compaction, and title changes for real local sessions.
+12. **Terminal focus:** on macOS/Linux, cover herdr and Ghostty focus plus the documented degradation; include the herdr server/version boundary.
+13. **Settings behavior:** cover all five tabs, old Telegram migration, all three Permissions & approval subpages, the quota deep link, and the seven-language mobile consent dialog.
+14. **Settings geometry:** on macOS and Windows, cover 1366×768 and 125%/high-DPI layouts, tab focus, deep links, and overflow.
+15. **Built-in and user themes:** cover Clawd, Calico, and a user/external theme through deep sleep and wake; verify the documented static/continuing sleep differences, mini mode, and hitboxes in the packaged Electron renderer.
+16. **Random animation pools:** on macOS and Windows, confirm tier/state-scoped `files` pools stay stable within a state and reroll only at the documented boundaries.
+17. **External theme safety:** load an external theme containing an XML declaration and other processing instructions; confirm sanitizer/cache handling preserves the XML declaration, removes other processing instructions such as `<?xml-stylesheet?>`, and re-cleans cached SVGs after upgrade without affecting approved assets.
+18. **Linux workspaces:** cover sticky/all-workspaces placement, focus, and keyboard behavior on the supported X11/XWayland paths.
+19. **Linux packaged Electron:** launch the packaged X11 path and confirm the allocator does not crash; record AppImage/deb coverage separately.
+20. **Windows packaging:** cover x64/arm64 packages, WinGet preparation, and a real v1.3.0 → v1.4.0 upgrade; record architecture-specific gaps.
+21. **Clean checkout/docs:** in a clean checkout, run the contributor generator, verify all six READMEs, SVGs, navigation, the Chinese permission anchor, and the release-doc version contract.
+
+#1223 is folded into the external-review, Codex Auto, and OpenCode/KiroCrew
+checks above; it has no separate real-host smoke item. Do not claim the
+historical phone checklist (#893) was rerun unless new evidence exists.
+
+##### v1.3.0 historical required matrix
+
+These are the required checks from the v1.3.0 release for changes from
+v1.2.0 → v1.3.0. They remain here as regression sampling, not as fixed v1.4.0
+gates; CI artifact evidence can satisfy static functional checks, while GUI and
+host checks need the actual packaged app.
+
 - **Windows/macOS/Linux:** upgrade a v20 profile to prefs v21 with Codex Intercept/Native migrated to Auto once, then re-select Intercept and restart to confirm that new choice persists (#1156, #1167).
-- **Codex supported platforms:** compare human-reviewed local shell/file requests with automatic reviewers, MCP/app, unknown evidence, and remote/WSL requests, confirming only proved local human requests enter Clawd or mirrored approvals in Auto (#1156).
+- **Codex supported platforms:** compare human-reviewed local shell/file requests with automatic reviewers, MCP/app, unknown evidence, and remote/WSL requests, confirming only proved local human requests enter Clawd's bubble/IM approval entry or mirrored approvals in Auto (#1156); the v1.4.0 remote exception is covered by new-behavior item 3.
 - **Windows/macOS + local Codex:** run a real long Ask me turn whose turn_context is more than 1 MiB behind the request, compact and continue with unchanged approval settings, and confirm Auto still shows a Clawd bubble within its bounded evidence window (#1169).
 - **Codex supported platforms:** sync and review PreCompact, PostCompact, Interrupt, and SessionEnd in `/hooks`, confirm Agents/Doctor recover to healthy after review, and before review confirm compaction has only its JSONL completion cue while an already-trusted PermissionRequest still works (#1129, #1158, #1160).
 - **Windows + Codex:** leave only the four new state hooks unreviewed and confirm the tray notice says approvals still work and directs the user to `/hooks`, while Doctor reports pending review instead of blaming connectivity (#1169).
@@ -113,7 +349,7 @@ need the actual packaged app.
 - **Windows/macOS + Claude ≥2.1.265:** use `/design` in Clawd with a saved head accessory, confirm painting and completion heart eyes preserve supported accessories, and check Calico/Cloudling fallback (#1084).
 - **Windows/macOS/Linux + Claude CLI/VS Code:** confirm manual titles outrank AI titles and prompt-first-line fallback, including resume and a Clawd restart (#1127).
 - **Windows + Claude:** leave a live interactive session idle for more than ten minutes, resume work and restart Clawd, confirming one canonical recovered row and no reuse of another process's identity (#1108).
-- **macOS/Windows + DSH:** upgrade the v1.2.0 web/desktop bridge once across the verified 0.1/0.2 families, restart hosts, and confirm another Clawd restart does not replace healthy generations again (#1128, #1130, #1131).
+- **macOS/Windows + DSH:** upgrade the v1.3.0 web/desktop bridge once across the verified 0.1/0.2 families, restart hosts, and confirm another Clawd restart does not replace healthy generations again (#1128, #1130, #1131).
 - **macOS/Windows + DSH:** open a desktop-only installation once to initialize its profile, then exercise Install/Repair/Uninstall with both carriers and confirm one Doctor row, per-profile notices, and preservation of the other profile when one side fails or is removed (#1131).
 - **macOS/Windows + DSH:** run real desktop state and Allow/Deny requests, restart after a generation update, and test `dsh://open` from foreground, minimized, and closed windows plus the unique-install launch fallback without promising a conversation-specific jump (#1131, #1132).
 - **Linux + DSH web:** confirm web Install, Doctor, approvals, and upgrade remain usable without a desktop carrier (#1130, #1131).
@@ -135,7 +371,7 @@ need the actual packaged app.
 - **Windows/macOS/Linux:** compare Cloudling normal/mini visuals and slider limits after upgrade, recording the approximately 29% normal-size reduction and unchanged saved selection (#1094).
 - **Windows/macOS/Linux:** verify quota reminders default off, then exercise four timing presets, threshold/window labels, confirmed recovery, failed-send backoff, OS silence/DND, Test, and click-to-Settings with platform notification permission recorded (#1126, #1151, #1152).
 - **Windows/macOS/Linux:** restart with a large retained Footprints journal and activity arriving during reconciliation, toggle/clear recording, and confirm counts do not return after clearing, unsupported metrics remain a dash, and Sessions started is absent (#1143, #1144).
-- **Windows/macOS + Remote SSH:** re-Deploy/Repair a v1.2.0 target with the new Codex hooks and shared helper closure, review its hooks, and confirm remote Codex monitoring and Claude batch delivery still work (#1110, #1123, #1158, #1160).
+- **Windows/macOS + Remote SSH:** re-Deploy/Repair a v1.3.0 target with the new Codex hooks and shared helper closure, review its hooks, and confirm remote Codex monitoring and Claude batch delivery still work (#1110, #1123, #1158, #1160).
 - **Linux X11/Wayland/XWayland + FUSE AppImage:** terminate only test-owned wrappers before Electron, verify `/state` still responds, then use SIGTERM or desktop shutdown and confirm independent temporary copies survive until process-group exit and are cleaned afterward (#1058).
 - **Linux + AppImage:** exercise tmpfs, a non-executable or undersized TMPDIR, a valid executable non-FUSE TMPDIR, a manually extracted AppDir, and the Homebrew cask path, recording startup I/O, single/relaunch peak space, forced-supervisor residuals, and Bazzite reporter confirmation (#1058).
 - **Linux + deb:** install, launch, and uninstall the package and inspect `dpkg -c` for AppRun/supervisor packaging without assuming the FUSE AppImage path runs in deb (#1058).
@@ -143,13 +379,13 @@ need the actual packaged app.
 - **Windows:** cold-start twice at the saved upgrade position, exercise fullscreen overlay clicks/drag, and lock/sleep/wake with low-power mode, confirming position, focus, eye tracking, and size remain stable through the size-runtime changes (#1091).
 - **Release CI, all targets:** run the manual Build & Release and Wayland smoke workflows, require relevant Test jobs to pass, and compare the bundled official catalog snapshot with the published catalog before tagging (#1058, #1099, #1124).
 
-#### 老功能抽测（Regression sampling）
+##### 其他历史与平台抽测
 
 Sample a few items on each release; record every item not run on the release
 page as **Not tested** rather than carrying forward an earlier pass.
 These retain older behavior checks and historical migrations; their former
-Required/Recommended labels do not make the entire matrix a v1.3.0 gate.
-Historical migration fixtures below are separate from the required v1.2.0
+Required/Recommended labels do not make the entire matrix a v1.6.0 gate.
+Historical migration fixtures below are separate from the required v1.3.0
 upgrade path.
 
 **Historical migration and fixture preparation**
@@ -225,7 +461,7 @@ upgrade path.
 - Install, enable inside MiniMax (`mcode plugin enable clawd-state@local` or the
   plugin panel), and uninstall MiniMax Code. Confirm state events arrive, no
   Clawd permission bubble appears, and unrelated plugins remain intact.
-- OpenCode 2.x packaged acceptance: verify dual-key registration, live state
+- OpenCode 2.x packaged acceptance: verify v2 `plugins` registration and cleanup of Clawd-owned old `plugin` entries, live state
   flow idle→thinking→working→attention, and a blocking bubble round-trip for
   Allow, Deny, same-session Always, and auto-tools. Interrupt a session with a
   pending approval: its bubble must withdraw. Exercise a compound shell command
@@ -277,12 +513,12 @@ upgrade path.
   revoke-all invalidates both current and previous routing nonces, and a normal
   edit of a profile-isolated profile preserves its runtime mode/key/layout.
 - Upgrade a profile that used the retired Telegram sidecar. Confirm the one-time
-  startup reminder points to Settings -> Remote Approval, saved token/recipient
+  startup reminder points to Settings -> Permissions & approval -> IM channels, saved token/recipient
   values remain, and approval plus completion notifications stay disabled until
   a real native verification callback succeeds. Failure/timeout must not restart
   the retired sidecar.
 - Upgrade the prepared legacy v0.15.0 Feishu/Lark profile. Confirm the legacy setup
-  remains fail-closed, a one-time startup warning points to Remote Approval,
+  remains fail-closed, a one-time startup warning points to Permissions & approval -> IM channels,
   and Doctor reports the binding problem. Re-save the selected platform and
   App ID/App Secret, then re-save the approver; restart and confirm the client
   becomes ready without another warning.
@@ -303,8 +539,12 @@ upgrade path.
 
 **Other desktop and notification sampling**
 
-- Free roam: enable it, wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
+- Free roam: select When idle → Free roam in Settings → Pet → Movement & position,
+  wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
   alignment, and cancels on mouse move, state change, drag, mini mode, and DND.
+- Idle behavior: switch among Stay put, Free roam, and Idle activities; confirm
+  only the selected mode’s details appear, detail values survive mode switches,
+  and switching away during an idle activity returns the pet to its idle visual.
 - Free roam constraints: exercise axis off/horizontal/vertical both with and
   without a valid fence, then use a small fence and invalid/missing fence input.
   Targets must remain reachable and on-screen, with invalid input falling back
@@ -324,7 +564,7 @@ upgrade path.
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv1.3.0`.
+- Update labels never show a duplicated prefix such as `vv1.4.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -390,9 +630,13 @@ upgrade path.
   executable modes and comment-preserving writes correct on a POSIX filesystem.
 - focus jumps to the correct tmux pane.
 
-Applicable required items must pass before publishing; fix a failed gate and
-create a new draft, and report unavailable hardware and deferred historical
-samples accurately in the release note.
+Applicable required gates and new behavior items must pass before publishing,
+except the items marked *after publishing*, which can only run once the release
+is live. Fix a failed gate and create a new draft, and report unavailable hardware
+and deferred historical samples accurately in the release note. Record the
+after-publishing results on the release page; if one fails, follow
+[APT maintenance](../guides/apt-maintenance.md) for the source, correct the release
+note, and ship a fix release if users are affected.
 
 ## Retired Telegram Sidecar Guard
 
@@ -401,6 +645,23 @@ The legacy Telegram sidecar was removed in v0.14.0. Release builds must run
 Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
 outer resources tree and the real `app.asar`; a retired executable or runtime
 module is a hard failure.
+
+## Windows NSIS Overrides
+
+`build/installer.nsh` overrides process detection through `customCheckAppRunning`
+to fix the PowerShell 5.1 single-process count (#882 / electron-builder#10454),
+preserving the rest of the electron-builder 26.15.7 flow. When upgrading
+electron-builder, `test/windows-installer-app-check.test.js` detects template
+drift and requires resynchronizing the override. Remove the override once the
+upstream fix is adopted.
+
+The include also samples deletion access to the old install directory before
+upgrades (#882), and supplies `customUnInstallCheck*` with `/SD IDOK` so silent
+upgrades exit when the old uninstaller returns a nonzero result. Insufficient
+deletion permission shows a dedicated prompt, with Cancel exiting with code 2
+and silent mode exiting directly with code 2. When upgrading
+electron-builder, recheck these overrides against `installUtil.nsh` as well;
+`test/windows-installer-permission-check.test.js` guards the result-check copies.
 
 ## WinGet Publishing
 
@@ -608,3 +869,9 @@ explicitly; do not replace it with a mutable major-version tag.
   version by hand.
 - After the catalog refreshes, run an independent Windows `winget install` or
   `winget upgrade` smoke test before documenting the command in the READMEs.
+
+## APT source and Linux migration
+
+The official APT channel is prepared by `apt-release-dispatch.yml` → main's `publish-apt.yml`. Follow [APT maintenance](../guides/apt-maintenance.md) for the reviewed key ceremony, main-only environment protection, prepare-only run, first deployment of existing releases, and recovery. The source is not considered active until its activation record contains a production fingerprint and successful HTTPS/APT evidence.
+
+Before releasing the app's APT button, deploy and verify the source and bilingual guide using existing stable assets. Tagged builds require `repository.py verify-live` to authenticate the live source and reach the guide; manual validation builds do not require production activation. Add the provided migration notice to that first release's notes; do not modify old published release notes. Preserve both AppImage and `.deb` entries in `latest-linux.yml`, and verify their final archive markers with `scripts/apt/verify-package-formats.py`. A source-publication failure does not remove the last successful site; notifications can precede publication and must not imply the package is already available through APT.

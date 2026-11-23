@@ -1,8 +1,26 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
-// Parse hit-renderer theme config from additionalArguments (synchronous, available on first load)
-const hitThemeArg = process.argv.find(a => a.startsWith("--hit-theme-config="));
-const hitThemeConfig = hitThemeArg ? JSON.parse(hitThemeArg.slice("--hit-theme-config=".length)) : null;
+// The config must be available synchronously before the first paint, but a
+// sandboxed preload cannot read files, and Windows caps the launch command
+// line at 32,767 characters. Ask main over sync IPC first; keep the old
+// additionalArguments path as a fallback for external launches and fixtures.
+function readHitThemeConfig() {
+  if (typeof ipcRenderer.sendSync === "function") {
+    try {
+      const fromMain = ipcRenderer.sendSync("renderer-config:get-hit");
+      if (fromMain != null) return fromMain;
+    } catch {}
+  }
+  const hitThemeArg = process.argv.find(a => a.startsWith("--hit-theme-config="));
+  if (!hitThemeArg) return null;
+  try {
+    return JSON.parse(hitThemeArg.slice("--hit-theme-config=".length));
+  } catch {
+    return null;
+  }
+}
+
+const hitThemeConfig = readHitThemeConfig();
 
 // Parse platform from additionalArguments so hit-renderer can branch on
 // macOS-specific input semantics (Cmd vs Ctrl, Ctrl-click = right-click, etc.).

@@ -43,6 +43,20 @@ const IDENTITY_OVERRIDES = new Map(Object.entries({
   "letichen@tencent.com": "LetitiaChan",
   "mediratta@gmail.com": "anupamme",
   "daecom2005@gmail.com": "52mzd",
+  "quantai520@outlook.com": "quantai1314",
+  "2550975@tongji.edu.cn": "tianxingjian2406",
+  "jyh19310302@gmail.com": "yunho09",
+  "joel.suazo@is-c.cl": "integrasoft-c",
+  "sabinabd@amazon.com": "zero-or-one",
+  "aminorsh@gmail.com": "Aminorsh",
+  "daijx66@gmail.com": "daijx-ai",
+  "nallamo2016@gmail.com": "AllanOliveiraM",
+  "yike001@e.ntu.edu.sg": "Yike-Ye",
+  "sunfleeting@gmail.com": "sunfleeting-debug",
+  "386476500@qq.com": "du-xinyi",
+  "inferzhang@tencent.com": "XYZliang",
+  "commiyou@gmail.com": "commiyou",
+  "mail@richardkramer.de": "richard-kramer",
 }));
 
 function parseVersion(value) {

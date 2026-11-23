@@ -67,7 +67,12 @@ function encodeNoInputWmHints() {
 
 function loadXcbBindings(koffi) {
   const xcb = koffi.load("libxcb.so.1");
-  const libc = koffi.load("libc.so.6");
+  // libxcb allocates replies and errors with the process's malloc, which in
+  // Electron is Chromium's allocator shim, not glibc's. free() has to come from
+  // the same global scope: koffi.load(null) is dlopen(NULL) and resolves to
+  // the shim, while a libc.so.6 handle returns glibc's own free(), which
+  // aborts on a PartitionAlloc pointer. Plain Node can't tell the two apart.
+  const processScope = koffi.load(null);
   // Anonymous struct: nothing is registered by name in the Koffi registry.
   const VoidCookie = koffi.struct({ sequence: "unsigned int" });
   return {
@@ -79,7 +84,7 @@ function loadXcbBindings(koffi) {
     requestCheck: xcb.func("xcb_request_check", "void *", ["void *", VoidCookie]),
     // xcb_generic_error_t: response_type, error_code, ...
     errorCode: (error) => koffi.decode(error, "uint8_t", 2)[1],
-    freeError: libc.func("free", "void", ["void *"]),
+    freeError: processScope.func("free", "void", ["void *"]),
     disconnect: xcb.func("xcb_disconnect", "void", ["void *"]),
   };
 }

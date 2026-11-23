@@ -37,9 +37,25 @@ docs/**
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
 !docs/guides/release-signing.md
+!docs/guides/apt-setup.md
+!docs/guides/apt-setup.zh-CN.md
+!docs/guides/apt-maintenance.md
 !docs/guides/codex-wsl-clarification.md
 !docs/guides/codex-wsl-clarification.zh-CN.md
 !docs/guides/codex-wsl-clarification.ko-KR.md
+!docs/guides/features.md
+!docs/guides/features.zh-CN.md
+!docs/guides/features.zh-TW.md
+!docs/guides/features.ko-KR.md
+!docs/guides/features.ja-JP.md
+!docs/guides/features.es.md
+!docs/guides/supported-agents.md
+!docs/guides/supported-agents.zh-CN.md
+!docs/guides/supported-agents.zh-TW.md
+!docs/guides/supported-agents.ko-KR.md
+!docs/guides/supported-agents.ja-JP.md
+!docs/guides/supported-agents.es.md
+!docs/guides/permission-external-review.md
 !docs/investigations/
 !docs/investigations/permission-hook-fail-deny-investigation.md
 !docs/investigations/codex-subagent-session-meta.md
@@ -47,6 +63,13 @@ docs/**
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
 !docs/project/theme-state-ui.md
+!docs/plans/
+!docs/plans/2026-10-24-apt-linux-updates.md
+!docs/investigations/apt-linux-updates-2026-10-24/
+!docs/investigations/apt-linux-updates-2026-10-24/adjudication.md
+!docs/investigations/apt-linux-updates-2026-10-24/pre-review-validation.md
+!docs/investigations/apt-linux-updates-2026-10-24/claude-plan-r1/
+!docs/investigations/apt-linux-updates-2026-10-24/claude-plan-r1/response-0001.md
 !docs/cloudling/
 !docs/cloudling/specs/
 !docs/cloudling/specs/core-states.md
@@ -72,6 +95,10 @@ docs/**
 !docs/releases/release-v1.1.0.md
 !docs/releases/release-v1.2.0.md
 !docs/releases/release-v1.3.0.md
+!docs/releases/release-v1.4.0.md
+!docs/releases/release-v1.5.0.md
+!docs/releases/release-v1.6.0.md
+!docs/releases/release-v1.7.0.md
 
 # Temp files from testing
 .tmp_*
@@ -107,18 +134,30 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+!scripts/apt/
+!scripts/build-remote-ssh-stdio-bridge.js
+!scripts/remote-ssh-stdio-bridge-entry.js
+scripts/apt/__pycache__/
+!scripts/apt/*.py
 # Deterministic source-backed macOS tray asset generator
 !scripts/generate-mac-tray-icons.js
+!scripts/generate-readme-contributors.js
 !scripts/update-official-theme-catalog-snapshot.js
 !scripts/manual/
 scripts/manual/*
 !scripts/manual/README.md
+!scripts/manual/mobile-freeze-e2e.js
 !scripts/manual/remote-ssh-codespaces-546.ps1
 !scripts/manual/remote-ssh-codespaces-546-observe.ps1
 !scripts/manual/remote-ssh-codespaces-546-port-holder.js
 !scripts/manual/remote-ssh-codespaces-546-readiness.js
 !scripts/manual/kimi-quota-phase0-smoke.js
 !scripts/manual/kimi-quota-phase0-smoke.ps1
+!scripts/manual/reasonix-hook-budget/
+scripts/manual/reasonix-hook-budget/*
+!scripts/manual/reasonix-hook-budget/main.go
+!scripts/manual/reasonix-hook-budget/run-consumer.cjs
+!scripts/manual/reasonix-hook-budget/README.md
 !scripts/remote-deploy.sh
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh

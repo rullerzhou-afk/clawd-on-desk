@@ -8,6 +8,7 @@ const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const wslUtils = require("./wsl-utils");
+const { SERVER_PORTS, normalizeLocalPort } = require("../hooks/server-config");
 // Shared with src/remote-ssh-deploy.js: WSL and Remote SSH have separate
 // orchestration but one installer result contract.
 const {
@@ -487,6 +488,11 @@ async function deployToWsl(distro, options = {}) {
   if (!isWindowsFor(options)) return { ok: false, step: "platform", message: "WSL deploy only runs on Windows" };
   if (!distro) return { ok: false, step: "args", message: "distro name is required" };
 
+  const localPort = normalizeLocalPort(options.localServerPort);
+  if (localPort && !SERVER_PORTS.includes(localPort)) {
+    return { ok: false, step: "dynamic-local-port", message:
+      `Clawd is listening on dynamic port ${localPort}. WSL integrations with a separate Linux home cannot read the Windows runtime file and only discover ports 23333–23337. Pair cannot connect in this mode; this is a port-discovery limitation, not a NAT setting error.` };
+  }
   const agentId = options.agentId || "claude-code";
   const installScript = getInstallScript(agentId);
   if (!installScript) return { ok: false, step: "unsupported", message: `WSL deploy is not supported for ${agentId}` };

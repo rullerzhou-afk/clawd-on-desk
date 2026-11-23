@@ -122,10 +122,31 @@ function Test-ClawdCommand {
   return $false
 }
 
+function Test-ClawdCommandHook {
+  param([object]$Hook)
+  $command = Get-StringPropertyValue $Hook "command"
+  if ($null -eq $command) { return $false }
+  $argsProperty = Get-JsonProperty $Hook "args"
+  if ($null -eq $argsProperty) { return Test-ClawdCommand $command }
+
+  # Exec ownership is the exact script basename in args[0], not a marker in
+  # the command path or a later argument. Keep shell-form matching unchanged.
+  if (-not ($argsProperty.Value -is [System.Array]) -or $argsProperty.Value.Count -eq 0) { return $false }
+  foreach ($argument in $argsProperty.Value) {
+    if (-not ($argument -is [string])) { return $false }
+  }
+  $scriptName = ($argsProperty.Value[0] -split '[\\/]')[-1]
+  return $ClawdCommandMarkers -ccontains $scriptName
+}
+
 function Test-ClawdPermissionUrl {
   param([string]$Url)
   if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
 
+  # Exact raw marker, before Uri normalizes dot segments or backslashes.
+  if ($Url -cmatch '^http://127\.0\.0\.1:([1-9][0-9]{0,4})/permission/clawd-on-desk\z') {
+    return [int]$Matches[1] -le 65535
+  }
   try {
     $uri = [System.Uri]$Url
     return $uri.IsAbsoluteUri `
@@ -165,7 +186,7 @@ function Remove-ClawdHooksFromEntries {
     }
 
     $entryCommand = Get-StringPropertyValue $entry "command"
-    if (Test-ClawdCommand $entryCommand) {
+    if (Test-ClawdCommandHook $entry) {
       $removed++
       $changed = $true
       continue
@@ -189,8 +210,7 @@ function Remove-ClawdHooksFromEntries {
     foreach ($hook in ([object[]]$hooksProperty.Value)) {
       $removeHook = $false
       if ($null -ne $hook -and $null -ne $hook.PSObject) {
-        $hookCommand = Get-StringPropertyValue $hook "command"
-        if (Test-ClawdCommand $hookCommand) {
+        if (Test-ClawdCommandHook $hook) {
           $removeHook = $true
         } elseif (Test-ClawdHttpHook $hook) {
           $removeHook = $true

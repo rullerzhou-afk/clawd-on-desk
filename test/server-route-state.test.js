@@ -185,6 +185,162 @@ function callStatePost(body, overrides = {}) {
   });
 }
 
+describe("internally derived execution hint", () => {
+  it("normalizes inbound executing before theme validation for any agent", async () => {
+    for (const agent_id of ["claude-code", "codex"]) {
+      const result = await callStatePost(JSON.stringify({ state: "executing", event: "PostToolUse",
+        agent_id, session_id: "raw-executing" }));
+      assert.equal(result.calls.updateSession[0][1], "working");
+    }
+  });
+});
+
+describe("Claude desktop entrypoint (issue #1365)", () => {
+  it("issue #1365: forwards a valid claude_entrypoint only for claude-code", async () => {
+    const valid = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: "entrypoint-forward",
+      claude_entrypoint: "claude-desktop",
+    }));
+    assert.strictEqual(valid.calls.updateSession[0][3].claudeEntrypoint, "claude-desktop");
+
+    const invalid = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: "entrypoint-forward",
+      claude_entrypoint: "not a token",
+    }));
+    assert.strictEqual(invalid.calls.updateSession[0][3].claudeEntrypoint, undefined);
+
+    const foreign = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "codex", session_id: "entrypoint-forward",
+      claude_entrypoint: "claude-desktop",
+    }));
+    assert.strictEqual(foreign.calls.updateSession[0][3].claudeEntrypoint, undefined);
+  });
+
+  it("issue #1365: keeps the stored marker when a later event omits it, and lets a valid value replace it", async () => {
+    const api = makeMetadataStateRuntime({ processKill: () => true });
+    const rawId = "claude-entrypoint-persist";
+    const sid = localSessionKey(rawId);
+    const post = (extra) => callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: rawId, ...extra,
+    }), { ctx: { sessions: api.sessions, updateSession: api.updateSession } });
+    try {
+      await post({ claude_entrypoint: "claude-desktop" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "claude-desktop");
+
+      await post({});
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "claude-desktop");
+
+      await post({ claude_entrypoint: "cli" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "cli");
+
+      await post({ claude_entrypoint: "still not a token" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "cli");
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("issue #1365: does not record the marker on a non-Claude agent even when it is sent", async () => {
+    const api = makeMetadataStateRuntime({ processKill: () => true });
+    const rawId = "claude-entrypoint-foreign";
+    const sid = localSessionKey(rawId);
+    try {
+      await callStatePost(JSON.stringify({
+        state: "idle", event: "Stop", agent_id: "codex", session_id: rawId,
+        claude_entrypoint: "claude-desktop",
+      }), { ctx: { sessions: api.sessions, updateSession: api.updateSession } });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, null);
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
+describe("Codex official plan progress", () => {
+  const raw = "codex:official-plan";
+  const body = (extra = {}) => JSON.stringify({
+    state: "working", event: "PostToolUse", agent_id: "codex", hook_source: "codex-official",
+    session_id: raw, turn_id: "turn-A", tool_name: "update_plan",
+    plan_progress: { completed: 1, total: 3, percent: 999, steps: ["private"] }, ...extra,
+  });
+
+  it("accepts completed local plan calls as turn-scoped official metadata", async () => {
+    const result = await callStatePost(body());
+    const opts = result.calls.updateSession[0][3];
+    assert.deepStrictEqual(opts.planProgress, { completed: 1, total: 3, percent: 33 });
+    assert.equal(opts.planProgressTurnId, "turn-A");
+    assert.equal(opts.planProgressSource, "codex-official");
+    assert.doesNotMatch(JSON.stringify(opts.planProgress), /private|steps/);
+    const invalid = await callStatePost(body({ plan_progress: { completed: 4, total: 3 } }));
+    assert.equal(invalid.calls.updateSession[0][3].planProgress, null);
+  });
+
+  it("rejects plans from unrelated tools, lifecycle events, remote/WSL, child and wrong-owner rows", async () => {
+    for (const extra of [{ agent_id: "claude-code" }, { hook_source: "unverified" },
+      { event: "PreToolUse" }, { event: "PermissionRequest" }, { tool_name: "Bash" },
+      { turn_id: undefined }, { headless: true }, { host: "remote" },
+      { wsl_distro: "Ubuntu" }, { wsl_sourced: true }, { metadata_only: true }]) {
+      const res = await callStatePost(body(extra));
+      assert.equal(res.calls.updateSession[0]?.[3].planProgress, undefined, JSON.stringify(extra));
+    }
+    const remote = await callStatePost(body(), { options: { remoteProfile: { profileId: "remote-one", displayHost: "remote" } } });
+    assert.equal(remote.calls.updateSession[0]?.[3].planProgress, undefined);
+    for (const stored of [{ agentId: "claude-code" }, { agentId: "codex", host: "remote" },
+      { agentId: "codex", wslDistro: "Ubuntu" }, { agentId: "codex", headless: true }]) {
+      const res = await callStatePost(body(), { ctx: { sessions: new Map([[localSessionKey(raw), stored]]) } });
+      assert.equal(res.calls.updateSession[0]?.[3].planProgress, undefined, JSON.stringify(stored));
+    }
+  });
+});
+
+describe("OpenCode serve attach metadata", () => {
+  const raw = "opencode:ses_attach123";
+  const body = (extra = {}) => JSON.stringify({
+    state: "working", event: "PreToolUse", agent_id: "opencode", hook_source: "opencode-plugin",
+    session_id: raw, cwd: "C:\\project", opencode_attach_url: "http://0.0.0.0:4096/", ...extra,
+  });
+
+  it("accepts only local root v1 plugin metadata and normalizes wildcard listeners", async () => {
+    const result = await callStatePost(body());
+    assert.strictEqual(result.calls.updateSession[0][3].opencodeAttachUrl, "http://127.0.0.1:4096/");
+    for (const extra of [{agent_id:"mimocode"},{hook_source:"opencode-plugin-v2"},{hook_source:"unverified"},
+      {host:"remote"},{wsl_distro:"Ubuntu"},{headless:true}]) {
+      const res = await callStatePost(body(extra));
+      assert.strictEqual(res.calls.updateSession[0]?.[3].opencodeAttachUrl, undefined, JSON.stringify(extra));
+    }
+    const res = await callStatePost(body(), {options:{remoteProfile:{profileId:"remote-one",displayHost:"remote"}}});
+    assert.strictEqual(res.calls.updateSession[0][3].opencodeAttachUrl, undefined);
+  });
+
+  it("uses explicit null to clear malformed or no-longer-serve targets", async () => {
+    for (const value of [null,"http://u:secret@localhost:4096/","http://opencode.local","javascript:alert(1)"]) {
+      const res = await callStatePost(body({opencode_attach_url:value}));
+      assert.strictEqual(res.calls.updateSession[0][3].opencodeAttachUrl,null);
+    }
+  });
+
+  it("metadata-only attach updates preserve lifecycle and refuse unknown or wrong-owner sessions", async () => {
+    const api = makeMetadataStateRuntime();
+    const sid = localSessionKey(raw);
+    try {
+      api.updateSession(sid,"working","PreToolUse",{agentId:"opencode",profileId:"local",rawSessionId:raw,
+        cwd:"C:\\project",hookSource:"opencode-plugin"});
+      const original = api.sessions.get(sid);
+      const events = JSON.stringify(original.recentEvents), at = original.updatedAt;
+      await callStatePost(body({metadata_only:true}), {ctx:{updateSessionMetadata:api.updateSessionMetadata}});
+      assert.strictEqual(original.opencodeAttachUrl,"http://127.0.0.1:4096/");
+      assert.strictEqual(original.opencodeAttachSource,"opencode-plugin");
+      assert.strictEqual(original.updatedAt,at);
+      assert.strictEqual(JSON.stringify(original.recentEvents),events);
+      await callStatePost(body({metadata_only:true,opencode_attach_url:null}), {ctx:{updateSessionMetadata:api.updateSessionMetadata}});
+      assert.strictEqual(original.opencodeAttachUrl,null);
+      assert.strictEqual(api.updateSessionMetadata("missing",{opencodeAttachUrl:"http://localhost:4096/",opencodeAttachSource:"opencode-plugin"}),false);
+      original.agentId="claude-code";
+      assert.strictEqual(api.updateSessionMetadata(sid,{expectedAgentId:"opencode",opencodeAttachUrl:"http://localhost:4096/",opencodeAttachSource:"opencode-plugin"}),false);
+    } finally { api.cleanup(); }
+  });
+});
+
 describe("server-route-state health", () => {
   it("returns the same /state health payload and header", () => {
     const res = makeRes();
@@ -236,6 +392,82 @@ describe("server-route-state Codex ambient-suggestion marker", () => {
     const res = await callStatePost(ambientBody({ agent_id: "claude-code" }));
     assert.strictEqual(res.calls.updateSession.length, 1);
     assert.strictEqual(res.calls.updateSession[0][3].codexInternalThread, undefined);
+  });
+});
+
+describe("server-route-state Codex title refresh marker", () => {
+  const titleRaw = "codex:00000000-0000-4000-8000-000000000024";
+  const titleBody = (extra = {}) => JSON.stringify({
+    state: "thinking", event: "UserPromptSubmit", agent_id: "codex", hook_source: "codex-official",
+    session_id: titleRaw, codex_internal_thread: "title_refresh", source_pid: 42, ...extra,
+  });
+
+  it("passes only the exact local official title refresh marker", async () => {
+    const result = await callStatePost(titleBody());
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.calls.updateSession.length, 1);
+    assert.strictEqual(result.calls.updateSession[0][3].codexInternalThread, "title_refresh");
+    for (const value of ["future_title_job", "title_refresh ", "TITLE_REFRESH", "", null, true, {}, ["title_refresh"]]) {
+      const response = await callStatePost(titleBody({ codex_internal_thread: value }));
+      assert.strictEqual(response.calls.updateSession.length, 1);
+      assert.strictEqual(response.calls.updateSession[0][3].codexInternalThread, undefined, JSON.stringify(value));
+    }
+  });
+
+  it("drops title refresh claims from other agents, nonofficial hooks, remote profiles and both WSL marker shapes", async () => {
+    const cases = [
+      { name: "other-agent", fields: { agent_id: "claude-code" } },
+      { name: "jsonl-source", fields: { hook_source: "codex-jsonl" } },
+      { name: "unverified-source", fields: { hook_source: "unverified" } },
+      { name: "wsl-distro", fields: { wsl_distro: "Ubuntu" } },
+      { name: "wsl-host", fields: { host: "wsl:Ubuntu" } },
+      { name: "host", fields: { host: "remote-host" } },
+      { name: "remote-profile", fields: {}, options: { remoteProfile: { profileId: "ssh-work", displayHost: "workbox" } } },
+    ];
+    for (const entry of cases) {
+      const response = await callStatePost(titleBody(entry.fields), { options: entry.options });
+      assert.strictEqual(response.calls.updateSession.length, 1, entry.name);
+      assert.strictEqual(response.calls.updateSession[0][3].codexInternalThread, undefined, entry.name);
+    }
+  });
+
+  it("routes a title thread lifecycle without hiding three real same-folder Desktop conversations or keeping it suppressed after SessionEnd", async () => {
+    const state = makeClaudePhaseStateRuntime({ processKill: () => true });
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => state,
+      updateSession: (...args) => state.updateSession(...args),
+    });
+    const ctx = { sessions: state.sessions, updateSession: runtime.updateSessionFromServer };
+    const send = (raw, event, phase, extra = {}) => callStatePost(JSON.stringify({
+      state: phase, event, agent_id: "codex", hook_source: "codex-official", session_id: raw,
+      turn_id: `turn-${raw}`, cwd: "C:\\same-project", source_pid: 42, agent_pid: 84,
+      codex_originator: "codex_work_desktop", ...extra,
+    }), { ctx });
+    try {
+      const peers = ["codex:route-real-a", "codex:route-real-b", "codex:route-real-c"];
+      for (const raw of peers) {
+        await send(raw, "UserPromptSubmit", "thinking");
+        await send(raw, "PreToolUse", "working");
+      }
+      const before = peers.map((raw) => JSON.stringify(state.sessions.get(localSessionKey(raw))));
+      await send(titleRaw, "UserPromptSubmit", "thinking", { codex_internal_thread: "title_refresh" });
+      for (const [event, phase] of [["Stop", "idle"], ["Interrupt", "idle"]]) {
+        const response = await send(titleRaw, event, phase);
+        assert.strictEqual(response.statusCode, 200);
+        assert.strictEqual(state.sessions.has(localSessionKey(titleRaw)), false, event);
+      }
+      peers.forEach((raw, index) => assert.strictEqual(JSON.stringify(state.sessions.get(localSessionKey(raw))), before[index]));
+      const snapshot = state.buildSessionSnapshot();
+      assert.strictEqual(snapshot.hudTotalNonIdle, 3);
+      assert.ok(snapshot.sessions.every((row) => !row.hiddenFromHud && row.state === "working"));
+
+      await send(titleRaw, "SessionEnd", "sleeping");
+      await send(titleRaw, "UserPromptSubmit", "thinking", { turn_id: "ordinary-user-after-teardown" });
+      assert.strictEqual(state.sessions.get(localSessionKey(titleRaw)).state, "thinking");
+      assert.strictEqual(state.sessions.size, 4, "a later genuine user conversation keeps its own identity");
+    } finally {
+      runtime.cleanup(); state.cleanup();
+    }
   });
 });
 
@@ -591,7 +823,7 @@ describe("server-route-state POST", () => {
       await post("Stop");
       const start = await post("PreToolUse", { prompt_id: "queued", tool_name: "Read", tool_use_id: "queued-tool" });
       assert.equal(start.statusCode, 200);
-      assert.equal(api.sessions.get(sid).state, "working");
+      assert.equal(api.sessions.get(sid).state, "executing");
       await post("PostToolUse", { prompt_id: "queued", tool_name: "Read", tool_use_id: "queued-tool" });
       await post("PostToolBatch", { prompt_id: "queued", tool_calls: [{ tool_use_id: "queued-tool" }] });
       assert.equal(api.sessions.get(sid).state, "thinking");
@@ -3095,7 +3327,7 @@ describe("server-route-state POST", () => {
     }));
 
     assert.strictEqual(res.statusCode, 200);
-    assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg"]]);
+    assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg", { notificationCue: false }]]);
   });
 
   it("drops disabled agents with a 204 and records the disabled outcome", async () => {
@@ -3946,5 +4178,200 @@ describe("issue #1125 AI session title end to end", () => {
     } finally {
       api.cleanup();
     }
+  });
+});
+
+describe("Codex remote MCP: fallback notice state events", () => {
+  const remoteOptions = { remoteProfile: { profileId: "remote-1", displayHost: "workbox" } };
+
+  it("reports a remote Codex event before a state-machine drop", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "Stop",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-stop",
+      turn_id: "turn-1",
+      stop_hook_active: true,
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 204);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].sessionId, makeSessionKey({
+      profileId: "remote-1",
+      rawSessionId: "codex:remote-stop",
+    }));
+    assert.equal(seen[0].rawSessionId, "codex:remote-stop");
+    assert.equal(seen[0].profileId, "remote-1");
+    assert.equal(seen[0].event, "Stop");
+    assert.equal(seen[0].turnId, "turn-1");
+  });
+
+  it("does not report state events from other agents", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "claude-code",
+      session_id: "claude-remote-session",
+      tool_name: "Bash",
+      tool_use_id: "call-1",
+      tool_input_fingerprint: "fp-1",
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(seen.length, 0);
+  });
+
+  it("forwards tool identity and skips metadata-only and local events", async () => {
+    const seen = [];
+    const ctx = { onCodexRemoteStateEvent: (payload) => seen.push(payload) };
+    const body = (extra = {}) => JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-tool",
+      turn_id: "turn-2",
+      tool_name: "mcp__playwright__browser_navigate",
+      tool_use_id: "call-9",
+      tool_input_fingerprint: "fp-9",
+      ...extra,
+    });
+
+    await callStatePost(body(), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].toolName, "mcp__playwright__browser_navigate");
+    assert.equal(seen[0].toolUseId, "call-9");
+    assert.equal(seen[0].toolInputFingerprint, "fp-9");
+
+    seen.length = 0;
+    await callStatePost(body({ metadata_only: true }), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 0);
+
+    seen.length = 0;
+    await callStatePost(body(), { ctx });
+    assert.equal(seen.length, 0);
+  });
+});
+
+
+describe("Copilot terminal wait fields", () => {
+  const key = "a".repeat(32);
+  const fields = { copilot_wait_key: key, copilot_tool_keys: [key, "b".repeat(32)], copilot_event_ts: 1234 };
+  const body = { agent_id: "copilot-cli", session_id: "wait", event: "Notification", state: "notification" };
+
+  it("forwards validated fields using the trusted canonical session identity", async () => {
+    const result = await callStatePost(JSON.stringify({ ...body, ...fields }), {
+      options: { remoteProfile: { profileId: "ssh-box", displayHost: "box" } },
+    });
+    assert.equal(result.statusCode, 200);
+    const [id, , , opts] = result.calls.updateSession[0];
+    assert.equal(id, makeSessionKey({ profileId: "ssh-box", rawSessionId: "wait" }));
+    assert.equal(opts.copilotWaitKey, key);
+    assert.deepEqual(opts.copilotToolKeys, fields.copilot_tool_keys);
+    assert.equal(opts.copilotEventTs, 1234);
+  });
+
+  it("ignores invalid fields without dropping the state event", async () => {
+    for (const invalid of [
+      { copilot_wait_key: "unmatched" }, { copilot_wait_key: "A".repeat(32) }, { copilot_wait_key: 42 },
+      { copilot_wait_key: "a".repeat(33) }, { copilot_wait_key: "a".repeat(31) },
+      { copilot_tool_keys: [key, "bad"] }, { copilot_tool_keys: Array(5).fill(key) },
+      { copilot_tool_keys: key }, { copilot_tool_keys: [null] },
+      { copilot_event_ts: "1234" }, { copilot_event_ts: 0 }, { copilot_event_ts: -1 },
+      { copilot_event_ts: null }, { copilot_event_ts: Infinity },
+    ]) {
+      const result = await callStatePost(JSON.stringify({ ...body, ...invalid }));
+      assert.equal(result.statusCode, 200);
+      const opts = result.calls.updateSession[0][3];
+      assert.equal("copilotWaitKey" in opts, false);
+      assert.equal("copilotToolKeys" in opts, false);
+      assert.equal("copilotEventTs" in opts, false);
+    }
+  });
+
+  it("ignores Copilot fields for other agents and deduplicates tool keys", async () => {
+    for (const agent_id of ["claude-code", "kiro-desktop", "codex"]) {
+      const result = await callStatePost(JSON.stringify({ ...body, ...fields, agent_id }));
+      const opts = result.calls.updateSession[0][3];
+      assert.equal("copilotWaitKey" in opts, false);
+      assert.equal("copilotToolKeys" in opts, false);
+      assert.equal("copilotEventTs" in opts, false);
+    }
+    const result = await callStatePost(JSON.stringify({ ...body, copilot_tool_keys: [key, key] }));
+    assert.deepEqual(result.calls.updateSession[0][3].copilotToolKeys, [key]);
+  });
+});
+
+
+describe("DeepSeek balance ingress", () => {
+  it("ignores balance forged by local hooks, WSL or SSH while preserving ordinary quota", async () => {
+    for (const host of [undefined, "wsl:Ubuntu", "remote-machine"]) {
+      const res = await callStatePost(JSON.stringify({
+        state: "idle", metadata_only: true, session_id: "balance-forgery", agent_id: "codex", host,
+        codex_quota: { codexWeekly: { usedPercent: 10 } },
+        deepseek_quota: { deepseekBalance: { usedPercent: 0, amount: 999, baseline: 999, currency: "USD" } },
+        deepseekQuota: { deepseekBalance: { usedPercent: 0, amount: 999, baseline: 999, currency: "USD" } },
+      }));
+      assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+      const quota = res.calls.updateAccountQuota[0][1];
+      assert.strictEqual(quota.deepseekQuota, undefined);
+      assert.strictEqual(quota.codexQuota.codexWeekly.usedPercent, 10);
+    }
+  });
+});
+
+describe("PR #1386 follow-up: CodeBuddy client ingress", () => {
+  it("forwards codebuddy_client and drops the retired app fields", async () => {
+    const result = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "UserPromptSubmit",
+      agent_id: "codebuddy",
+      session_id: "codebuddy-client-forward",
+      codebuddy_client: "CodeBuddyIDE",
+      codebuddy_url_scheme: "codebuddycn",
+      codebuddy_app_bundle: "/Applications/CodeBuddy CN.app",
+    }));
+    const opts = result.calls.updateSession[0][3];
+    assert.equal(opts.codebuddyClient, "CodeBuddyIDE");
+    assert.equal(Object.hasOwn(opts, "codebuddyUrlScheme"), false);
+    assert.equal(Object.hasOwn(opts, "codebuddyAppBundle"), false);
+  });
+
+  it("forwards codebuddy_client for host and WSL rows too", async () => {
+    for (const source of [
+      { host: "remote-machine" },
+      { wsl_distro: "Ubuntu" },
+      { host: "wsl:Ubuntu", wsl_distro: "Ubuntu" },
+    ]) {
+      const result = await callStatePost(JSON.stringify({
+        state: "working",
+        event: "UserPromptSubmit",
+        agent_id: "codebuddy",
+        session_id: "codebuddy-client-source",
+        codebuddy_client: "CodeBuddyIDE",
+        ...source,
+      }));
+      assert.equal(result.calls.updateSession[0][3].codebuddyClient, "CodeBuddyIDE");
+    }
+  });
+
+  it("does not accept codebuddy_client from another agent", async () => {
+    const result = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "Stop",
+      agent_id: "codex",
+      session_id: "codex-not-codebuddy",
+      codebuddy_client: "CodeBuddyIDE",
+    }));
+    assert.equal(result.calls.updateSession[0][3].codebuddyClient, undefined);
   });
 });

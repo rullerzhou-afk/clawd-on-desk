@@ -45,6 +45,7 @@ test("toCoarseState preserves the original four-state privacy contract", () => {
   assert.strictEqual(toCoarseState("idle"), "idle");
   assert.strictEqual(toCoarseState("thinking"), "thinking");
   assert.strictEqual(toCoarseState("working"), "working");
+  assert.strictEqual(toCoarseState("executing"), "working");
   assert.strictEqual(toCoarseState("juggling"), "working");
   assert.strictEqual(toCoarseState("carrying"), "working");
   assert.strictEqual(toCoarseState("notification"), "waiting");
@@ -55,6 +56,7 @@ test("toCoarseState preserves the original four-state privacy contract", () => {
 test("resolvePresenceState maps active states and recovers done/error from the badge", () => {
   assert.strictEqual(resolvePresenceState({ state: "thinking" }), "thinking");
   assert.strictEqual(resolvePresenceState({ state: "working" }), "working");
+  assert.strictEqual(resolvePresenceState({ state: "executing" }), "working");
   assert.strictEqual(resolvePresenceState({ state: "juggling" }), "juggling");
   assert.strictEqual(resolvePresenceState({ state: "mini-working" }), "working"); // mini-* shares its base
   // one-shot states (error/attention/notification/...) collapse to idle in the

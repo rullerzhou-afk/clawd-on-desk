@@ -29,6 +29,7 @@ function createMacHideController(options = {}) {
   const app = options.app || null;
   const getShowDock = options.getShowDock || (() => true);
   const isPetHidden = options.isPetHidden || (() => false);
+  const beforeManualShow = options.beforeManualShow || (() => {});
   const setPetHidden = options.setPetHidden
     || (() => ({ applied: false, deferred: false, changed: false }));
   const setIntervalFn = options.setInterval || setInterval;
@@ -38,8 +39,9 @@ function createMacHideController(options = {}) {
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : DEFAULT_POLL_MS;
 
   // True only while the pet is hidden *because the OS hid the app*. Cleared on
-  // the matching unhide and on any manual hide/show (noteManualChange), so a
-  // later activate/unhide never "restores" a deliberate user hide.
+  // the matching unhide and on any manual hide/show (noteManualChange). An
+  // already manually hidden pet is never claimed, so a later OS unhide keeps
+  // that deliberate hide intact.
   let hiddenByOsHide = false;
   let lastHidden = false;
   let pollTimer = null;
@@ -76,9 +78,14 @@ function createMacHideController(options = {}) {
 
   function onHiddenStateChange(nowHidden) {
     if (nowHidden) {
-      // OS hid the app → hide the pet and remember we own this hide.
-      hiddenByOsHide = true;
-      applyWithMiniRetry(true, 0);
+      // Only own a hide we initiate; manual hides must survive OS unhide.
+      if (!isPetHidden()) {
+        hiddenByOsHide = true;
+        applyWithMiniRetry(true, 0);
+      } else {
+        // A deferred unhide must not show the pet after the app hides again.
+        if (miniRetryTimer) { clearTimeoutFn(miniRetryTimer); miniRetryTimer = null; }
+      }
     } else if (hiddenByOsHide) {
       // OS unhid the app (dock click / ⌘Tab) → restore the pet.
       hiddenByOsHide = false;
@@ -116,7 +123,9 @@ function createMacHideController(options = {}) {
   }
 
   // Dock-tile click / app reactivation.
-  //  - If the app is OS-hidden, unhide it; the poll then restores the pet.
+  //  - If the app is OS-hidden, only unhide the app. The poll restores the pet
+  //    only while we own the OS hide; a manual hide (including meeting mode)
+  //    stays hidden until another Dock click takes the explicit show branch.
   //  - Else if the pet is manually hidden (and the Dock is visible), treat the
   //    click as an explicit "come back" and restore it.
   function onActivate() {
@@ -127,6 +136,7 @@ function createMacHideController(options = {}) {
     }
     if (isPetHidden() && getShowDock()) {
       hiddenByOsHide = false;
+      beforeManualShow();
       applyWithMiniRetry(false, 0);
     }
   }

@@ -30,7 +30,7 @@ describe("pet-attached quota ring", () => {
   // A healthy ring is colored by identity, not by headroom: severity has only
   // three steps, so two healthy windows used to come out the same color and read
   // as one thick ring. Severity still owns the alert states.
-  it("gives every ring provider its own identity pair, so none silently wears another's colors", () => {
+  it("gives each reported ring an identity color without inventing unused inner rings", () => {
     // The generic --id-outer/--id-inner pair is Claude's, by design (it is the
     // most common coin). That makes a missing pair invisible rather than loud:
     // a new provider would just look like Claude. Pin the mapping instead.
@@ -38,13 +38,16 @@ describe("pet-attached quota ring", () => {
       [...quotaRingHtml.matchAll(/--id-([a-z]+)-(outer|inner)\s*:/g)].map((m) => `${m[1]}-${m[2]}`)
     );
     // RING_PROVIDERS keys are "<name>Quota"; the CSS classes are pv-<key>.
-    const providerKeys = [...quotaRingRenderer.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1]);
+    const providers = require("../src/quota-ring-geometry").RING_PROVIDERS;
+    const providerKeys = providers.map((provider) => provider.key);
     assert.ok(providerKeys.length >= 3, `expected the ring providers, got ${providerKeys}`);
     const valueOf = (name, slot) =>
       (quotaRingHtml.match(new RegExp(`--id-${name}-${slot}\\s*:\\s*(#[0-9a-fA-F]{3,8})`)) || [])[1];
     for (const key of providerKeys) {
       const name = key.replace(/Quota$/, "").toLowerCase();
-      for (const slot of ["outer", "inner"]) {
+      const slots = providers.find((provider) => provider.key === key).inner.length
+        ? ["outer", "inner"] : ["outer"];
+      for (const slot of slots) {
         assert.ok(
           declared.has(`${name}-${slot}`),
           `${key} has no --id-${name}-${slot} in quota-ring.html; it would inherit the generic (Claude) pair`
@@ -59,7 +62,7 @@ describe("pet-attached quota ring", () => {
       // are tellable apart. Identical values would sail past the checks above
       // and reinstate the exact "two healthy windows merge into one thick ring"
       // bug this palette exists to fix.
-      assert.notStrictEqual(
+      if (slots.length === 2) assert.notStrictEqual(
         valueOf(name, "outer"), valueOf(name, "inner"),
         `${key} paints its outer and inner rings the same color`
       );
@@ -142,9 +145,10 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingRenderer, /quotaAgentIcons/);
   });
 
-  it("clicking a coin or the overflow opens the Dashboard", () => {
+  it("clicking a coin opens the Dashboard without an overflow control", () => {
     assert.match(quotaRingRenderer, /openDashboard\(\)/);
-    assert.match(quotaRingRenderer, /buildOverflow/);
+    assert.doesNotMatch(quotaRingRenderer, /buildOverflow/);
+    assert.doesNotMatch(quotaRingHtml, /\.overflow/);
   });
 
   it("does not advertise unreachable keyboard controls in the non-focusable ring panel", () => {
@@ -224,6 +228,29 @@ describe("session HUD visual shell", () => {
     assert.match(sessionHudRenderer, /function shortenHudTitle\(value\)/);
     assert.match(sessionHudRenderer, /title\.textContent = feedbackText \|\| shortTitle/);
     assert.match(sessionHudRenderer, /title\.title = fullTitle/);
+  });
+
+  it("keeps session titles visible at 130%-160% HUD scaling by overlaying plan progress", () => {
+    // Existing max 58% right-column budget and title flex allocation must
+    // remain identical whether a plan exists or not. A second flex chip
+    // previously reduced the title all the way to zero at 160% scaling.
+    const rightRule = sessionHudHtml.match(/\.right\s*\{[^}]+\}/);
+    assert.ok(rightRule);
+    assert.match(rightRule[0], /max-width:\s*58%/);
+    const titleRule = sessionHudHtml.match(/\.title\s*\{[^}]+\}/);
+    assert.match(titleRule[0], /flex:\s*1 1 auto/);
+    const track = sessionHudHtml.match(/\.plan-progress-track\s*\{[^}]+\}/);
+    assert.ok(track, "the plan must use its own overlay track");
+    assert.match(track[0], /position:\s*absolute/);
+    assert.match(track[0], /pointer-events:\s*none/);
+    assert.match(sessionHudHtml, /\.row\s*\{\s*position:\s*relative/);
+    const planBranch = sessionHudRenderer.match(/if \(!feedbackText && session\.planProgress\)\s*\{[\s\S]*?row\.title =/);
+    assert.ok(planBranch);
+    assert.match(planBranch[0], /row\.appendChild\(track\)/);
+    assert.doesNotMatch(planBranch[0], /right\.appendChild\(/);
+    // No track width participates in Flexbox, so its addition cannot change
+    // the title's allocated space at 100%, 130% or 160% zoom.
+    assert.doesNotMatch(track[0], /flex:|min-width:|max-width:/);
   });
 
   it("updates elapsed labels without rebuilding animated rows every second", () => {

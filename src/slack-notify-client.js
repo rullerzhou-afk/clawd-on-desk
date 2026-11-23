@@ -72,7 +72,8 @@ function dedupeKey(entry) {
 }
 
 function isCompletion(entry) {
-  if (!entry || !DONE_BADGES.has(entry.badge)) return false;
+  // Keep internal subagent output and replayed completions out of Slack.
+  if (!entry || entry.headless === true || !DONE_BADGES.has(entry.badge)) return false;
   const le = entry.lastEvent;
   return !!(le && COMPLETION_EVENTS.has(le.rawEvent));
 }

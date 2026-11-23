@@ -82,11 +82,6 @@
         100% { transform: translateY(-15px) scale(1.2); opacity: 0; }
       }
     </style>
-
-    <!-- A small square to represent data/code -->
-    <g id="pixel-packet">
-      <rect x="0" y="0" width="1.5" height="1.5" />
-    </g>
   </defs>
 
   <!-- No shadow (against screen edge, no ground plane) -->
@@ -142,12 +137,12 @@
   </g>
   <!-- Data Particles floating up from behind the laptop -->
   <g class="data-particles" fill="#40C4FF">
-    <use href="#pixel-packet" class="data-bit d1" x="-2" y="12" />
-    <use href="#pixel-packet" class="data-bit d2" x="5" y="11" />
-    <use href="#pixel-packet" class="data-bit d3" x="12" y="13" />
-    <use href="#pixel-packet" class="data-bit d4" x="17" y="11" />
-    <use href="#pixel-packet" class="data-bit d5" x="8" y="10" />
-    <use href="#pixel-packet" class="data-bit d6" x="1" y="11" />
-    <use href="#pixel-packet" class="data-bit d7" x="15" y="12" />
+    <g class="data-bit d1"><g transform="translate(-2,12)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d2"><g transform="translate(5,11)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d3"><g transform="translate(12,13)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d4"><g transform="translate(17,11)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d5"><g transform="translate(8,10)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d6"><g transform="translate(1,11)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
+    <g class="data-bit d7"><g transform="translate(15,12)"><rect x="0" y="0" width="1.5" height="1.5"/></g></g>
   </g>
 </svg>

@@ -60,7 +60,7 @@ function loadRenderer() {
     window: {
       quotaRingAPI: {
         onLangChange() {},
-        onSnapshot() {},
+        onSnapshot(cb) { context.pushSnapshot = cb; },
         getI18n: async () => null,
         openDashboard() {},
       },
@@ -72,6 +72,7 @@ function loadRenderer() {
   };
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "quota-balance.js"), "utf8"), context);
   vm.runInContext(rendererSource, context);
   vm.runInContext(`
     payload = {
@@ -480,7 +481,7 @@ describe("quota ring renderer model", () => {
     assert.doesNotMatch(fills[1].attributes.class, /is-near/);
   });
 
-  it("keeps quota rows and overflow free of hover tooltips", () => {
+  it("keeps quota rows free of hover tooltips", () => {
     const context = loadRenderer();
     const now = 1_000_000;
     const model = modelFor(context, {
@@ -494,9 +495,7 @@ describe("quota ring renderer model", () => {
     context.__model = model;
 
     const row = vm.runInContext("buildCoinRow(__model)", context);
-    const overflow = vm.runInContext("buildOverflow(2)", context);
     assert.strictEqual(row.title, "");
-    assert.strictEqual(overflow.title, "");
   });
 
   it("shows a compact source marker when more than one machine contributes quota", () => {
@@ -901,5 +900,158 @@ describe("quota ring flashback — identity and bookkeeping", () => {
     );
     // A is done on its own schedule; B is still mid-flash.
     assert.deepStrictEqual([...flags], [false, true]);
+  });
+});
+
+describe("quota ring — visible selection", () => {
+  const geometry = require("../src/quota-ring-geometry");
+  const all = {
+    sourceKey: "local",
+    antigravityQuota: { group: { geminiFiveHour: { usedPercent: 1 } } },
+    claudeQuota: { group: { claudeFiveHour: { usedPercent: 2 } } },
+    codexQuota: { group: { codexWeekly: { usedPercent: 3 } } },
+    kimiQuota: { group: { kimiWeekly: { usedPercent: 4 } } },
+  };
+  const remote = { ...all, sourceKey: "remote", host: "build" };
+  const cases = [
+    { name: "automatic mode takes the first three providers", sources: [all], shown: null,
+      expected: ["local:antigravityQuota", "local:claudeQuota", "local:codexQuota"] },
+    { name: "automatic mode respects legacy hidden providers", sources: [all], hidden: ["claudeQuota"],
+      expected: ["local:antigravityQuota", "local:codexQuota", "local:kimiQuota"] },
+    { name: "manual mode ignores hidden providers", sources: [all], hidden: ["kimiQuota"], shown: ["kimiQuota"],
+      expected: ["local:kimiQuota"] },
+    { name: "new providers do not fill manual vacancies", sources: [all], shown: ["kimiQuota", "claudeQuota"],
+      expected: ["local:claudeQuota", "local:kimiQuota"] },
+    { name: "manual providers without data leave vacancies", sources: [{ ...all, kimiQuota: null }], shown: ["kimiQuota"],
+      expected: [] },
+    { name: "an empty manual selection draws nothing", sources: [all], shown: [], expected: [] },
+    { name: "multiple sources consume coins in fixed provider order", sources: [all, remote], shown: ["codexQuota", "claudeQuota"],
+      expected: ["local:claudeQuota", "remote:claudeQuota", "local:codexQuota"] },
+  ];
+  for (const scenario of cases) {
+    it(scenario.name + " in geometry and renderer", () => {
+      const context = loadRenderer();
+      context.__sources = scenario.sources;
+      context.__shown = scenario.shown;
+      context.__hidden = scenario.hidden || [];
+      vm.runInContext("payload.accountQuota = __sources; payload.shownQuotaProviders = __shown; payload.hiddenQuotaProviders = __hidden", context);
+      const rendered = vm.runInContext("collectCoins(Date.now()).map(m => m.sourceKey + ':' + m.providerKey)", context);
+      assert.deepStrictEqual(Array.from(rendered), scenario.expected);
+      const snapshot = { accountQuota: scenario.sources };
+      const sized = geometry.collectQuotaCoins(snapshot, scenario.hidden, scenario.shown)
+        .map(({ source, def }) => source.sourceKey + ":" + def.key);
+      assert.deepStrictEqual(sized, scenario.expected);
+      assert.strictEqual(geometry.countQuotaCoins(snapshot, true, scenario.hidden, scenario.shown), rendered.length);
+      const listed = geometry.listQuotaRingProviders(snapshot, scenario.hidden, scenario.shown);
+      assert.deepStrictEqual(listed.filter(p => p.shown).map(p => p.key),
+        [...new Set(scenario.expected.map(key => key.split(":")[1]))]);
+      assert.strictEqual(listed.reduce((sum, p) => sum + p.shownCoinCount, 0), rendered.length);
+      vm.runInContext("render()", context);
+      assert.strictEqual(context.document.getElementById("cluster").children.length, scenario.expected.length);
+      assert.ok(context.document.getElementById("cluster").children.every(el => el.className !== "overflow"));
+    });
+  }
+});
+
+describe("quota ring — snapshot IPC", () => {
+  it("preserves automatic null and explicit manual selections from snapshot IPC", () => {
+    const context = loadRenderer();
+    for (const shown of [null, [], ["kimiQuota"]]) {
+      context.pushSnapshot({ accountQuota: [], shownQuotaProviders: shown });
+      const received = vm.runInContext("payload.shownQuotaProviders", context);
+      assert.deepStrictEqual(received === null ? null : Array.from(received), shown);
+    }
+  });
+});
+
+describe("quota ring — defensive coin models", () => {
+  it("skips a missing visual model without crashing the renderer", () => {
+    const context = loadRenderer();
+    vm.runInContext(`
+      payload.accountQuota = [{ claudeQuota: { group: { claudeFiveHour: { usedPercent: 10 } } } }];
+      buildCoinModel = () => null;
+    `, context);
+    assert.strictEqual(vm.runInContext("collectCoins(Date.now()).length", context), 0);
+    assert.doesNotThrow(() => vm.runInContext("render()", context));
+  });
+});
+
+
+describe("DeepSeek balance coins", () => {
+  it("always draws remaining credit with a money readout, one ring and no mode footnote", () => {
+    const ctx = loadRenderer();
+    vm.runInContext(`
+      payload.translations.quotaRingBalance = "Balance";
+      payload.accountQuota = [{ deepseekQuota: { lastSeenAt: 1000000,
+        group: { deepseekBalance: { usedPercent: 75, amount: 45.20, baseline: 180.80, currency: "CNY" } } } }];
+      var balanceModel = collectCoins(1000000)[0];
+    `, ctx);
+    assert.strictEqual(vm.runInContext('balanceModel.kind', ctx), "balance");
+    assert.strictEqual(vm.runInContext('balanceModel.windows.length', ctx), 1);
+    for (const mode of ["used", "remaining"]) {
+      ctx.mode = mode;
+      vm.runInContext('payload.displayMode = mode', ctx);
+      const row = vm.runInContext('buildCoinRow(balanceModel)', ctx);
+      assert.strictEqual(row.children[0].children[0].textContent, "¥45.20");
+      assert.strictEqual(row.children[0].children[1].textContent, "Balance");
+      assert.strictEqual(row.children[0].children.length, 2);
+      const fill = row.children[1].children.find((node) => /^fill /.test(node.attributes.class || ""));
+      assert.match(fill.attributes["stroke-dasharray"], /^17\.28 /);
+      assert.match(fill.attributes.class, /sev-warn/);
+      assert.ok(!row.children[1].children.some((node) => /is-reset-bed/.test(node.attributes.class || "")));
+    }
+    assert.strictEqual(vm.runInContext('formatBalanceAmount(289.3, "CNY")', ctx), "¥289");
+    assert.strictEqual(vm.runInContext('formatBalanceAmount(12, "USD")', ctx), "$12.00");
+    assert.strictEqual(vm.runInContext('collectCoins(1720000)[0].state', ctx), "live");
+    assert.strictEqual(vm.runInContext('collectCoins(1720001)[0].state', ctx), "stale");
+  });
+});
+
+
+describe("balance selection mirror", () => {
+  it("skips incomplete balance data without hiding valid subscription coins", () => {
+    const ctx = loadRenderer();
+    const geometry = require("../src/quota-ring-geometry");
+    const complete = { usedPercent: 50, amount: 12, baseline: 24, currency: "USD" };
+    const invalid = ["amount", "baseline", "currency"].map((field) => {
+      const bucket = { ...complete };
+      delete bucket[field];
+      return bucket;
+    });
+    invalid.push({ ...complete, amount: -1 }, { ...complete, baseline: Infinity },
+      { ...complete, currency: "EUR" });
+    for (const balance of invalid) {
+      const snapshot = { accountQuota: [{
+        claudeQuota: { group: { claudeWeekly: { usedPercent: 12 } } },
+        deepseekQuota: { group: { deepseekBalance: balance } },
+      }] };
+      ctx.data = snapshot.accountQuota;
+      assert.doesNotThrow(() => vm.runInContext("payload.accountQuota = data; render()", ctx));
+      const rendered = vm.runInContext("collectCoins(1000).map((coin) => coin.providerKey)", ctx);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(rendered)), ["claudeQuota"]);
+      assert.strictEqual(geometry.countQuotaCoins(snapshot, true), 1);
+      const model = vm.runInContext(
+        'buildCoinModel(data[0], RING_PROVIDERS.find((def) => def.kind === "balance"), 1000, false)', ctx
+      );
+      assert.strictEqual(model, null);
+    }
+  });
+
+  it("matches geometry when DeepSeek is selected alongside subscriptions and multiple sources", () => {
+    const ctx = loadRenderer();
+    const geometry = require("../src/quota-ring-geometry");
+    const snapshot = { accountQuota: [
+      { host: null, sourceKey: "", claudeQuota: { group: { claudeWeekly: { usedPercent: 1 } } },
+        deepseekQuota: { group: { deepseekBalance: { amount: 12, baseline: 20, currency: "USD", usedPercent: 40 } } } },
+      { host: "box", sourceKey: "remote:box", claudeQuota: { group: { claudeWeekly: { usedPercent: 1 } } } },
+    ] };
+    for (const selection of [null, ["deepseekQuota"], ["claudeQuota", "deepseekQuota"]]) {
+      ctx.data = snapshot.accountQuota; ctx.selection = selection;
+      const rendered = vm.runInContext(`payload.accountQuota = data; payload.shownQuotaProviders = selection;
+        collectCoins(1000).map((coin) => [coin.providerKey, coin.sourceKey])`, ctx);
+      const expected = geometry.collectQuotaCoins(snapshot, [], selection)
+        .map(({ def, source }) => [def.key, source.sourceKey]);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(rendered)), expected);
+    }
   });
 });

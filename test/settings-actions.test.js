@@ -48,7 +48,7 @@ describe("mobile permission preview consent commands", () => {
     assert.strictEqual(updateRegistry.mobilePreviewEnabled.lockKey, "mobilePreview");
     for (const name of [
       "setMobilePermissionPreviewEnabled",
-      "mobilePreview.regenerateToken",
+      "mobilePreview.refreshPairCode",
       "mobilePreview.resetAccess",
     ]) {
       assert.strictEqual(commandRegistry[name].lockKey, "mobilePreview", name);
@@ -233,7 +233,8 @@ describe("updateRegistry pure-data validators", () => {
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
-      "quotaMergeSources", "freeRoam", "roamConstrainAxis",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis", "idleActivities",
+      "petAlwaysOnTop",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
@@ -259,6 +260,14 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(calls, 1);
     assert.deepStrictEqual(entry.effect(false, {}), { status: "ok" });
     assert.deepStrictEqual(entry.effect(false), { status: "ok" });
+  });
+
+  it("accepts only supported idle activity frequencies", () => {
+    for (const value of ["low", "medium", "high"]) {
+      assert.strictEqual(updateRegistry.idleActivityFrequency(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.idleActivityFrequency("often").status, "error");
+    assert.strictEqual(updateRegistry.idleActivityFrequency(true).status, "error");
   });
 
   it("accepts only supported quota ring display modes", () => {
@@ -345,6 +354,21 @@ describe("updateRegistry pure-data validators", () => {
     );
   });
 
+  it("DeepSeek balance collection is command-only", () => {
+    const entry = updateRegistry.deepseekBalanceCollectionEnabled;
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+    assert.strictEqual(entry.commandOnly, true);
+    assert.deepStrictEqual(
+      commandRegistry.setDeepseekBalanceCollectionEnabled({ enabled: true }),
+      { status: "ok", commit: { deepseekBalanceCollectionEnabled: true } }
+    );
+    assert.strictEqual(
+      commandRegistry.setDeepseekBalanceCollectionEnabled({ enabled: "yes" }).status,
+      "error"
+    );
+  });
+
   it("bubble auto-close seconds require integers in range", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
@@ -359,6 +383,15 @@ describe("updateRegistry pure-data validators", () => {
       assert.strictEqual(updateRegistry[key](1.5, deps).status, "error", `${key}(1.5)`);
       assert.strictEqual(updateRegistry[key](3601, deps).status, "error", `${key}(3601)`);
       assert.strictEqual(updateRegistry[key]("30", deps).status, "error", `${key}("30")`);
+    }
+  });
+
+  it("Claude turn-ask reminder minutes require integers in range", () => {
+    const validate = updateRegistry.claudeTurnAskReminderMinutes;
+    assert.strictEqual(validate(1).status, "ok");
+    assert.strictEqual(validate(120).status, "ok");
+    for (const value of [0, 121, 2.5, NaN, "5"]) {
+      assert.strictEqual(validate(value).status, "error", String(value));
     }
   });
 
@@ -2175,6 +2208,19 @@ describe("doctor repair commands", () => {
     assert.match(r.message, /restartClawd/);
   });
 
+  it("exposes restartClawd as a confirmed command for the GPU switch (#1183)", async () => {
+    const calls = [];
+    const deps = { restartClawd: () => calls.push("restart") };
+
+    const refused = await commandRegistry.restartClawd({}, deps);
+    assert.strictEqual(refused.status, "error");
+    assert.deepStrictEqual(calls, []);
+
+    const r = await commandRegistry.restartClawd({ confirmed: true }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls, ["restart"]);
+  });
+
   it("rejects Doctor theme repair so Doctor does not reset user themes", async () => {
     const calls = [];
     const r = await commandRegistry.repairDoctorIssue({ type: "theme-health" }, {
@@ -2806,6 +2852,7 @@ describe("setThemeSelection command", () => {
       petTint: true,
       accessories: true,
       mouthAccessories: false,
+      darkAppearance: false,
     });
   });
 
@@ -2821,6 +2868,7 @@ describe("setThemeSelection command", () => {
       petTint: true,
       accessories: false,
       mouthAccessories: false,
+      darkAppearance: false,
     });
   });
 
@@ -2881,6 +2929,7 @@ describe("applyThemeSelection shared helper", () => {
       petTint: true,
       accessories: true,
       mouthAccessories: false,
+      darkAppearance: false,
     });
     assert.deepStrictEqual(calls, [{
       themeId: "clawd",
@@ -3629,5 +3678,220 @@ describe("version validator", () => {
     assert.strictEqual(updateRegistry.version(0, deps).status, "error");
     assert.strictEqual(updateRegistry.version(-1, deps).status, "error");
     assert.strictEqual(updateRegistry.version("1", deps).status, "error");
+  });
+});
+
+describe("idle behavior validation and command", () => {
+  for (const [key, other] of [["freeRoam", "idleActivities"], ["idleActivities", "freeRoam"]]) {
+    it(`${key} validates booleans and rejects the conflicting enabled mode`, () => {
+      const validate = updateRegistry[key];
+      assert.strictEqual(typeof validate, "function");
+      assert.strictEqual(validate(true).status, "ok");
+      assert.strictEqual(validate(true, { snapshot: { [other]: false } }).status, "ok");
+      const conflict = validate(true, { snapshot: { [other]: true } });
+      assert.strictEqual(conflict.status, "error");
+      assert.match(conflict.message, /mutually exclusive.*setIdleBehavior/);
+      for (const otherValue of [false, true]) {
+        assert.strictEqual(validate(false, { snapshot: { [other]: otherValue } }).status, "ok");
+        for (const value of [null, undefined, "true", 1, {}, []]) {
+          assert.strictEqual(validate(value, { snapshot: { [other]: otherValue } }).status, "error");
+        }
+      }
+    });
+  }
+
+  const targets = {
+    none: { freeRoam: false, idleActivities: false },
+    roam: { freeRoam: true, idleActivities: false },
+    activities: { freeRoam: false, idleActivities: true },
+  };
+  for (const [mode, target] of Object.entries(targets)) {
+    it(`setIdleBehavior commits the ${mode} pair for string and object payloads`, () => {
+      for (const payload of [mode, { mode }]) {
+        for (const freeRoam of [false, true]) {
+          for (const idleActivities of [false, true]) {
+            const result = commandRegistry.setIdleBehavior(payload, { snapshot: { freeRoam, idleActivities } });
+            assert.deepStrictEqual(result, freeRoam === target.freeRoam && idleActivities === target.idleActivities
+              ? { status: "ok", noop: true }
+              : { status: "ok", commit: target });
+          }
+        }
+        assert.deepStrictEqual(commandRegistry.setIdleBehavior(payload), { status: "ok", commit: target });
+      }
+    });
+  }
+
+  it("setIdleBehavior rejects missing and invalid modes", () => {
+    for (const payload of [undefined, null, {}, [], true, 1, "", "invalid", { mode: "invalid" }, { mode: false }]) {
+      assert.strictEqual(commandRegistry.setIdleBehavior(payload).status, "error");
+    }
+  });
+});
+
+describe("issue #1316: Windows remote identity and mode defenses", () => {
+  const { createIdentityTxn, abortIdentityTxnToEmergencyNonce } = require("../src/remote-ssh-identity");
+  function remoteProfile() {
+    return { id: "p1", host: "remote.test", runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1, routingNonce: "a".repeat(32), remotePlatform: "posix" };
+  }
+  function deps(profile) { return { snapshot: { remoteSsh: { profiles: [profile] } } }; }
+  it("issue #1316: platform mismatch without done or failed steps rebuilds a fresh transaction", () => {
+    const profile = remoteProfile();
+    profile.identityTxn = createIdentityTxn(profile, { remotePlatform: "posix", now: () => 100, randomBytes: () => Buffer.alloc(16, 0xbb) });
+    profile.identityTxn.steps.installClaude = { status: "not-applicable", evidence: "agent absent" };
+    const original = JSON.stringify(profile);
+    const result = commandRegistry["remoteSsh.beginIdentityRotation"]({ id: profile.id, remotePlatform: "win32" }, deps(profile));
+    assert.strictEqual(result.status, "ok"); assert.strictEqual(result.noop, undefined);
+    assert.strictEqual(result.identityTxn.remotePlatform, "win32");
+    assert.notStrictEqual(result.identityTxn.toNonce, profile.identityTxn.toNonce);
+    assert.strictEqual(result.identityTxn.fromNonce, profile.routingNonce);
+    assert.strictEqual(result.identityTxn.startedAt, profile.identityTxn.startedAt);
+    assert.strictEqual(result.identityTxn.previousExpiresAt, profile.identityTxn.previousExpiresAt);
+    assert.ok(Object.values(result.identityTxn.steps).every((step) => step.status === "pending"));
+    assert.strictEqual(JSON.stringify(profile), original);
+  });
+  it("issue #1316: platform mismatch with any done step preserves the pending transaction", () => {
+    for (const name of require("../src/remote-ssh-profile").REMOTE_IDENTITY_STEP_NAMES) {
+      const profile = remoteProfile();
+      profile.identityTxn = createIdentityTxn(profile, { remotePlatform: "posix" });
+      profile.identityTxn.steps[name] = { status: "done", evidence: "verified" };
+      const original = JSON.stringify(profile);
+      const result = commandRegistry["remoteSsh.beginIdentityRotation"]({ id: profile.id, remotePlatform: "win32" }, deps(profile));
+      assert.strictEqual(result.reason, "identity_txn_platform_mismatch");
+      assert.strictEqual(result.commit, undefined); assert.strictEqual(JSON.stringify(profile), original);
+    }
+  });
+  it("issue #1316: force revoke unbinds the emergency platform so deployment can change platforms", () => {
+    const profile = remoteProfile();
+    profile.identityTxn = createIdentityTxn(profile, { remotePlatform: "win32" });
+    profile.identityTxn.steps.identity = { status: "done" };
+    const emergency = abortIdentityTxnToEmergencyNonce(profile);
+    assert.strictEqual(emergency.identityTxn.remotePlatform, undefined);
+    assert.strictEqual(emergency.routingNonce, undefined);
+    for (const remotePlatform of ["win32", "posix"]) {
+      const result = commandRegistry["remoteSsh.beginIdentityRotation"]({ id: profile.id, remotePlatform }, deps(emergency));
+      assert.strictEqual(result.status, "ok");
+    }
+  });
+  it("issue #1316: settings rejects Windows isolated mode before creating a switch transaction", () => {
+    const profile = { ...remoteProfile(), remotePlatform: "win32" };
+    const result = commandRegistry["remoteSsh.beginRuntimeModeSwitch"]({ id: profile.id, runtimeMode: "profile-isolated", runtimeKey: "isolated" }, deps(profile));
+    assert.strictEqual(result.reason, "windows_profile_isolated_unsupported"); assert.strictEqual(result.commit, undefined);
+  });
+});
+
+it("issue #1316: platform mismatch with any failed step preserves the pending transaction", () => {
+  const { createIdentityTxn } = require("../src/remote-ssh-identity");
+  for (const name of require("../src/remote-ssh-profile").REMOTE_IDENTITY_STEP_NAMES) {
+    const profile = { id: "p1", host: "remote.test", runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1 };
+    profile.identityTxn = createIdentityTxn(profile, { remotePlatform: "posix" });
+    profile.identityTxn.steps[name] = { status: "failed", evidence: "partial write could have occurred" };
+    const original = JSON.stringify(profile);
+    const result = commandRegistry["remoteSsh.beginIdentityRotation"]({ id: profile.id, remotePlatform: "win32" }, { snapshot: { remoteSsh: { profiles: [profile] } } });
+    assert.strictEqual(result.reason, "identity_txn_platform_mismatch");
+    assert.strictEqual(result.commit, undefined);
+    assert.strictEqual(JSON.stringify(profile), original);
+  }
+});
+
+it("issue #1316: a platform rebuild after old-nonce revocation cannot revive its grace period", (t) => {
+  const { createIdentityTxn, acceptedRoutingNonces, commitIdentityTxn } = require("../src/remote-ssh-identity");
+  const { sanitizeIdentityTxn, REMOTE_IDENTITY_STEP_NAMES } = require("../src/remote-ssh-profile");
+  t.mock.method(Date, "now", () => 5000);
+  const profile = { id: "p1", host: "remote.test", runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1,
+    routingNonce: "a".repeat(32), previousNonce: "b".repeat(32), previousExpiresAt: 100_000 };
+  profile.identityTxn = createIdentityTxn(profile, { remotePlatform: "posix", now: () => 1000 });
+  const revoked = commandRegistry["remoteSsh.forceRevoke"]({ id: profile.id, mode: "old", confirmed: true },
+    { snapshot: { remoteSsh: { profiles: [profile] } } });
+  assert.strictEqual(revoked.status, "ok");
+  const current = revoked.commit.remoteSsh.profiles[0];
+  assert.strictEqual(current.identityTxn.fromNonce, null);
+  assert.strictEqual(current.routingNonce, profile.routingNonce);
+  const result = commandRegistry["remoteSsh.beginIdentityRotation"]({ id: profile.id, remotePlatform: "win32" },
+    { snapshot: { remoteSsh: { profiles: [current] } } });
+  assert.strictEqual(result.status, "ok");
+  const rebuilt = result.commit.remoteSsh.profiles[0];
+  assert.strictEqual(rebuilt.identityTxn.fromNonce, null);
+  assert.strictEqual(rebuilt.identityTxn.previousExpiresAt, rebuilt.identityTxn.startedAt + 1);
+  assert.notStrictEqual(rebuilt.identityTxn.toNonce, current.identityTxn.toNonce);
+  assert.strictEqual(rebuilt.previousNonce, undefined);
+  assert.strictEqual(rebuilt.previousExpiresAt, undefined);
+  assert.ok(sanitizeIdentityTxn(rebuilt.identityTxn, rebuilt));
+  for (const time of [5000, profile.identityTxn.previousExpiresAt + 1]) {
+    assert.deepStrictEqual(acceptedRoutingNonces(rebuilt, time), [rebuilt.identityTxn.toNonce]);
+  }
+  const committed = commitIdentityTxn(rebuilt, { ...rebuilt.identityTxn, phase: "verifying",
+    steps: Object.fromEntries(REMOTE_IDENTITY_STEP_NAMES.map((name) => [name, { status: "not-applicable", evidence: "agent absent" }])) });
+  assert.strictEqual(committed.previousNonce, undefined);
+  assert.strictEqual(committed.previousExpiresAt, undefined);
+  assert.deepStrictEqual(acceptedRoutingNonces(committed, 5000), [rebuilt.identityTxn.toNonce]);
+});
+it("issue #1316: a platform rebuild preserves the original source nonce and deadline even after expiry", (t) => {
+  const { createIdentityTxn, acceptedRoutingNonces } = require("../src/remote-ssh-identity");
+  const { sanitizeIdentityTxn } = require("../src/remote-ssh-profile");
+  let currentTime = 10_000;
+  t.mock.method(Date, "now", () => currentTime);
+  for (const time of [10_000, 100_000]) {
+    currentTime = time;
+    const profile = { id: "p1", host: "remote.test", runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1,
+      routingNonce: "a".repeat(32) };
+    profile.identityTxn = createIdentityTxn({ ...profile, routingNonce: "c".repeat(32) },
+      { remotePlatform: "posix", now: () => 1000, previousNonceTtlMs: 60_000 });
+    const original = JSON.stringify(profile);
+    const result = commandRegistry["remoteSsh.beginIdentityRotation"]({ id: profile.id, remotePlatform: "win32" },
+      { snapshot: { remoteSsh: { profiles: [profile] } } });
+    assert.strictEqual(result.status, "ok");
+    const rebuilt = result.commit.remoteSsh.profiles[0];
+    assert.strictEqual(rebuilt.identityTxn.fromNonce, profile.identityTxn.fromNonce);
+    assert.strictEqual(rebuilt.identityTxn.startedAt, profile.identityTxn.startedAt);
+    assert.strictEqual(rebuilt.identityTxn.previousExpiresAt, profile.identityTxn.previousExpiresAt);
+    assert.notStrictEqual(rebuilt.identityTxn.toNonce, profile.identityTxn.toNonce);
+    assert.ok(sanitizeIdentityTxn(rebuilt.identityTxn, rebuilt));
+    assert.deepStrictEqual(acceptedRoutingNonces(rebuilt, 61_000), [rebuilt.identityTxn.toNonce, "c".repeat(32)]);
+    assert.deepStrictEqual(acceptedRoutingNonces(rebuilt, 61_001), [rebuilt.identityTxn.toNonce]);
+    assert.strictEqual(acceptedRoutingNonces(rebuilt, time).includes(profile.routingNonce), false);
+    assert.strictEqual(JSON.stringify(profile), original);
+  }
+});
+
+
+describe("setQuotaRingProviderShown command", () => {
+  it("materializes only the actually drawn providers and applies the first toggle atomically", () => {
+    const snapshot = { quotaRingShownProviders: null, quotaRingHiddenProviders: [] };
+    const result = commandRegistry.setQuotaRingProviderShown({ key: "claudeQuota", shown: false,
+      currentShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] }, { snapshot });
+    assert.deepStrictEqual(result, { status: "ok", commit: {
+      quotaRingShownProviders: ["antigravityQuota", "codexQuota"] } });
+    assert.strictEqual(snapshot.quotaRingShownProviders, null);
+  });
+  it("uses the durable manual selection instead of a stale materialization list", () => {
+    const result = commandRegistry.setQuotaRingProviderShown({ key: "kimiQuota", shown: true,
+      currentShownProviders: ["antigravityQuota", "codexQuota"] },
+      { snapshot: { quotaRingShownProviders: ["claudeQuota"] } });
+    assert.deepStrictEqual(result.commit, { quotaRingShownProviders: ["claudeQuota", "kimiQuota"] });
+  });
+  it("rejects more than three selections and malformed payloads", () => {
+    for (const payload of [null, { key: 2, shown: true }, { key: "", shown: true }, { key: "kimiQuota", shown: 1 },
+      { key: "kimiQuota", shown: true },
+      { key: "kimiQuota", shown: true, currentShownProviders: ["a", "b", "c"] },
+      { key: "kimiQuota", shown: false, currentShownProviders: ["a", "b", "c", "d"] },
+      { key: "kimiQuota", shown: true, currentShownProviders: [null] }]) {
+      assert.strictEqual(commandRegistry.setQuotaRingProviderShown(payload,
+        { snapshot: { quotaRingShownProviders: null } }).status, "error", JSON.stringify(payload));
+    }
+  });
+});
+
+
+describe("quota ring selection vacancies", () => {
+  it("frees an absent provider selection before accepting a newly connected provider", () => {
+    const snapshot = { quotaRingShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] };
+    const enableKimi = { key: "kimiQuota", shown: true };
+    assert.strictEqual(commandRegistry.setQuotaRingProviderShown(enableKimi, { snapshot }).status, "error");
+    const remove = commandRegistry.setQuotaRingProviderShown({ key: "codexQuota", shown: false }, { snapshot });
+    assert.strictEqual(remove.status, "ok");
+    Object.assign(snapshot, remove.commit);
+    const enable = commandRegistry.setQuotaRingProviderShown(enableKimi, { snapshot });
+    assert.strictEqual(enable.status, "ok");
+    assert.deepStrictEqual(enable.commit.quotaRingShownProviders, ["antigravityQuota", "claudeQuota", "kimiQuota"]);
   });
 });

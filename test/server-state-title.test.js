@@ -21,7 +21,8 @@ function makeFakeHttp() {
   function createHttpServer(handler) {
     capturedHandler = handler;
     const server = new EventEmitter();
-    server.listen = function () { this.emit("listening"); };
+    server.listen = function (port) { this.boundPort = port; this.emit("listening"); };
+    server.address = function () { return { port: this.boundPort }; };
     server.close = function () {};
     return server;
   }
@@ -338,5 +339,35 @@ describe("/state Codex subagent role handling", () => {
     assert.strictEqual(last[1], "idle");
     assert.strictEqual(last[2], "Stop");
     assert.strictEqual(last[3].headless, true);
+  });
+});
+
+describe("/state claude_config_dir handling (#1250)", () => {
+  async function post(payload) {
+    const { handler, updateSessionCalls } = startServer();
+    const res = await callHandler(handler, makeReq("POST", "/state", JSON.stringify({
+      state: "working",
+      session_id: "sid-profile",
+      event: "PreToolUse",
+      ...payload,
+    })));
+    assert.strictEqual(res.statusCode, 200);
+    return updateSessionCalls[0][3];
+  }
+
+  it("passes a normalized Claude profile folder to updateSession", async () => {
+    const opts = await post({ agent_id: "claude-code", claude_config_dir: "/home/u/.claude-work/" });
+    assert.strictEqual(opts.claudeConfigDir, "/home/u/.claude-work");
+  });
+
+  it("accepts Windows folders reported by a Windows hook", async () => {
+    const opts = await post({ agent_id: "claude-code", claude_config_dir: "C:\\Users\\u\\.claude-work" });
+    assert.strictEqual(opts.claudeConfigDir, "C:\\Users\\u\\.claude-work");
+  });
+
+  it("ignores the field for other agents and for unusable values", async () => {
+    assert.strictEqual((await post({ agent_id: "codex", claude_config_dir: "/home/u/.claude-work" })).claudeConfigDir, undefined);
+    assert.strictEqual((await post({ agent_id: "claude-code", claude_config_dir: "relative" })).claudeConfigDir, undefined);
+    assert.strictEqual((await post({ agent_id: "claude-code", claude_config_dir: 7 })).claudeConfigDir, undefined);
   });
 });

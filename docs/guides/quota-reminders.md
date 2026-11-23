@@ -1,6 +1,6 @@
 # Quota reminders
 
-Open **Settings → General → Session management → Quota ring** and enable quota
+Open **Settings → Sessions → Quota ring & reminders** and enable quota
 reminders. **When to remind** offers four presets — 10% remaining, 20% and 10%
 (Default), 30% / 20% / 10%, and 50% / 20% / 10%. Combinations saved by older
 versions that don't match a preset keep working and appear as a **Custom** entry

@@ -17,6 +17,7 @@ describe("Agent Registry", () => {
       "codebuddy",
       "kiro-cli",
       "kirocrew",
+      "kiro-desktop",
       "kimi-cli",
       "qwen-code",
       "zcode",
@@ -101,7 +102,7 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(codewhale.processNames.win, ["codewhale.exe"]);
 
     const qoder = registry.getAgent("qoder");
-    assert.deepStrictEqual(qoder.processNames.win, ["qoder.exe", "qodercli.exe", "qoder-cli.exe"]);
+    assert.deepStrictEqual(qoder.processNames.win, ["qoder.exe", "qodercli.exe", "qoder-cli.exe", "qoder cn.exe", "qodercn.exe", "qoderclicn.exe"]);
 
     const reasonix = registry.getAgent("reasonix");
     assert.deepStrictEqual(reasonix.processNames.win, ["reasonix.exe", "reasonix-desktop.exe", "reasonix-cli.exe"]);
@@ -172,7 +173,7 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(codewhale.processNames.linux, ["codewhale"]);
 
     const qoder = registry.getAgent("qoder");
-    assert.deepStrictEqual(qoder.processNames.linux, ["qoder", "qodercli", "qoder-cli"]);
+    assert.deepStrictEqual(qoder.processNames.linux, ["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"]);
 
     const reasonix = registry.getAgent("reasonix");
     assert.deepStrictEqual(reasonix.processNames.linux, ["reasonix", "reasonix-desktop"]);
@@ -289,7 +290,7 @@ describe("Agent Registry", () => {
     );
     assert.deepStrictEqual(
       registry.getAgent("qoder").startupRecoveryProcessNames.win,
-      ["qodercli.exe", "qoder-cli.exe"]
+      ["qodercli.exe", "qoder-cli.exe", "qoderclicn.exe"]
     );
     assert.deepStrictEqual(
       registry.getAgent("reasonix").startupRecoveryProcessNames,
@@ -308,7 +309,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(codex.capabilities.httpHook, false);
     assert.strictEqual(codex.capabilities.permissionApproval, true);
     assert.strictEqual(codex.capabilities.sessionEnd, true);
-    assert.strictEqual(codex.capabilities.subagent, false);
+    assert.strictEqual(codex.capabilities.subagent, true);
 
     const zcode = registry.getAgent("zcode");
     assert.strictEqual(zcode.capabilities.httpHook, false);
@@ -324,6 +325,9 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.capabilities.httpHook, false);
     assert.strictEqual(copilot.capabilities.permissionApproval, true);
     assert.strictEqual(copilot.capabilities.interactiveBubble, true);
+    assert.strictEqual(copilot.capabilities.notificationHook, true);
+    assert.strictEqual(copilot.capabilities.terminalWaitReminder, true);
+    assert.notStrictEqual(copilot.capabilities.approvalReminder, true);
     assert.strictEqual(copilot.capabilities.sessionEnd, true);
     assert.strictEqual(copilot.capabilities.subagent, true);
 
@@ -479,6 +483,8 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.eventMap.sessionStart, "idle");
     assert.strictEqual(copilot.eventMap.preToolUse, "working");
     assert.strictEqual(copilot.eventMap.agentStop, "attention");
+    assert.strictEqual(copilot.eventMap.notification, "notification");
+    assert.strictEqual(copilot.eventMap.postToolUseFailure, "working");
 
     const gemini = registry.getAgent("gemini-cli");
     assert.strictEqual(gemini.eventMap.SessionStart, "idle");
@@ -541,7 +547,7 @@ describe("Agent Registry", () => {
     const qoder = registry.getAgent("qoder");
     assert.strictEqual(qoder.eventMap.SessionStart, "idle");
     assert.strictEqual(qoder.eventMap.PreToolUse, "working");
-    assert.strictEqual(qoder.eventMap.PostToolUseFailure, "error");
+    assert.strictEqual(qoder.eventMap.PostToolUseFailure, "working");
     assert.strictEqual(qoder.eventMap.Stop, "attention");
     assert.strictEqual(qoder.eventMap.PermissionRequest, "notification");
     assert.strictEqual(qoder.eventMap.PermissionDenied, "notification");

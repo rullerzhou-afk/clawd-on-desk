@@ -42,6 +42,13 @@ test("additional Codex profiles explain why focus is unavailable", () => {
   );
 });
 
+test("focusUnavailableReasonKey explains a Wayland desktop that cannot raise windows", () => {
+  assert.strictEqual(
+    focusUnavailableReasonKey({ sourceType: "local", host: null, focusUnavailableReason: "linux-wayland-window-raise" }),
+    "sessionFocusUnavailableLinuxWayland"
+  );
+});
+
 test("webui reason takes precedence when a web session also carries a remote host", () => {
   assert.strictEqual(
     focusUnavailableReasonKey({ sourceType: "ssh", host: "server", platform: "webui" }),

@@ -190,6 +190,16 @@ function isNamespacedMcpTool(toolName) {
     && parts.slice(1).every((part) => part.length > 0);
 }
 
+// Codex's own connector requests also arrive as `mcp__<server>__<tool>`; they
+// are not ordinary third-party MCP tools and stay in Codex's native flow.
+const CODEX_APPS_MCP_SERVER_NAME = "codex_apps";
+
+function isCodexClaimableMcpTool(toolName) {
+  if (typeof toolName !== "string" || !isNamespacedMcpTool(toolName)) return false;
+  const serverName = toolName.split("__")[1];
+  return serverName.toLowerCase() !== CODEX_APPS_MCP_SERVER_NAME;
+}
+
 function isTrustedClaudeCompatibleToolApproval(agentId, toolName) {
   if (agentId !== "claude-code" && agentId !== "qwen-code") return true;
   return CLAUDE_COMPATIBLE_TOOL_APPROVAL_NAMES.has(toolName.toLowerCase())
@@ -247,6 +257,23 @@ function classifyPermissionInteraction({
       && trustedAgentId === "hermes"
     );
   if (isQuestion) {
+    // ZCode 3.16.3 carries a real human-question protocol over this same
+    // transport: the AskUserQuestion input schema has an optional `answers`
+    // record ("User answers collected by the permission component") and an
+    // allow decision with updatedInput is applied as a modify, so Clawd can
+    // submit the user's choice verbatim — the same contract the Claude Code
+    // elicitation path implements. Manual answers only: zcode's tool taxonomy
+    // is not automation-audited, so both automation modes stay off and the
+    // unattended auto-answer never fires for zcode.
+    if (
+      decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
+      && trustedAgentId === "zcode"
+    ) {
+      return makeInteraction(INTERACTION_INTENT.HUMAN_QUESTION, {
+        answerQuestions: true,
+        nativeFallback: true,
+      });
+    }
     const canAnswerQuestions = (
       decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
       && (trustedAgentId === "claude-code" || trustedAgentId === "hermes")
@@ -357,15 +384,16 @@ function isValidInteraction(interaction) {
 /**
  * Decide what automation does with one request.
  *
- * `reminderHold` is the destructive-action reminder's only input to this
- * function, and it can do exactly one thing: turn an automatic allow for an
- * ordinary tool request into DEFER, so the request reaches a human through the
- * existing approval channels. It cannot turn DEFER into an allow, it never
- * produces a deny, and it is deliberately not consulted on the question-answer
- * or plan-review branches below -- those keep their existing handling.
- * Callers that do not pass it get today's behavior unchanged.
+ * `reminderHold` and `reviewHold` are the two downgrade-only inputs. Each can
+ * do exactly one thing: turn an automatic allow for an ordinary tool request
+ * into DEFER, so the request reaches a human through the existing approval
+ * channels. Neither can turn DEFER into an allow, neither produces a deny, and
+ * neither is consulted on the question-answer or plan-review branches below --
+ * those keep their existing handling. `reminderHold` is the destructive-action
+ * reminder (#1021); `reviewHold` is the optional external review command
+ * (#995). Callers that do not pass them get today's behavior unchanged.
  */
-function evaluatePermissionAutomation({ mode, interaction, reminderHold } = {}) {
+function evaluatePermissionAutomation({ mode, interaction, reminderHold, reviewHold } = {}) {
   if (!Object.values(PERMISSION_AUTOMATION_MODE).includes(mode)) {
     return AUTOMATION_ACTION.DEFER;
   }
@@ -388,9 +416,9 @@ function evaluatePermissionAutomation({ mode, interaction, reminderHold } = {}) 
     )
     && interaction.capabilities.allowDeny
   ) {
-    // The one place the reminder applies: an ordinary tool request that
+    // The one place either hold applies: an ordinary tool request that
     // automation would have allowed by itself.
-    return reminderHold === true
+    return reminderHold === true || reviewHold === true
       ? AUTOMATION_ACTION.DEFER
       : AUTOMATION_ACTION.AUTO_ALLOW;
   }
@@ -427,6 +455,7 @@ module.exports = {
   INTERACTION_INTENT,
   AUTOMATION_ACTION,
   classifyPermissionInteraction,
+  isCodexClaimableMcpTool,
   evaluatePermissionAutomation,
   isValidInteraction,
   isDecisionInteraction,

@@ -171,6 +171,31 @@ describe("KiroCrew hook installer", () => {
     }
   });
 
+  it("preserves disabled Clawd hooks for startup sync, but explicit sync reopens them", () => {
+    const { hooksPath } = makeTempCrewHome();
+    fs.writeFileSync(hooksPath, JSON.stringify({ hooks: [] }));
+    registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+
+    const disabled = readJson(hooksPath);
+    for (const hook of disabled.hooks) hook.enabled = false;
+    disabled.hooks[0].command = "node /old/kirocrew-hook.js";
+    fs.writeFileSync(hooksPath, JSON.stringify(disabled));
+
+    const startup = registerKiroCrewHooks({
+      hooksPath,
+      nodeBin: "/usr/local/bin/node",
+      preserveDisabled: true,
+      silent: true,
+    });
+    const preserved = readJson(hooksPath);
+    assert.strictEqual(startup.updated, 1, "the command is still repaired while enabled=false is preserved");
+    assert.ok(preserved.hooks.every((hook) => hook.enabled === false));
+    assert.ok(preserved.hooks.every((hook) => hook.command.includes(__test.MARKER)));
+
+    registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.ok(readJson(hooksPath).hooks.every((hook) => hook.enabled === true));
+  });
+
   it("preserves a valid webhook-only context store and unknown fields", () => {
     const { hooksPath } = makeTempCrewHome();
     const original = { webhooks: [{ name: "agent" }], extra: { keep: true } };
@@ -563,8 +588,27 @@ describe("KiroCrew bridge session + host attribution", () => {
     assert.strictEqual(resolveSessionId({}), "default");
   });
 
-  it("suffixes a subagent id so its events don't un-finish the parent", () => {
-    assert.strictEqual(resolveSessionId({ session_key: "A", subagent_id: "s1" }), "A::sub:s1");
+  it("uses the parent session key as-is because subagent events are filtered earlier", () => {
+    assert.strictEqual(resolveSessionId({ session_key: "A", subagent_id: "s1" }), "A");
+  });
+
+  it("drops explicit subagent events but keeps parent-only main-chat events", () => {
+    for (const eventName of ["PostToolUse", "Stop", "UserPromptSubmit"]) {
+      assert.strictEqual(
+        buildKiroCrewHookPayload({ hook_event_name: eventName, parent_session_key: "parent", subagent_id: "child" }),
+        null,
+      );
+      assert.strictEqual(
+        buildKiroCrewHookPayload({ hook_event_name: eventName, parent_session_key: "parent", subagentId: "child" }),
+        null,
+      );
+    }
+    const main = buildKiroCrewHookPayload({
+      hook_event_name: "PostToolUse",
+      parent_session_key: "parent",
+    });
+    assert.strictEqual(main.session_id, "parent");
+    assert.strictEqual(main.state, "working");
   });
 
   it("does not trust gateway cwd and ignores inherited object-property event names", () => {

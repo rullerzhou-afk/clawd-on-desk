@@ -147,7 +147,7 @@ describe("runtime.json identity (#681)", () => {
     });
 
     it("rejects a port outside the bindable range", () => {
-      for (const port of [0, 80, 23332, 23338, null, undefined, "nope", {}]) {
+      for (const port of [0, -1, 65536, 23333.5, null, undefined, "nope", {}, true, []]) {
         const file = writeRuntime({ app: "clawd-on-desk", port, ownerPid: 4242 });
         const r = serverConfig.readRuntimeIdentity({ runtimeConfigPath: file });
         assert.strictEqual(r.ok, false, `port ${JSON.stringify(port)} must be rejected`);
@@ -364,7 +364,7 @@ describe("runtime.json identity (#681)", () => {
     });
 
     it("returns false for an unbindable port without touching the filesystem", () => {
-      const result = serverConfig.writeRuntimeConfig(9999, {
+      const result = serverConfig.writeRuntimeConfig(65536, {
         runtimeConfigPath: path.join(makeTempHome(), "runtime.json"),
         fs: { mkdirSync: () => assert.fail("must reject the port before any fs call") },
       });
@@ -1300,4 +1300,42 @@ describe("server-config helpers", () => {
     });
   });
 
+});
+
+it("issue #1316: remote runtime accepts nonempty env or an independent argv flag", () => {
+  const { isRemoteHookRuntime } = serverConfig;
+  for (const value of ["1", "true", "yes", "0", "false", "FALSE"]) {
+    assert.strictEqual(isRemoteHookRuntime({ env: { CLAWD_REMOTE: value }, argv: ["node", "hook"] }), true);
+  }
+  for (const value of [undefined, ""]) {
+    assert.strictEqual(isRemoteHookRuntime({ env: { CLAWD_REMOTE: value }, argv: ["node", "hook"] }), false);
+  }
+  assert.strictEqual(isRemoteHookRuntime({ env: {}, argv: ["node", "hook", "Stop", "--clawd-ssh-remote"] }), true);
+  for (const arg of ["Stop --clawd-ssh-remote", "--clawd-ssh-remote=yes", "x--clawd-ssh-remote"]) {
+    assert.strictEqual(isRemoteHookRuntime({ env: {}, argv: ["node", "hook", arg] }), false);
+  }
+  assert.strictEqual(isRemoteHookRuntime({ env: {}, argv: ["node", "--clawd-ssh-remote"] }), false);
+});
+
+it("issue #1316: remote flag overwrites inherited paths and derives the log from homedir", () => {
+  const dir = makeTempHome();
+  const scriptDir = path.join(dir, "hooks");
+  const env = {
+    CLAWD_REMOTE: "0", CLAWD_SSH_REMOTE: "0", CLAWD_REMOTE_IDENTITY_PATH: "foreign-identity",
+    CLAWD_SSH_SECURE_MARKER_PATH: "foreign-marker", CLAWD_HOST_PREFIX_PATH: "foreign-host",
+    CLAWD_REMOTE_LAST_LOG_PATH: "foreign-log", OTHER: "preserved",
+  };
+  const original = { ...env };
+  serverConfig.applySshRemoteFlag({ argv: ["node", "hook", "Stop --clawd-ssh-remote"], env, scriptDir, homedir: dir });
+  assert.deepStrictEqual(env, original);
+  serverConfig.applySshRemoteFlag({ argv: ["node", "hook", "Stop", "--clawd-ssh-remote"], env, scriptDir, homedir: dir });
+  assert.deepStrictEqual(env, {
+    CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1",
+    CLAWD_REMOTE_IDENTITY_PATH: path.join(scriptDir, "clawd-remote.json"),
+    CLAWD_SSH_SECURE_MARKER_PATH: path.join(scriptDir, "clawd-ssh-secure-v1"),
+    CLAWD_HOST_PREFIX_PATH: path.join(scriptDir, "clawd-host-prefix"),
+    CLAWD_REMOTE_LAST_LOG_PATH: path.join(dir, ".clawd", "remote-last-error.log"), OTHER: "preserved",
+  });
+  assert.strictEqual(serverConfig.isSshSecureMode({ env }), true);
+  assert.deepStrictEqual(serverConfig.getPortCandidates(23333, { env }), []);
 });

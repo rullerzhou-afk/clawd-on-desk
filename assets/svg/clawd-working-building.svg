@@ -54,7 +54,7 @@
       }
 
       /* Hot metal flash */
-      .hot-metal {
+      .hot-metal-glow {
         animation: metal-glow 1.2s infinite;
       }
 
@@ -130,9 +130,9 @@
 
       /* Hot metal glow on impact */
       @keyframes metal-glow {
-        0%, 49%  { fill: #FF5252; }
-        50%, 60% { fill: #FFF59D; }
-        100%     { fill: #FF5252; }
+        0%, 49%  { opacity: 0; }
+        50%, 60% { opacity: 1; }
+        100%     { opacity: 0; }
       }
 
       /* Eyes: mostly watch anvil, occasional glance at hammer */
@@ -189,7 +189,8 @@
   <g transform="translate(17, 13)">
     <rect x="0" y="2" width="5" height="1" fill="#546E7A"/>
     <rect x="1" y="0" width="3" height="2" fill="#78909C"/>
-    <rect x="1.5" y="-0.5" width="2" height="1" class="hot-metal"/>
+    <rect x="1.5" y="-0.5" width="2" height="1" fill="#FF5252"/>
+    <rect x="1.5" y="-0.5" width="2" height="1" fill="#FFF59D" class="hot-metal-glow"/>
   </g>
 
   <!-- Impact Sparks -->

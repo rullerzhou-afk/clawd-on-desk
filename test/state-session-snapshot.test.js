@@ -111,6 +111,42 @@ function session(state, overrides = {}) {
   };
 }
 
+describe("Claude profile labels in session snapshots (#1250)", () => {
+  const os = require("os");
+  const path = require("path");
+  const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
+  const defaultDir = path.join(os.homedir(), ".claude");
+  const workDir = path.join(os.homedir(), ".claude-work");
+  const twoFolders = effectiveClaudeConfigDirs([{ dir: workDir, label: "Job" }], { primaryDir: defaultDir });
+
+  function snapshotWith(sessions, claudeConfigDirs) {
+    return buildSessionSnapshot(new Map(sessions), { statePriority: STATE_PRIORITY, claudeConfigDirs });
+  }
+
+  it("labels local Claude sessions by folder once two folders are managed", () => {
+    const snap = snapshotWith([
+      ["work", session("working", { claudeConfigDir: workDir })],
+      ["home", session("working")],
+      ["codex", session("working", { agentId: "codex", claudeConfigDir: workDir })],
+      ["remote", session("working", { claudeConfigDir: workDir, host: "devbox" })],
+    ], twoFolders);
+    const byId = Object.fromEntries(snap.sessions.map((entry) => [entry.id, entry]));
+    assert.strictEqual(byId.work.claudeProfileLabel, "Job");
+    assert.strictEqual(byId.work.claudeConfigDir, workDir);
+    assert.strictEqual(byId.home.claudeProfileLabel, "default");
+    assert.strictEqual(byId.codex.claudeProfileLabel, "");
+    assert.strictEqual(byId.remote.claudeProfileLabel, "");
+  });
+
+  it("shows no label with a single folder, and relabels through the signature", () => {
+    const single = snapshotWith([["work", session("working", { claudeConfigDir: workDir })]],
+      effectiveClaudeConfigDirs([], { primaryDir: defaultDir }));
+    assert.strictEqual(single.sessions[0].claudeProfileLabel, "");
+    const labelled = snapshotWith([["work", session("working", { claudeConfigDir: workDir })]], twoFolders);
+    assert.notStrictEqual(sessionSnapshotSignature(single), sessionSnapshotSignature(labelled));
+  });
+});
+
 describe("startup-recovered session snapshots", () => {
   it("exposes the marker, disables focus, and includes marker changes in the signature", () => {
     const recovered = buildSessionSnapshot(new Map([
@@ -248,6 +284,21 @@ describe("display session tags", () => {
     changed.sessions[0].displaySessionTag = "deadbeef00";
 
     assert.notStrictEqual(sessionSnapshotSignature(snapshot), sessionSnapshotSignature(changed));
+  });
+
+  it("exposes validated Codex plan progress and broadcasts changes", () => {
+    const build = (planProgress, agentId = "codex") => buildSessionSnapshot(new Map([
+      ["plan-session", session("working", { agentId, planProgress })],
+    ]), { statePriority: STATE_PRIORITY });
+    const current = build({ completed: 1, total: 3, percent: 33 });
+    const advanced = build({ completed: 2, total: 3, percent: 67 });
+    const invalid = build({ completed: 4, total: 3, percent: 133 });
+    const otherAgent = build({ completed: 1, total: 3, percent: 33 }, "claude-code");
+
+    assert.deepStrictEqual(current.sessions[0].planProgress, { completed: 1, total: 3, percent: 33 });
+    assert.notStrictEqual(sessionSnapshotSignature(current), sessionSnapshotSignature(advanced));
+    assert.equal("planProgress" in invalid.sessions[0], false);
+    assert.equal("planProgress" in otherAgent.sessions[0], false);
   });
 });
 
@@ -824,6 +875,69 @@ describe("state-session-snapshot builder", () => {
         agentId: "codex", rawSessionId, codexProfileId: "company", codexProfileLabel: "Work", sourcePid: 123,
       })],
     ]), { focusHostPlatform: "darwin" })));
+  });
+
+  it("passes the reason a Linux terminal cannot be focused on to the renderers", () => {
+    const saved = { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP };
+    process.env.XDG_SESSION_TYPE = "wayland";
+    process.env.XDG_CURRENT_DESKTOP = "GNOME";
+    try {
+      const snapshot = buildSessionSnapshot(new Map([
+        ["terminal", session("working", { sourcePid: 123 })],
+      ]), { focusHostPlatform: "linux" });
+      assert.strictEqual(snapshot.sessions[0].canFocus, false);
+      assert.strictEqual(snapshot.sessions[0].focusUnavailableReason, "linux-wayland-window-raise");
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("issue #1001: keeps pane targets focusable after a Wayland session snapshot", () => {
+    const saved = { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP };
+    process.env.XDG_SESSION_TYPE = "wayland";
+    process.env.XDG_CURRENT_DESKTOP = "GNOME";
+    try {
+      const sessions = new Map([
+        ["tmux-socket", session("working", { sourcePid: 123, tmuxSocket: "/tmp/tmux-1000/default" })],
+        ["tmux-client", session("working", { sourcePid: 124, tmuxClient: "/dev/pts/1" })],
+        ["herdr", session("working", { sourcePid: 125, herdrPaneId: "w1:p1" })],
+        ["editor", session("working", { sourcePid: 126, editor: "code" })],
+        ["plain", session("working", { sourcePid: 127 })],
+        ["bad-herdr", session("working", { sourcePid: 128, herdrPaneId: "--help:x" })],
+        ["remote", session("working", { sourcePid: 129, tmuxSocket: "/tmp/remote-tmux", host: "remote-box" })],
+        ["no-pid", session("working", { tmuxSocket: "/tmp/no-pid-tmux" })],
+        ["headless", session("working", { sourcePid: 130, tmuxClient: "/dev/pts/2", headless: true })],
+        ["sleeping", session("sleeping", { sourcePid: 131, herdrPaneId: "w1:p2" })],
+      ]);
+      for (const options of [{ focusHostPlatform: "linux", osPlatform: "win32" }, { osPlatform: "linux" }]) {
+        const snapshot = buildSessionSnapshot(sessions, options);
+        assert.deepStrictEqual(getFocusableLocalHudSessionIds(snapshot, { osPlatform: "linux" }).sort(), [
+          "editor", "herdr", "tmux-client", "tmux-socket",
+        ]);
+        const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+        for (const id of ["tmux-socket", "tmux-client", "herdr", "editor"]) {
+          assert.strictEqual(byId.get(id).canFocus, true, id);
+          assert.strictEqual(byId.get(id).hasPaneFocusTarget, true, id);
+        }
+        for (const id of ["plain", "bad-herdr"]) {
+          assert.strictEqual(byId.get(id).canFocus, false, id);
+          assert.strictEqual(byId.get(id).hasPaneFocusTarget, false, id);
+        }
+        for (const entry of snapshot.sessions) {
+          for (const field of ["tmuxSocket", "tmuxClient", "herdrPaneId"]) {
+            assert.strictEqual(Object.hasOwn(entry, field), false, `${entry.id}: ${field}`);
+          }
+        }
+      }
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("offers the terminal jump for a herdr-hosted session with a Desktop originator (#1139)", () => {
@@ -1511,20 +1625,86 @@ describe("awaiting-activity rows", () => {
         awaitingActivity: true,
         sourcePid: 996,
       })],
+      ["copilot-active", session("working", {
+        agentId: "copilot-cli",
+        awaitingActivity: false,
+        sourcePid: 995,
+      })],
+      // Copilot sends a sessionStart when a conversation is opened or restored.
+      // A PID can own more than one row; only the touched one may reach the HUD.
+      ["copilot-fresh", session("idle", {
+        agentId: "copilot-cli",
+        awaitingActivity: true,
+        sourcePid: 995,
+      })],
     ]), { statePriority: STATE_PRIORITY, focusHostPlatform: "darwin" });
 
     assert.deepStrictEqual(
       snapshot.sessions.map((entry) => entry.id).sort(),
-      ["dsh-active", "dsh-fresh", "kimi-active", "kimi-fresh"],
+      ["copilot-active", "copilot-fresh", "dsh-active", "dsh-fresh", "kimi-active", "kimi-fresh"],
       "the Dashboard still lists both conversations"
     );
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "dsh-fresh").hiddenFromHud, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "dsh-fresh").canFocus, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "kimi-fresh").hiddenFromHud, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "kimi-fresh").canFocus, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "copilot-fresh").hiddenFromHud, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "copilot-fresh").canFocus, true);
     assert.deepStrictEqual(
       getFocusableLocalHudSessionIds(snapshot, { osPlatform: "darwin" }),
-      ["dsh-active", "kimi-active"]
+      ["dsh-active", "kimi-active", "copilot-active"]
     );
+  });
+
+  it("keeps a conversation with a pending question in the HUD", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["copilot-pending", session("idle", {
+        agentId: "copilot-cli",
+        awaitingActivity: true,
+        sourcePid: 994,
+      })],
+    ]), {
+      statePriority: STATE_PRIORITY,
+      focusHostPlatform: "darwin",
+      getSessionPresentation: () => ({ pendingAttention: true }),
+    });
+
+    assert.strictEqual(
+      snapshot.sessions.find((entry) => entry.id === "copilot-pending").hiddenFromHud,
+      false,
+      "a pending question outranks the awaiting-activity marker"
+    );
+  });
+
+  it("hides an awaiting-activity conversation only while it stays idle", () => {
+    for (const stateName of ["working", "juggling"]) {
+      const id = `copilot-${stateName}`;
+      const snapshot = buildSessionSnapshot(new Map([
+        [id, session(stateName, {
+          agentId: "copilot-cli",
+          awaitingActivity: true,
+          sourcePid: 993,
+        })],
+      ]), { statePriority: STATE_PRIORITY, focusHostPlatform: "darwin" });
+
+      assert.strictEqual(
+        snapshot.sessions.find((entry) => entry.id === id).hiddenFromHud,
+        false,
+        `a ${stateName} row must stay in the HUD`
+      );
+    }
+  });
+});
+
+
+describe("DeepSeek balance snapshots", () => {
+  it("changes the signature when only the amount changes and resolves the existing agent icon", () => {
+    const make = (amount) => buildSessionSnapshot(new Map(), {
+      accountQuota: [{ host: null, deepseekQuota: { lastSeenAt: 1000,
+        group: { deepseekBalance: { amount, baseline: 100, currency: "CNY", usedPercent: 55 } } } }],
+      getAgentIconUrl: (id) => `icon:${id}`,
+    });
+    assert.notStrictEqual(sessionSnapshotSignature(make(45.20)), sessionSnapshotSignature(make(45.21)));
+    assert.strictEqual(make(45).quotaAgentIcons.deepseekQuota, "icon:deepseek-harness");
   });
 });

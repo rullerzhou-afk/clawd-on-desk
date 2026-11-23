@@ -97,14 +97,15 @@ function getPlatformProcessConfig() {
 let processMetadataCache: { at: number; value: ProcessMetadata } | null = null;
 
 function normalizePort(value: unknown): number | null {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]{0,4}$/.test(value))) return null;
   const port = Number(value);
-  return Number.isInteger(port) && SERVER_PORTS.includes(port) ? port : null;
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
 function readRuntimePort(): number | null {
   try {
     const raw = JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    return normalizePort(raw && raw.port);
+    return raw?.app === CLAWD_SERVER_ID ? normalizePort(raw.port) : null;
   } catch {
     return null;
   }

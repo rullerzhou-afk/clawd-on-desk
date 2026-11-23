@@ -8,6 +8,16 @@ const fs = require("fs");
 
 const realExecFileSync = childProcess.execFileSync;
 const hookParentPid = process.ppid;
+let delayed = false;
+
+function delaySnapshot() {
+  const delayMs = Number(process.env.CLAWD_TEST_REASONIX_SNAPSHOT_DELAY_MS) || 0;
+  if (!delayed && delayMs > 0) {
+    delayed = true;
+    // Synchronous on purpose: safety timers cannot interrupt WMI/ps.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+  }
+}
 
 const SNAPSHOT = {
   processes: [
@@ -54,12 +64,7 @@ childProcess.execFileSync = function (file, args, options) {
         }) + "\n");
       } catch {}
     }
-    const delayMs = Number(process.env.CLAWD_TEST_REASONIX_SNAPSHOT_DELAY_MS) || 0;
-    if (delayMs > 0) {
-      // Deliberately synchronous: this reproduces the exact property under
-      // review — JS safety timers cannot run while execFileSync/WMI is blocked.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
-    }
+    delaySnapshot();
     return JSON.stringify(SNAPSHOT);
   }
   if (String(file) === "ps" && Array.isArray(args)) {
@@ -67,6 +72,7 @@ childProcess.execFileSync = function (file, args, options) {
     const pid = Number(args[3]);
     const processInfo = POSIX_PROCESSES.get(pid);
     if (processInfo && args[0] === "-o" && args[2] === "-p") {
+      delaySnapshot();
       if (field === "ppid=") return `${processInfo.ppid}\n`;
       if (field === "comm=") return `${processInfo.comm}\n`;
       if (field === "command=") return `${processInfo.command}\n`;

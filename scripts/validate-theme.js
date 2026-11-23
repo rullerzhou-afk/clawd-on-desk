@@ -20,6 +20,8 @@ const fs = require("fs");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
 const themeSchema = require("../src/theme-schema");
+const { inspectDarkAppearance, collectRelativeFiles } = require("../src/theme-appearance");
+const { sanitizeSvg, collectSafeRasterRefs } = require("../src/theme-sanitizer");
 const { VARIANT_ALLOWED_KEYS } = require("../src/theme-variants");
 
 // ── Colors (ANSI) ──
@@ -357,6 +359,40 @@ if (assetsDirExists) {
       warnings++;
     }
   } catch {}
+}
+
+// ── 2b. Dark appearance ──
+// The runtime degrades to light when anything here is wrong, but authors
+// deserve a strict answer before publishing.
+if (raw.appearance !== undefined) {
+  console.log(`\n${C}[Dark Appearance]${D}`);
+  const inspection = inspectDarkAppearance(resolvedDir, raw.appearance);
+  check(
+    inspection.ok,
+    inspection.ok ? "dark assets: complete mirror" : `dark assets: ${inspection.reason}`
+  );
+  if (inspection.ok) {
+    for (const relative of collectRelativeFiles(inspection.dir)) {
+      if (!relative.toLowerCase().endsWith(".svg")) continue;
+      let content;
+      try {
+        content = fs.readFileSync(path.join(inspection.dir, ...relative.split("/")), "utf8");
+      } catch (e) {
+        check(false, `dark assets: failed to read ${relative}: ${e.message}`);
+        continue;
+      }
+      // Match the runtime cache: refs are collected from the sanitized SVG,
+      // so references that sanitization removes must not fail validation.
+      const sanitized = sanitizeSvg(content);
+      for (const ref of collectSafeRasterRefs(sanitized, inspection.dir).values()) {
+        let exists = false;
+        try { exists = fs.statSync(ref.sourceAbs).isFile(); } catch {}
+        if (!exists) {
+          check(false, `dark assets: missing raster dependency ${ref.sourceRel}`);
+        }
+      }
+    }
+  }
 }
 
 // ── 3. SVG structure check (eye tracking IDs) ──

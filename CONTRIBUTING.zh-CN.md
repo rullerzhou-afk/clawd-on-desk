@@ -74,15 +74,15 @@ Clawd 通过 hook、日志轮询、plugin 或 extension 感知 AI 编程工具�
 - 开一个集成类 Issue，说明这个工具怎么暴露状态（hook、日志、plugin API），附上它的文档链接。
 - 读 `docs/project/agent-runtime-architecture.md` 了解模块边界，读 `AGENTS.md` 了解每个集成都必须遵守的安装、启用、卸载规则。一句话：安装不能碰用户没让 Clawd 管的配置，卸载只能删 Clawd 自己加的东西。
 
-一个新集成的 PR 通常包括：适配器、安装器和卸载器、`test/` 下的测试、`docs/guides/` 下的配置指南，以及把工具加进 `AGENTS.md` 和 README 的列表。
+一个新集成的 PR 通常包括：适配器、安装器和卸载器、`test/` 下的测试、`docs/guides/` 下的配置指南，以及把工具加进 `AGENTS.md`、README 的「支持的 Agent」列表和 `docs/guides/supported-agents.md`。
 
 ## 主题
 
-主题不需要合进这个仓库。一个主题就是一个带 `theme.json` 和 `assets/` 目录的文件夹，用户本地安装即可，完整格式见 `docs/guides/guide-theme-creation.md`，`npm run create-theme` 可以生成骨架。把你的主题放在自己的仓库或 Release 里发布，到 Discussions 说一声，我们会收录。
+制作格式和本地校验见[主题制作指南](docs/guides/guide-theme-creation.md)。想投稿并申请在「设置 → 主题」中收录，请看[外部主题贡献指南](docs/guides/contributing-themes.zh-CN.md)，从主仓库的[主题投稿 Issue](https://github.com/rullerzhou-afk/clawd-on-desk/issues/new?template=theme-submission-zh.yml)开始。只有创意或美术也可以先提案，收录须经过审核。
 
-三个内置主题（`clawd`、`calico`、`cloudling`）和官方可下载主题（`hash-sage`、`whale-chan`，从 [`clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) 分发）的 id 是保留的。内置素材的改动会审得比较仔细，因为它们随每一份安装包一起发布。
+主题素材放在作者自己的仓库或 Release；审核通过后的主题包由 [`clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) 分发，不需要合进应用仓库；社区主题上架流程仍在准备中，见[当前状态](docs/guides/contributing-themes.zh-CN.md#当前状态)。贡献指南说明了交付材料、许可、实际体验检查和后续更新，也保留了无需收录即可独立分享的方式。
 
-素材必须是你自己的，或者许可证与本项目兼容。如果取材自第三方，请把出处写进 `NOTICE.md`。
+三个内置主题（`clawd`、`calico`、`cloudling`）、官方可下载主题（`hash-sage`、`whale-chan`）、`template` 及目录中已有的 ID 不可用于新的投稿。外部主题使用自己的素材许可；请提供作者、来源与分发授权说明。内置素材改动仍按主仓库流程单独审核。
 
 ## 提 PR
 
@@ -107,4 +107,4 @@ Clawd 通过 hook、日志轮询、plugin 或 extension 感知 AI 编程工具�
 
 ## 许可证
 
-提交贡献即表示你同意你的贡献按本项目相同的 [GNU AGPL v3](LICENSE) 许可。第三方材料需列入 `NOTICE.md`。
+提交应用源码贡献即表示你同意该贡献按本项目相同的 [GNU AGPL v3](LICENSE) 许可。美术和外部主题按各自声明的许可处理，见 [README 许可说明](README.zh-CN.md#许可证)。提交到主仓库的第三方材料需列入 `NOTICE.md`。

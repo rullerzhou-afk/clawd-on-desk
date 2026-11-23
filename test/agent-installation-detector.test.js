@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
@@ -11,7 +12,7 @@ const {
   detectAgentInstallations,
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
-const { registerReasonixHooks } = require("../hooks/reasonix-install");
+const { registerReasonixHooks, __test: reasonixInstallTest } = require("../hooks/reasonix-install");
 const { registerZcodeHooks, unregisterZcodeHooks } = require("../hooks/zcode-install");
 const { registerQoderHooks, unregisterQoderHooks } = require("../hooks/qoder-install");
 const { registerCodeBuddyHooks, unregisterCodeBuddyHooks } = require("../hooks/codebuddy-install");
@@ -118,6 +119,38 @@ afterEach(() => {
 });
 
 describe("agent installation detector", () => {
+  it("detects CN product settings even when international residue is Clawd-only", () => {
+    const homeDir = makeHome();
+    mkdirp(path.join(homeDir, ".qoder"));
+    registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+    const cnPath = path.join(homeDir, ".qoder-cn", "settings.json");
+    writeJson(cnPath, { language: "zh-CN" });
+    registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+    let entry = byId(detectAgentInstallations({ homeDir, env: {} }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.ok(entry.detail.includes(cnPath));
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+
+    writeJson(cnPath, {});
+    registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+    entry = byId(detectAgentInstallations({ homeDir, env: {} }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+  });
+
+  it("uses QODERCN_CONFIG_DIR for both CN product and hook detection", () => {
+    const homeDir = makeHome();
+    const cnDir = path.join(homeDir, "custom-cn");
+    const env = { QODERCN_CONFIG_DIR: cnDir };
+    writeJson(path.join(cnDir, "settings.json"), { language: "zh-CN" });
+    registerQoderHooks({ homeDir, env, silent: true, nodeBin: process.execPath });
+    const entry = byId(detectAgentInstallations({ homeDir, env }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+    assert.strictEqual(entry.clawdIntegration.paths.configPath, path.join(cnDir, "settings.json"));
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".qoder-cn")), false);
+  });
+
   // #895 T11a/T11b: only Claude is skipped. Its parent dir is created by Clawd's
   // own default sync, so ~/.claude proves nothing; ~/.codex is never created by
   // Clawd, so it stays real evidence and Codex must be reported like any other
@@ -166,6 +199,7 @@ describe("agent installation detector", () => {
     await require("../hooks/install.js").registerHooksAsync({
       silent: true,
       homeDir: claudeHome,
+      env: {},
       nodeBin: process.execPath,
       claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
     });
@@ -357,7 +391,9 @@ describe("agent installation detector", () => {
       platform: "win32",
       env: { APPDATA: appData },
       userHomeDir: homeDir,
-      nodeBin: "D:\\npm\\node.exe",
+      // An unresolved PATH Node always selects the compatibility fallback,
+      // independently of this machine's checkout path or short-name support.
+      nodeBin: "node",
       powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     });
     const raw = fs.readFileSync(settingsPath, "utf8");
@@ -374,6 +410,26 @@ describe("agent installation detector", () => {
     });
     const reasonix = byId(report, "reasonix");
 
+    assert.strictEqual(reasonix.clawdIntegration.detected, true);
+    assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
+  });
+
+  it("recognizes direct Windows Reasonix hooks when the script uses a short alias", () => {
+    const homeDir = makeHome();
+    const appData = path.join(homeDir, "AppData", "Roaming");
+    const settingsPath = path.join(appData, "reasonix", "settings.json");
+    const descriptor = getAgentDescriptor("reasonix");
+    const command = reasonixInstallTest.buildReasonixHookCommand(
+      "D:\\npm\\node.exe", "D:\\clawd\\hooks\\REASON~1.JS", { platform: "win32" },
+    );
+    assert.doesNotMatch(command, /-EncodedCommand /);
+    assert.match(command, /--clawd-reasonix-hook=reasonix-hook\.js$/);
+    writeJson(settingsPath, {
+      hooks: Object.fromEntries(descriptor.hookEvents.map((event) => [event, [{ match: "*", command }]])),
+    });
+
+    const report = detectAgentInstallations({ homeDir, platform: "win32", env: { APPDATA: appData }, now: 1 });
+    const reasonix = byId(report, "reasonix");
     assert.strictEqual(reasonix.clawdIntegration.detected, true);
     assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
   });
@@ -448,7 +504,7 @@ describe("agent installation detector", () => {
           const targetPath = path.join(homeDir, "outside-artifact");
           writeText(targetPath, "product-owned");
           mkdirp(geminiDir);
-          fs.symlinkSync(targetPath, artifactPath);
+          linkForRejection(targetPath, artifactPath);
         }
 
         const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
@@ -616,13 +672,56 @@ describe("agent installation detector", () => {
         if (shape === "symlink") {
           const targetPath = path.join(homeDir, "outside.json");
           writeJson(targetPath, { language: "en" });
-          fs.symlinkSync(targetPath, configPath);
+          linkForRejection(targetPath, configPath);
         }
 
         const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
         assert.strictEqual(entry.detectedInstalled, null, `${agentId} ${shape}`);
         assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} ${shape} reason`);
       }
+    }
+  });
+
+  for (const fixture of [
+    ["qoder", ".qoder", ".auth", "dir"],
+    ["qoder", ".qoder", "state.json", "file"],
+    ["zcode", ".zcode", path.join("v2", "credentials.json"), "file"],
+    ["zcode", ".zcode", path.join("cli", "exec"), "dir"],
+    ["codebuddy", ".codebuddy", "logs", "dir"],
+    ["codebuddy", ".codebuddy", "history.jsonl", "file"],
+  ]) {
+    const [agentId, relativeDir, artifact, kind] = fixture;
+    it(`detects ${agentId} from a product-owned artifact (${artifact})`, () => {
+      const homeDir = makeHome();
+      const artifactPath = path.join(homeDir, relativeDir, artifact);
+      mkdirp(path.dirname(artifactPath));
+      if (kind === "dir") {
+        mkdirp(artifactPath);
+      } else {
+        writeText(artifactPath, "{}");
+      }
+
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+
+      assert.strictEqual(entry.detectedInstalled, true, `${agentId} ${artifact}`);
+      assert.strictEqual(entry.confidence, "high");
+      assert.strictEqual(entry.reason, "product-artifact");
+    });
+  }
+
+  it("still reports insufficient when a hook-config folder holds neither product config nor product artifacts", () => {
+    for (const [agentId, relativeDir] of [
+      ["qoder", ".qoder"],
+      ["zcode", ".zcode"],
+      ["codebuddy", ".codebuddy"],
+    ]) {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, relativeDir));
+      writeJson(path.join(homeDir, relativeDir, agentId === "zcode" ? path.join("cli", "config.json") : "settings.json"), {});
+
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+      assert.strictEqual(entry.detectedInstalled, null, `${agentId} empty folder with no artifacts`);
+      assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} empty folder reason`);
     }
   });
 
@@ -780,13 +879,25 @@ describe("agent installation detector", () => {
 
     const symlinkHome = makeHome();
     const configPath = path.join(symlinkHome, ".openclaw", "openclaw.json");
-    const targetPath = path.join(symlinkHome, "outside.json5");
-    writeText(targetPath, "{ gateway: { port: 18789 } }");
+    const targetPath = path.join(symlinkHome, "outside.json");
+    writeJson(targetPath, { gateway: { port: 18789 } });
     mkdirp(path.dirname(configPath));
-    fs.symlinkSync(targetPath, configPath);
+    linkForRejection(targetPath, configPath);
     const symlink = byId(detectAgentInstallations({ homeDir: symlinkHome, now: 1, env: {} }), "openclaw");
     assert.strictEqual(symlink.detectedInstalled, null);
     assert.strictEqual(symlink.reason, "insufficient-evidence");
+  });
+
+  it("fails a symlinked OpenClaw state directory closed to insufficient evidence", () => {
+    const homeDir = makeHome();
+    const realDir = path.join(homeDir, "real-openclaw");
+    const stateDir = path.join(homeDir, ".openclaw");
+    writeJson(path.join(realDir, "openclaw.json"), { gateway: { port: 18789 } });
+    fs.symlinkSync(realDir, stateDir, process.platform === "win32" ? "junction" : "dir");
+
+    const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "openclaw");
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.reason, "insufficient-evidence");
   });
 
   it("does not fall back to the default OpenClaw config when OPENCLAW_CONFIG_PATH is set", () => {

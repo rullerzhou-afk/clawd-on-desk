@@ -13,6 +13,7 @@ function normalizeOsPlatform(options) {
 }
 
 function getCodexThreadUrl(entry) {
+  if (entry && entry.codexClientEphemeral === true) return null;
   const originator = entry && (entry.codexOriginator || entry.originator);
   if (!isCodexDesktopOriginator(originator)) return null;
   const threadId = getCodexThreadId(entry);
@@ -61,6 +62,39 @@ function hasSupportedHerdrPaneTarget(entry, options = {}) {
   return osPlatform === "darwin" || osPlatform === "linux";
 }
 
+// wmctrl and xdotool only see X11 windows. KWin scripting requires Plasma 6's
+// /Scripting/Script<id> path and windowList()/activeWindow API; other Wayland
+// desktops and older Plasma versions cannot raise native terminal windows (#1001).
+function isKdeWaylandSession(env = process.env) {
+  return env.XDG_SESSION_TYPE === "wayland"
+    && String(env.XDG_CURRENT_DESKTOP || "").split(":").some((name) => name.toUpperCase() === "KDE")
+    && /^\d+$/.test(env.KDE_SESSION_VERSION || "")
+    && Number(env.KDE_SESSION_VERSION) >= 6;
+}
+
+function canRaiseLinuxTerminalWindow(env = process.env) {
+  return env.XDG_SESSION_TYPE !== "wayland" || isKdeWaylandSession(env);
+}
+
+// A terminal pane or an editor terminal tab can still be selected when the window
+// itself cannot be raised.
+function hasLinuxTabTarget(entry, options = {}) {
+  return !!(entry && (entry.hasPaneFocusTarget === true
+    || entry.tmuxSocket || entry.tmuxClient || entry.editor
+    || hasSupportedHerdrPaneTarget(entry, options)));
+}
+
+// Claude Desktop sessions on Windows are reached through their bundled CLI's
+// parent chain. Any WT handle kept on such a session is just whatever terminal
+// happened to be foreground when an event arrived (for example a turn sent from
+// a phone), and the focus script tries that handle before the ancestry walk.
+// Ignore it at the navigation entry point so the walk raises the Claude window.
+// The hook and server still store the value; only this consumer refuses it.
+function getSessionFocusWtHwnd(session) {
+  if (session && session.claudeEntrypoint === "claude-desktop") return null;
+  return session ? session.wtHwnd : undefined;
+}
+
 function getSessionFocusTarget(entry, options = {}) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
   if (entry.agentId === "codex" && entry.codexProfileId
@@ -84,6 +118,15 @@ function getSessionFocusTarget(entry, options = {}) {
   // shell carries both, and lives in the pane, not in the Desktop window.
   if (hasSupportedHerdrPaneTarget(entry, options)) return { canFocus: true, type: "terminal", url: null };
 
+  if (entry.agentId === "codex" && entry.codexClientEphemeral === true) {
+    const platform = normalizeOsPlatform(options) || process.platform;
+    return (platform === "win32" || platform === "darwin")
+      && Number.isSafeInteger(Number(entry.sourcePid)) && Number(entry.sourcePid) > 1
+      && !entry.host && !entry.wslDistro && entry.platform !== "wsl"
+      ? { canFocus: true, type: "codex-app", url: null }
+      : { canFocus: false, type: null, url: null };
+  }
+
   const codexThreadUrl = getCodexThreadUrl(entry);
   if (codexThreadUrl) {
     return { canFocus: true, type: "codex-thread", url: codexThreadUrl };
@@ -94,7 +137,27 @@ function getSessionFocusTarget(entry, options = {}) {
     return { canFocus: true, type: "dsh-desktop", url: dshDesktopUrl };
   }
 
+  // CodeBuddy 5.x IDE sessions are hosted by the CodeBuddy app, not a terminal
+  // tab. A local macOS or Windows session with a recorded process can identify
+  // the running app at click time (that PID also backs the terminal/window
+  // fallback); Linux, WSL and headless rows keep the pre-existing path.
+  // Whether the build supports a conversation deep link is decided then too.
+  if (entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
+    const platform = normalizeOsPlatform(options) || process.platform;
+    if ((platform === "darwin" || platform === "win32")
+      && Number.isSafeInteger(Number(entry.sourcePid)) && Number(entry.sourcePid) > 1
+      && !entry.wslDistro && entry.platform !== "wsl"
+      && !entry.headless) {
+      return { canFocus: true, type: "codebuddy-ide", url: null };
+    }
+  }
+
   if (entry.sourcePid) {
+    if (normalizeOsPlatform(options) === "linux"
+      && !canRaiseLinuxTerminalWindow(options.env || process.env)
+      && !hasLinuxTabTarget(entry, options)) {
+      return { canFocus: false, type: null, url: null, reason: "linux-wayland-window-raise" };
+    }
     return { canFocus: true, type: "terminal", url: null };
   }
 
@@ -107,6 +170,9 @@ function getSessionFocusTarget(entry, options = {}) {
 // session still carries a sourcePid. Navigation callers continue to use the
 // regular target above and can open the thread URL normally.
 function getDirectSendFocusTarget(entry, options = {}) {
+  if (entry && entry.agentId === "codex" && entry.codexClientEphemeral === true) {
+    return { canFocus: false, type: "codex-app", url: null, reason: "codex_desktop_requires_manual_paste" };
+  }
   const isCodexDesktop = !!entry
     && entry.agentId === "codex"
     && isCodexDesktopOriginator(entry.codexOriginator || entry.originator);
@@ -131,6 +197,19 @@ function getDirectSendFocusTarget(entry, options = {}) {
     };
   }
 
+  // The CodeBuddy IDE is an app window, not a terminal: focus can land in the
+  // code editor instead of a composer that accepts injected text. Direct Send
+  // must therefore fall back to the clipboard for IDE sessions on every
+  // platform. A CLI session keeps the ordinary terminal/direct-send path.
+  if (entry && entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
+    return {
+      canFocus: false,
+      type: "codebuddy-ide",
+      url: null,
+      reason: "codebuddy_ide_requires_manual_paste",
+    };
+  }
+
   const target = getSessionFocusTarget(entry, options);
   return target;
 }
@@ -147,16 +226,34 @@ function isFocusableLocalHudSession(entry, options = {}) {
 function getFocusableLocalHudSessionIds(snapshot, options = {}) {
   const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
   return sessions
-    .filter((entry) => isFocusableLocalHudSession(entry, options))
+    .filter((entry) => isFocusableLocalHudSession(entry, options) && !entry.hudHiddenByPreference)
     .map((entry) => entry.id);
 }
 
+function mergeSessionFocusEntry(session, fallback, id) {
+  const entry = { ...(session || {}), ...(fallback || {}), id };
+  // A stale permission/notification snapshot cannot undo live persistence facts.
+  if (session && typeof session.codexClientEphemeral === "boolean") {
+    entry.codexClientEphemeral = session.codexClientEphemeral;
+  }
+  if (session && entry.codexClientEphemeral === true) {
+    for (const field of ["sourcePid", "agentPid", "pidChain", "agentId", "codexOriginator", "host", "wslDistro", "platform", "orcaPaneKey", "herdrPaneId", "herdrSocket"]) {
+      entry[field] = session[field];
+    }
+  }
+  return entry;
+}
+
 module.exports = {
+  mergeSessionFocusEntry,
   getCodexThreadId,
   getCodexThreadUrl,
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  getSessionFocusWtHwnd,
+  hasLinuxTabTarget,
   isDshDesktopSession,
   isFocusableLocalHudSession,
+  isKdeWaylandSession,
 };

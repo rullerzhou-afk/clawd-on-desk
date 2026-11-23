@@ -51,6 +51,22 @@ function validCatalog(overrides = {}) {
 }
 
 describe("official theme catalog validation", () => {
+  it("keeps legacy entries official and preserves validated community attribution", () => {
+    const legacy = catalog.validateCatalogDocument(validCatalog());
+    assert.strictEqual(legacy.catalog.themes[0].category, "official");
+    const entry = validEntry({ category: "community", author: "Artist / 画师" });
+    delete entry.showcase;
+    const result = catalog.validateCatalogDocument(validCatalog({ themes: [entry] }));
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.catalog.themes[0].category, "community");
+    assert.strictEqual(result.catalog.themes[0].author, "Artist / 画师");
+    assert.strictEqual(result.catalog.themes[0].showcase, null);
+    for (const fields of [{ category: "other" }, { category: null }, { author: undefined },
+      { author: "" }, { author: " Artist " }, { author: "a\nb" }, { author: "x".repeat(161) }, { author: null }]) {
+      assert.strictEqual(catalog.validateCatalogDocument(validCatalog({ themes: [{ ...entry, ...fields }] })).ok, false);
+    }
+  });
+
   it("accepts a well-formed catalog", () => {
     const result = catalog.validateCatalogDocument(validCatalog());
     assert.strictEqual(result.ok, true, JSON.stringify(result.errors));

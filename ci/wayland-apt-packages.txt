@@ -1,0 +1,6 @@
+dbus-x11
+weston
+xwayland
+libfuse2t64
+x11-utils
+xdotool

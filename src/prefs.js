@@ -26,6 +26,12 @@ const {
 } = require("./custom-applications");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
+const {
+  DEFAULT_TIMEOUT_MS: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
+  MIN_TIMEOUT_MS: PERMISSION_REVIEW_MIN_TIMEOUT_MS,
+  MAX_TIMEOUT_MS: PERMISSION_REVIEW_MAX_TIMEOUT_MS,
+  normalizePermissionReviewCommand,
+} = require("./permission-review-command");
 const { isValidDisplaySnapshot } = require("./work-area");
 const { normalizeRemoteSsh, getDefaults: getRemoteSshDefaults } = require("./remote-ssh-profile");
 const {
@@ -52,6 +58,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 const { normalizeQuotaAlertThresholds } = require("./quota-alerts");
+const { normalizeClaudeConfigDirEntries } = require("../hooks/claude-config-dirs");
 const {
   TEXT_SCALE_MIN,
   TEXT_SCALE_MAX,
@@ -192,6 +199,12 @@ const SCHEMA = {
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: false },
   sessionHudShowContextUsage: { type: "boolean", default: true },
+  // Display-only and opt-in: completed ordinary ephemeral side chats are also
+  // collapsed; the Dashboard remains the complete session list.
+  sessionHudHideCompletedCodexEphemeral: { type: "boolean", default: false },
+  // Independent opt-in: active temporary side chats are also collapsed, without
+  // changing execution, canonical sessions or pending-attention visibility.
+  sessionHudHideActiveCodexEphemeral: { type: "boolean", default: false },
   sessionHudShowQuota: { type: "boolean", default: true },
   // Preserve the historical used-percentage presentation for existing users;
   // remaining is a display-only choice and never changes stored quota data.
@@ -199,11 +212,15 @@ const SCHEMA = {
   quotaAlertsEnabled: { type: "boolean", default: false },
   quotaAlertThresholds: { type: "array", defaultFactory: () => [20, 10], normalize: normalizeQuotaAlertThresholds },
   quotaRecoveryAlertsEnabled: { type: "boolean", default: true },
-  // Empty by default, i.e. every connected provider draws — matching the
-  // behaviour before this preference existed. Storing what is HIDDEN rather
-  // than what is shown is the reason a newly connected provider appears on its
-  // own: an allow-list would leave it silently absent after the user pasted a
-  // key, which reads as a broken integration rather than a default.
+  // Once the user chooses, only those providers appear: a newly connected
+  // provider must not silently replace a vacancy in their explicit selection.
+  quotaRingShownProviders: {
+    type: "array",
+    default: null,
+    normalize: normalizeQuotaRingShownProviders,
+  },
+  // Legacy exclusions still apply in automatic mode, so existing users keep
+  // their hidden choices without a migration. Manual selections ignore these.
   quotaRingHiddenProviders: {
     type: "array",
     defaultFactory: () => [],
@@ -219,6 +236,7 @@ const SCHEMA = {
   // This boolean is only the durable collection opt-in; the secret is never a
   // preference and never enters a settings snapshot.
   kimiQuotaCollectionEnabled: { type: "boolean", default: false },
+  deepseekBalanceCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },
@@ -272,6 +290,26 @@ const SCHEMA = {
   // without a human, this only narrows it, so there is no trust transition to
   // confirm.
   destructiveActionReminder: { type: "boolean", default: false },
+  // Optional external review command (#995). Opt-in and empty by default.
+  // Stored as an argv array and executed without a shell; the first element is
+  // the executable. It runs only when permission automation is about to answer
+  // `allow`, and any outcome other than exit 0 pauses for a human card. Like
+  // the reminder above it can only narrow what automation allows, but unlike
+  // it this setting names an executable, so it is command-only at the
+  // controller boundary and can only be changed through the prefs file in this
+  // first release. A malformed value normalizes to "off".
+  permissionReviewCommand: {
+    type: "array",
+    defaultFactory: () => [],
+    normalize: (value) => normalizePermissionReviewCommand(value),
+  },
+  permissionReviewTimeoutMs: {
+    type: "number",
+    default: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
+    validate: (v) => Number.isInteger(v)
+      && v >= PERMISSION_REVIEW_MIN_TIMEOUT_MS
+      && v <= PERMISSION_REVIEW_MAX_TIMEOUT_MS,
+  },
   // One-release tombstone for old files/tests. It can never become the current
   // automation source: validation forces ephemeral fields to defaults, save()
   // drops them, and no product writer targets this key.
@@ -308,6 +346,14 @@ const SCHEMA = {
     default: 5000,
     validate: (v) => Number.isInteger(v) && v >= 0 && v <= 60000,
   },
+  // #1326 follow-up: opt-in reminder for a Claude Desktop end-of-turn question
+  // (mcp__ccd_turn__wrap_up) still unanswered after the configured minutes.
+  claudeTurnAskReminder: { type: "boolean", default: false },
+  claudeTurnAskReminderMinutes: {
+    type: "number",
+    default: 5,
+    validate: (v) => Number.isInteger(v) && v >= 1 && v <= 120,
+  },
   // Opt-in decorative feedback for recognized Claude Code Bash test runs.
   // The hook sends only pass/fail, never the command or full test output.
   testReactionsEnabled: { type: "boolean", default: false },
@@ -321,6 +367,10 @@ const SCHEMA = {
   keepAwakeWhileWorking: { type: "boolean", default: false },
   allowEdgePinning: { type: "boolean", default: false },
   disableMiniMode: { type: "boolean", default: false },
+  // #1276: when false, the pet's eyes stop following the mouse cursor — idle
+  // and mini-idle gaze stays centered and Cloudling-style pointer bridges stop
+  // receiving pointer payloads. Dizzy (cursor-circle) detection is untouched.
+  eyeTrackingEnabled: { type: "boolean", default: true },
   // When true, moving the pet between displays does not trigger a
   // proportional pixel-size recomputation. The pet keeps its current
   // window size; the size slider still works (per-display proportional).
@@ -330,6 +380,18 @@ const SCHEMA = {
   // #686: constrain roam movement to horizontal or vertical only (axis-aligned).
   // When enabled, each roam picks a random target that varies in only one axis.
   roamConstrainAxis: { type: "boolean", default: false },
+  // #1252: while no agent is active, occasionally play another animation from
+  // the theme's state set (thinking / working / happy / sweeping / …) for a
+  // few seconds. Off by default; purely cosmetic and never changes the
+  // logical session state.
+  idleActivities: { type: "boolean", default: false },
+  // How often an idle activity may play: low / medium / high. Only consulted
+  // while idleActivities is on.
+  idleActivityFrequency: {
+    type: "string",
+    default: "medium",
+    enum: ["low", "medium", "high"],
+  },
   // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
   // fullscreen app (e.g. a borderless game) and stays draggable, instead of
   // standing down below it (#538). Default ON — most users want to glance at
@@ -341,16 +403,27 @@ const SCHEMA = {
   // the pet entirely the user hides it (Hide Pet). No settings UI as of #562
   // (the toggle was a non-choice for borderless games — see
   // settings-tab-general.js); this pref persists as an escape hatch and can be
-  // re-exposed.
+  // re-exposed. #1282: recognized screen capture overlays always stand down.
   fullscreenOverlay: { type: "boolean", default: true },
   // #935: opt-in auto-hide — when a real fullscreen app owns the foreground
-  // (win-fullscreen-detect probe), hide the pet + its floating surfaces
+  // (Windows or macOS native Space probe, #1275), hide the pet + floating surfaces
   // entirely and restore them when fullscreen ends. Takes precedence over
   // fullscreenOverlay while active (a hidden pet has nothing to overlay).
-  // Windows-only in effect: the probe is constant false elsewhere. Default OFF
-  // so existing behavior — overlay by default, #538 stand-down as the escape
-  // hatch — is untouched.
+  // Windows and macOS only. Default OFF preserves the existing overlay;
+  // a non-topmost Mac pet also auto-hides, but leaves approvals visible.
   fullscreenAutoHide: { type: "boolean", default: false },
+  // #1275: controls the pet body (render + hit windows). Default ON keeps
+  // it above normal windows and macOS fullscreen apps. OFF lets windows cover
+  // it; Mac also hides it and adjacent surfaces in native fullscreen while
+  // keeping permission bubbles visible. Mac applies the launch value because
+  // private-Space membership cannot be undone across all Spaces at runtime.
+  petAlwaysOnTop: { type: "boolean", default: true },
+  // #1183: escape hatch for machines whose GPU compositor draws the
+  // transparent pet window as an opaque black square once part of it leaves
+  // the virtual desktop (edge snap / mini mode). Read once at startup, before
+  // app ready, because Electron can only turn GPU acceleration off then — a
+  // change takes effect on the next launch. Windows-only in effect.
+  disableHardwareAcceleration: { type: "boolean", default: false },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
@@ -381,6 +454,14 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({}),
     normalize: normalizePetTint,
+  },
+  // Per-theme appearance choice: "light" or "dark". A missing entry means
+  // "follow the system", which is why the default map is empty rather than
+  // seeded with a value.
+  themeAppearance: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeThemeAppearance,
   },
   // Per-theme wardrobe choice. Missing entries mean no accessory. The
   // discarded PR #529 global scalar was never shipped, so it is deliberately
@@ -474,6 +555,8 @@ const SCHEMA = {
       // default MUST exist or startup sync would write the hooks for any user
       // who merely has a ~/.kiro/crew directory.
       "kirocrew": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      // permissionsEnabled intentionally defaults on for read-only reminder cards.
+      "kiro-desktop": { integrationInstalled: false, enabled: false, permissionsEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -672,6 +755,9 @@ function validate(raw) {
   }
   normalizeCustomAgentGates(out);
   normalizeStaleTriple(out);
+  // File load/save fallback: preserve the older roam preference on conflict.
+  // Live-store exclusivity is enforced by settings-actions validators.
+  if (out.freeRoam && out.idleActivities) out.idleActivities = false;
   return out;
 }
 
@@ -1011,9 +1097,8 @@ const MAX_CUSTOM_DISCOVERY_PATHS = 64;
 const MAX_CUSTOM_DISCOVERY_PATH_LENGTH = 2048;
 
 // Provider keys the user hid from the pet-side quota cluster. Display-only:
-// collection keeps running and the Dashboard keeps every provider, because the
-// cluster caps at four coins with no say over which ones survive while the
-// Dashboard has room for all of them.
+// collection keeps running and the Dashboard keeps every provider. These
+// exclusions are only consulted while the shown-provider selection is null.
 //
 // Unknown keys are kept, not dropped. The authoritative provider list lives in
 // quota-ring-geometry.js, and validating against it here would mean prefs.js
@@ -1035,6 +1120,14 @@ function normalizeQuotaRingHiddenProviders(value) {
     if (out.length >= MAX_HIDDEN_QUOTA_PROVIDERS) break;
   }
   return out;
+}
+
+function normalizeQuotaRingShownProviders(value) {
+  if (!Array.isArray(value)) return null;
+  // Reuse the key cleanup (including unknown-key preservation) without making
+  // storage depend on geometry. Keep 3 in sync with geometry.RING_MAX_COINS and
+  // the provider selection validation in settings-actions.js.
+  return normalizeQuotaRingHiddenProviders(value).slice(0, 3);
 }
 
 function normalizePathList(value, options = {}) {
@@ -1193,6 +1286,12 @@ function normalizeAgents(value, defaultsValue) {
         merged.customDiscoveryPaths = customDiscoveryPaths;
         touched = true;
       }
+    }
+    if (id === "claude-code" && Object.prototype.hasOwnProperty.call(entry, "configDirs")) {
+      // Extra Claude config folders (CLAUDE_CONFIG_DIR profiles) whose
+      // settings.json also gets Clawd's hooks; see claude-config-dirs.js.
+      merged.configDirs = normalizeClaudeConfigDirEntries(entry.configDirs);
+      touched = true;
     }
     if (touched) out[id] = merged;
   }
@@ -1437,6 +1536,17 @@ function normalizePetTint(value, defaultsValue) {
   return out;
 }
 
+function normalizeThemeAppearance(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, appearance] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (appearance !== "light" && appearance !== "dark") continue;
+    out[themeId] = appearance;
+  }
+  return out;
+}
+
 function normalizePetAccessory(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1662,6 +1772,7 @@ module.exports = {
   mapLocaleToLang,
   normalizeThemeOverrides,
   normalizePetTint,
+  normalizeThemeAppearance,
   normalizePetMouthAccessory,
   normalizeShortcuts,
   normalizeOptionalHttpUrl,

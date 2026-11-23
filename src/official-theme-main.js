@@ -416,10 +416,19 @@ function createOfficialThemeMain(options = {}) {
     return { code: state.lastError.code, message: state.lastError.message };
   }
 
+  function attributionFields(entry, installed) {
+    const source = entry || (installed && installed.marker) || {};
+    return {
+      officialThemeCategory: source.category || "official",
+      officialThemeAuthor: source.author || null,
+    };
+  }
+
   function buildOfficialCard(id, entry, installed, catalogVersion) {
     return {
       id,
       officialTheme: true,
+      ...attributionFields(entry, installed),
       officialThemeState: null,
       officialThemeVersion: entry ? entry.version : (installed ? installed.version : null),
       officialThemeInstalledVersion: installed ? installed.version : null,
@@ -568,6 +577,7 @@ function createOfficialThemeMain(options = {}) {
         ...theme,
         officialTheme: true,
         managedOfficialTheme: true,
+        ...attributionFields(entry, installed),
         officialThemeState: entry ? derived.state : (installed.repairRequired ? "repair-required" : "installed"),
         officialThemeVersion: installed.version,
         officialThemeCatalogVersion: catalog ? catalog.catalogVersion : null,
@@ -580,6 +590,7 @@ function createOfficialThemeMain(options = {}) {
         ...theme,
         officialTheme: true,
         managedOfficialTheme: false,
+        ...attributionFields(displayCatalogEntry(theme.id), null),
         officialThemeState: "conflict",
         officialThemeConflict: true,
         officialThemeCanUninstall: false,
@@ -767,6 +778,8 @@ function createOfficialThemeMain(options = {}) {
         version: entry.version,
         archiveSha256: entry.archive.sha256,
         sourceRepository: installerModule.OFFICIAL_SOURCE_REPOSITORY,
+        category: entry.category,
+        author: entry.author,
         installedAt: nowIso(),
       });
       installerModule.writeOfficialThemeMarker(stagingDir, marker, { fs, path });
@@ -858,6 +871,8 @@ function createOfficialThemeMain(options = {}) {
       version,
       archiveSha256,
       sourceRepository: installerModule.OFFICIAL_SOURCE_REPOSITORY,
+      category: entry.category,
+      author: entry.author,
       installedAt: nowIso(),
     });
 

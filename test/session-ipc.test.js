@@ -120,6 +120,7 @@ function createHarness(overrides = {}) {
       calls.push(["resumeSessionFromHistory", payload]);
       return { status: "ok" };
     }),
+    ...(overrides.openSessionInTerminal ? { openSessionInTerminal: overrides.openSessionInTerminal } : {}),
     getDashboardWebContents: overrides.getDashboardWebContents
       || (() => dashboardWebContents),
     quickMode: Object.prototype.hasOwnProperty.call(overrides, "quickMode")
@@ -198,6 +199,24 @@ test("an unsupported platform never registers the keyboard-mode channels", () =>
   assert.ok(ipcMain.handlers.has("dashboard:get-snapshot"));
   assert.ok(ipcMain.handlers.has("dashboard:get-kimi-quota-status"));
   assert.ok(ipcMain.listeners.has("dashboard:focus-session"));
+});
+
+test("attach IPC is restricted to the owned Dashboard main frame and a session ID", async () => {
+  const called = [];
+  const {ipcMain, trustedDashboardEvent, runtime} = createHarness({
+    openSessionInTerminal: id => { called.push(id); return {status:"ok"}; },
+  });
+  const channel = "dashboard:open-session-terminal";
+  assert.deepStrictEqual(await ipcMain.invokeFrom(trustedDashboardEvent, channel, "s"), {status:"ok"});
+  for (const event of [{sender:{}}, {sender:trustedDashboardEvent.sender,senderFrame:{...trustedDashboardEvent.senderFrame}},
+    {sender:trustedDashboardEvent.sender}]) {
+    assert.strictEqual((await ipcMain.invokeFrom(event,channel,"s")).reason,"untrusted-dashboard-sender");
+  }
+  for (const args of [[{sessionId:"s",url:"http://localhost/"}], ["s","command"], [""], [null]]) {
+    assert.strictEqual((await ipcMain.invokeFrom(trustedDashboardEvent, channel,...args)).status,"invalid");
+  }
+  assert.deepStrictEqual(called,["s"]);
+  runtime.dispose(); assert.strictEqual(ipcMain.handlers.has(channel),false);
 });
 
 test("keyword-mode channels reach the owner only from the trusted page", async () => {

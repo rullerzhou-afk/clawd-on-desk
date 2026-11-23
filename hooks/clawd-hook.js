@@ -5,12 +5,14 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
+const os = require("os");
+const { postStateToRunningServer, readHostPrefix, resolveWslDistro, applySshRemoteFlag, isRemoteHookRuntime } = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
-const { recordSessionHistoryFromStateBody } = require("./session-history");
+const { recordSessionHistoryFromStateBody, resolveClaudeProfileFromEnv } = require("./session-history");
+const { normalizeClaudeConfigDir } = require("./claude-config-dirs");
 const { normalizeModelId } = require("./claude-rate-limits");
 const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./claude-tool-batch");
 // #634: the pid cache + lifecycle orchestration is owned by the shared resolver
@@ -18,11 +20,11 @@ const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./clau
 // processAlive, or isWin directly.
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
-// #583: claude-code registers this hook with async:true and a 5s timeout
-// (hooks/install.js), so a 2s stdin window never stalls the agent. Do NOT
-// raise the shared default in shared-process.js instead — other agent hooks
-// run ~800ms stdout safety timers that must win against a slow stdin read.
-const STDIN_READ_TIMEOUT_MS = 2000;
+// #1293: Exec form starts Node earlier; without a preceding process snapshot,
+// SessionStart can wait ~0.7s for stdin on a fast machine. 4.5s is a local
+// fallback limit; EOF ends normal reads immediately. Keep the shared 400ms
+// default unchanged because other agents have shorter stdout safety timers (#583).
+const STDIN_READ_TIMEOUT_MS = 4500;
 const ASSISTANT_OUTPUT_MAX = 2200;
 // Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
 // Unknown values from future versions fall back to "unknown".
@@ -38,6 +40,11 @@ const API_ERROR_TYPES = new Set([
   "max_output_tokens",
 ]);
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+// Claude Code reports its launcher in CLAUDE_CODE_ENTRYPOINT. Clawd only
+// forwards a small opaque token; the server decides what it means. The same
+// allowlist lives in src/server-route-state.js — keep the two in sync.
+const CLAUDE_ENTRYPOINT_MAX_LENGTH = 64;
+const CLAUDE_ENTRYPOINT_RE = /^[A-Za-z0-9._-]+$/;
 const SESSION_TITLE_MAX = 80;
 const PROMPT_TITLE_MAX = 40;
 const PROMPT_TITLE_SECRET_RE =
@@ -58,6 +65,15 @@ function resolveReportingAgentId(payload) {
     && cursorVersion.length <= CURSOR_VERSION_MAX
     && !/[\0\r\n]/.test(cursorVersion);
   return isCursorCompatibilityHook ? "cursor-agent" : "claude-code";
+}
+
+function normalizeClaudeEntrypoint(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > CLAUDE_ENTRYPOINT_MAX_LENGTH || !CLAUDE_ENTRYPOINT_RE.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }
 
 function normalizeTitle(value) {
@@ -354,6 +370,40 @@ function buildToolInputFingerprint(toolInput) {
     .digest("hex");
 }
 
+// #1326: Claude Desktop's built-in end-of-turn tool. Kept in sync with
+// CLAUDE_WRAP_UP_TOOL_NAME in src/claude-turn-ask.js (hooks can't require src/).
+const CLAUDE_WRAP_UP_TOOL_NAME = "mcp__ccd_turn__wrap_up";
+
+function clampHookText(value, maxChars) {
+  if (typeof value !== "string") return "";
+  const text = value.trim();
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
+}
+
+// Only the question and button labels the card shows, capped so the state body
+// stays small. A recap-only wrap_up (no ask) returns null on purpose: the
+// server treats a wrap_up without claude_turn_ask as "the box no longer asks
+// anything".
+function buildClaudeTurnAsk(toolName, toolInput) {
+  if (toolName !== CLAUDE_WRAP_UP_TOOL_NAME) return null;
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) return null;
+  const ask = clampHookText(toolInput.ask, 300);
+  if (!ask) return null;
+  const result = { ask };
+  const actions = Array.isArray(toolInput.actions)
+    ? toolInput.actions
+      .slice(0, 4)
+      .map((action) => {
+        if (!action || typeof action !== "object") return null;
+        const label = clampHookText(action.label, 60);
+        return label ? { label } : null;
+      })
+      .filter(Boolean)
+    : [];
+  if (actions.length) result.actions = actions;
+  return result;
+}
+
 function shouldReportForegroundWtHwnd(event) {
   return event === "SessionStart" || event === "UserPromptSubmit";
 }
@@ -562,6 +612,19 @@ function applyAgentPidFields(body, agentPid, headless) {
   if (headless === true) body.headless = true;
 }
 
+// #1392: the observed Windows Claude Desktop chain is
+// hook -> bundled CLI `claude.exe` -> desktop app `claude.exe` -> sihost -> svchost.
+// The CLI is the agent PID and the desktop window is its parent, but the walk
+// otherwise anchors on a short-lived PowerShell wrapper or on sihost, neither of
+// which leads the focus walk to the window. Prefer the CLI agent PID the same
+// way Codex Desktop prefers its app-server. `body.claude_entrypoint` is set only
+// for the canonical `claude-code` agent, so Cursor's imported hooks never match
+// even when the same environment token is present.
+function shouldPreferClaudeDesktopAgentPid(body, options = {}) {
+  const platform = options.platform || process.platform;
+  return platform === "win32" && body.claude_entrypoint === "claude-desktop";
+}
+
 // Applies the shared resolver's process metadata to the body. Works for all
 // three resolver result shapes (#634):
 //   - fresh          → full fields, including pid_chain and (on SessionStart)
@@ -572,9 +635,15 @@ function applyAgentPidFields(body, agentPid, headless) {
 //   - empty (prompt/end miss) → every pid field is null/[], so source_pid,
 //     agent_pid, pid_chain, etc. are all left off (never a degraded
 //     process.ppid). source_pid is guarded so an empty result ships no null pid.
-function applyResolvedFields(body, resolved, event) {
+function applyResolvedFields(body, resolved, event, { preferAgentPid = false } = {}) {
   const { stablePid, agentPid, headless, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
-  if (stablePid) body.source_pid = stablePid;
+  // #1392: cache hits return the pre-upgrade anchor unchanged and carry no start
+  // identity, so the adapter corrects the reported value just like the resolver
+  // corrects a fresh walk; prompt/end must never spawn. Claude keeps the same
+  // headless guard as the resolver (one more than Codex checks here): a
+  // `claude -p` run must not move onto its agent.
+  const sourcePid = preferAgentPid && agentPid && headless !== true ? agentPid : stablePid;
+  if (sourcePid) body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;
   applyAgentPidFields(body, agentPid, headless);
   if (pidChain && pidChain.length) body.pid_chain = pidChain;
@@ -598,7 +667,7 @@ function applyResolvedFields(body, resolved, event) {
   }
 }
 
-function buildStateBody(event, payload, resolve) {
+function buildStateBody(event, payload, resolve, options = {}) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
   const promptId = normalizeClaudePhaseId(payload.prompt_id);
@@ -683,6 +752,22 @@ function buildStateBody(event, payload, resolve) {
     }
   }
   if (cwd) body.cwd = cwd;
+  // Claude Code passes CLAUDE_CONFIG_DIR to hooks, so this names the profile
+  // folder the session runs in. Unset means ~/.claude and is sent as nothing.
+  if (body.agent_id === "claude-code") {
+    const profile = resolveClaudeProfileFromEnv({ env: options.env });
+    const configDir = profile && profile.kind === "custom" ? normalizeClaudeConfigDir(profile.configDir) : null;
+    if (configDir) body.claude_config_dir = configDir;
+  }
+  // The Claude desktop app keeps one long-lived process per opened
+  // conversation, so a live PID cannot vouch for an individual session's turn.
+  // Forward the launcher token (env resolution matches the profile resolver
+  // above); src/server-route-state.js decides what `claude-desktop` means.
+  if (body.agent_id === "claude-code") {
+    const env = options.env && typeof options.env === "object" ? options.env : process.env;
+    const entrypoint = normalizeClaudeEntrypoint(env.CLAUDE_CODE_ENTRYPOINT);
+    if (entrypoint) body.claude_entrypoint = entrypoint;
+  }
   // Only SessionStart carries a model, and even there it is optional (`clear`
   // omits it). state.js merges it stickily, so one report is enough.
   const model = normalizeModelId(payload.model);
@@ -698,6 +783,14 @@ function buildStateBody(event, payload, resolve) {
   if (event === "PostToolUse" || event === "PostToolUseFailure") {
     const testResult = classifyTestResult(event, payload);
     if (testResult) body.test_result = testResult;
+  }
+  // #1326: Claude Desktop's end-of-turn question box (mcp__ccd_turn__wrap_up)
+  // never reaches PermissionRequest, so PreToolUse is the only place Clawd can
+  // see the question. Forward it (capped) for this one tool only; every other
+  // tool keeps sending just the fingerprint above.
+  if (event === "PreToolUse") {
+    const claudeTurnAsk = buildClaudeTurnAsk(toolName, payload.tool_input);
+    if (claudeTurnAsk) body.claude_turn_ask = claudeTurnAsk;
   }
   if (event !== "Stop" && typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
@@ -789,7 +882,7 @@ function buildStateBody(event, payload, resolve) {
     body.stop_hook_active = true;
   }
   const wslDistro = resolveWslDistro();
-  if (process.env.CLAWD_REMOTE) {
+  if (isRemoteHookRuntime()) {
     // Remote session: preserve existing host prefix, add WSL distro as
     // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
@@ -818,14 +911,16 @@ function buildStateBody(event, payload, resolve) {
     // process-metadata fields; the server MERGE (state.js) keeps whatever the
     // session already had — never a degraded process.ppid.
     const cacheCwd = cwd;
+    const preferAgentPid = shouldPreferClaudeDesktopAgentPid(body, options);
     const resolved = resolve({
       namespace: "claude-code",
       sessionId,
       cacheCwd,
       lifecycle: EVENT_TO_LIFECYCLE[event] || "event",
       cacheable: sessionId !== "default" && !!cacheCwd,
+      ...(preferAgentPid ? { preferAgentPid: true } : {}),
     });
-    applyResolvedFields(body, resolved, event);
+    applyResolvedFields(body, resolved, event, { preferAgentPid });
 
     if (wslDistro) {
       body.wsl_distro = wslDistro;
@@ -863,6 +958,7 @@ function launchedByGrok(env = process.env) {
 }
 
 function main() {
+  applySshRemoteFlag({ argv: process.argv, env: process.env, scriptDir: __dirname, homedir: os.homedir() });
   // Grok scans ~/.claude/settings.json by default. Those Claude hooks must not
   // report a phantom claude-code session; Grok events go through grok-hook.js.
   if (launchedByGrok()) {
@@ -886,7 +982,7 @@ function main() {
 
   // Pre-resolve on SessionStart (runs during stdin buffering, not after)
   // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
-  if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+  if (event === "SessionStart" && !isRemoteHookRuntime()) resolve();
 
   readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
     .then((stdinRead) => {
@@ -910,11 +1006,12 @@ function main() {
       // the HTTP request may fail but the next process can still recover the
       // same session id and last sustained state. This is best-effort and never
       // changes the hook's stdout or exit contract.
-      updateRecoveryLeaseFromStateBody(body, { eventAt });
+      const persistenceOptions = isRemoteHookRuntime() ? { eventAt, remote: true } : { eventAt };
+      updateRecoveryLeaseFromStateBody(body, persistenceOptions);
       // The lease above is liveness-scoped and is erased once its PID dies,
       // which is every PID after a reboot. Keep a separate durable row so a
       // session interrupted by a restart can still be found and resumed.
-      recordSessionHistoryFromStateBody(body, { eventAt });
+      recordSessionHistoryFromStateBody(body, persistenceOptions);
       postStateToRunningServer(
         JSON.stringify(fitted.body),
         { timeoutMs: statePostTimeoutMs },
@@ -928,6 +1025,7 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  buildClaudeTurnAsk,
   classifyTestResult,
   isRecognizedTestCommand,
   isClaudeHeadlessCommandLine,

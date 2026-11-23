@@ -28,7 +28,7 @@ async function main() {
     }
     await run(`
       window.exits = 0;
-      for (const id of ["general", "agents", "theme", "animOverrides", "shortcuts", "telegram-approval", "discord-presence", "remote-ssh", "recap", "about"]) {
+      for (const id of ["general", "pet", "notifications", "sessions", "permissions", "agents", "remote-ssh", "discord-presence", "theme", "animOverrides", "shortcuts", "recap", "about"]) {
         ClawdSettingsCore.tabs[id] = { render(panel) { panel.textContent = id; }, onExit() { exits++; } };
       }
       window.readChoice = () => ({ value: ClawdSettingsCore.state.activeTab, focus: document.activeElement.dataset.value, exits });
@@ -39,14 +39,14 @@ async function main() {
     await run(renderer.slice(0, renderer.indexOf("globalThis.ClawdSettingsTabGeneral.init(core);")));
     await run('ClawdSettingsCore.ops.requestRender({ sidebar: true, content: true }); document.querySelector("[role=tab]").focus();');
     await key("Down");
-    assert.deepEqual(await run("readChoice()"), { value: "general", focus: "agents", exits: 0 });
+    assert.deepEqual(await run("readChoice()"), { value: "general", focus: "pet", exits: 0 });
     await run("ClawdSettingsCore.ops.requestRender({ sidebar: true, content: true })");
-    assert.deepEqual(await run("readChoice()"), { value: "general", focus: "agents", exits: 0 });
+    assert.deepEqual(await run("readChoice()"), { value: "general", focus: "pet", exits: 0 });
     await key("Return");
-    assert.deepEqual(await run("readChoice()"), { value: "agents", focus: "agents", exits: 1 });
+    assert.deepEqual(await run("readChoice()"), { value: "pet", focus: "pet", exits: 1 });
     await key("Down");
     await key("Space");
-    assert.deepEqual(await run("readChoice()"), { value: "theme", focus: "theme", exits: 2 });
+    assert.deepEqual(await run("readChoice()"), { value: "notifications", focus: "notifications", exits: 2 });
     await key("Tab");
     assert.equal(await run('document.activeElement.getAttribute("role")'), "tabpanel");
 
@@ -54,7 +54,7 @@ async function main() {
     await win.webContents.debugger.sendCommand("Accessibility.enable");
     const tree = await win.webContents.debugger.sendCommand("Accessibility.getFullAXTree");
     const tabs = tree.nodes.filter((node) => !node.ignored && node.role?.value === "tab");
-    assert.equal(tabs.length, 10);
+    assert.equal(tabs.length, 13);
     assert.equal(tabs.filter((node) => node.properties.some((prop) => prop.name === "selected" && prop.value.value)).length, 1);
     assert.equal(tree.nodes.filter((node) => !node.ignored && node.role?.value === "tabpanel").length, 1);
     win.webContents.debugger.detach();

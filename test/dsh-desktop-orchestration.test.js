@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -16,6 +17,8 @@ const {
   uninstallDeepSeekHarnessBridge,
   unregisterDeepSeekHarness,
   readDeepSeekHarnessNotices,
+  refreshDshDesktopDiscovery,
+  syncDeepSeekHarnessIntegration,
 } = require("../hooks/dsh-install");
 const { __test: dshInstallTest } = require("../hooks/dsh-install");
 const { buildCleanupOptionsForHome } = require("../hooks/cleanup-integrations");
@@ -750,7 +753,7 @@ test("an invalid inspection record stops an explicit repair before any command",
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));
@@ -778,7 +781,7 @@ test("an invalid inspection record stops an uninstall before remove", async (t) 
         if (injected) return;
         injected = true;
         fs.mkdirSync(path.dirname(latch), { recursive: true });
-        fs.symlinkSync(path.join(harness.root, "missing-inspection-record"), latch);
+        linkForRejection(path.join(harness.root, "missing-inspection-record"), latch);
       },
     },
   }));
@@ -807,7 +810,7 @@ test("an invalid inspection record stops an install that would add", async (t) =
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));
@@ -836,7 +839,7 @@ test("an invalid inspection record stops confirming a previous removal", async (
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));
@@ -1149,4 +1152,128 @@ test("a desktop success keeps web's manual command on the top-level ok result", 
   assert.ok(result.manualCommand);
   assert.match(result.manualCommand, /plugin --profile web add|'plugin' '--profile' 'web' 'add'/);
   assert.ok(result.warnings.some((line) => line.startsWith("web:")));
+});
+
+test("unlaunched DSH desktop without ~/.dsh or CLI falls through isDshInstalled to desktop-profile-uninitialized", async (t) => {
+  const harness = makeHarness(t);
+  const cli = makeCli(harness);
+  for (const operation of ["install", "startup-sync"]) {
+    const result = await installDeepSeekHarnessBridge(orchOptions(harness, cli, {
+      operation,
+      dshInstalled: undefined,
+      commandInfo: null,
+      dshCommand: false,
+      env: { PATH: "" },
+      desktopDiscovery: desktopFound(harness),
+    }));
+    assert.strictEqual(result.status, "skipped", `${operation} must skip cleanly`);
+    assert.strictEqual(result.reason, "no-applicable-target");
+    assert.strictEqual(result.targets.web.role, "not-applicable");
+    assert.strictEqual(result.targets.web.reason, "web-not-used");
+    assert.strictEqual(result.targets.desktop.role, "not-applicable");
+    assert.strictEqual(result.targets.desktop.reason, "desktop-profile-uninitialized");
+    assert.match(result.message, /open the DeepSeek Harness desktop app once/i);
+  }
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-web.json")), false);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-desktop.json")), false);
+});
+
+test("Windows DSH startup reuses preheated discovery while Install refreshes it", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-registry-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(() => dshInstallTest.resetWindowsRegistryCache());
+  const appRoot = "C:\\Program Files\\DeepSeek Harness";
+  const desktopFiles = new Set([
+    path.win32.join(appRoot, "DeepSeek Harness.exe"),
+    path.win32.join(appRoot, "resources", "runtime", "cli", "bin", "dsh.cmd"),
+    path.win32.join(appRoot, "resources", "app.asar"),
+  ]);
+  const registryReads = {};
+
+  for (const [scenario, operation, preheat] of [
+    ["preheated startup", "startup-sync", true],
+    ["preheated install", "install", true],
+    ["cold startup", "startup-sync", false],
+  ]) {
+    dshInstallTest.resetWindowsRegistryCache();
+    let reads = 0;
+    const options = {
+      platform: "win32",
+      env: { PATH: "", SystemRoot: "C:\\Windows" },
+      dshHome: path.join(home, ".dsh"),
+      managedRoot: path.join(home, "managed"),
+      dshInstalled: undefined,
+      ...NO_WEB_COMMAND,
+      silent: true,
+      fs: {
+        ...fs,
+        statSync(filePath) {
+          if (desktopFiles.has(filePath)) return { isFile: () => true };
+          return fs.statSync(filePath);
+        },
+      },
+      runCommand: async (command) => {
+        assert.strictEqual(path.win32.basename(command), "powershell.exe");
+        reads++;
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            uninstall: [{ displayName: "DeepSeek Harness", displayVersion: FAMILY_VERSION, installLocation: appRoot }],
+            commandDirectory: null,
+          }),
+        };
+      },
+    };
+
+    if (preheat) {
+      const discovery = await refreshDshDesktopDiscovery(options);
+      assert.strictEqual(discovery.status, "found");
+      assert.strictEqual(reads, 1);
+    }
+    const result = await syncDeepSeekHarnessIntegration({ ...options, operation });
+    assert.strictEqual(result.status, "skipped", scenario);
+    assert.strictEqual(result.reason, "no-applicable-target", scenario);
+    assert.strictEqual(result.targets.desktop.reason, "desktop-profile-uninitialized", scenario);
+    registryReads[scenario] = reads;
+  }
+
+  assert.deepStrictEqual(registryReads, {
+    "preheated startup": 1,
+    "preheated install": 2,
+    "cold startup": 1,
+  });
+});
+
+test("unverifiable or ambiguous DSH desktop discovery does not report desktop-not-installed", async (t) => {
+  const harness = makeHarness(t);
+  const cli = makeCli(harness);
+  const cases = [
+    ["unknown", "desktop-unverifiable", "could not be verified"],
+    ["ambiguous", "multiple-desktop-installs", "Multiple DeepSeek Harness desktop installations"],
+  ];
+
+  for (const [status, reason, message] of cases) {
+    const result = await installDeepSeekHarnessBridge(orchOptions(harness, cli, {
+      dshInstalled: undefined,
+      commandInfo: null,
+      dshCommand: false,
+      env: { PATH: "" },
+      desktopDiscovery: {
+        status,
+        appRoot: null,
+        launcherPath: null,
+        staticVersion: null,
+        checkedPaths: [],
+        reason,
+      },
+    }));
+
+    assert.strictEqual(result.status, "skipped", `${status} discovery should skip cleanly`);
+    assert.strictEqual(result.reason, reason);
+    assert.match(result.message, new RegExp(message, "i"));
+    assert.strictEqual(result.targets, undefined);
+  }
+  assert.strictEqual(cli.calls.length, 0, "uncertain discovery must not invoke the DSH CLI");
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-web.json")), false);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-desktop.json")), false);
 });

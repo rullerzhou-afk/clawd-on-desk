@@ -466,6 +466,7 @@ describe("opencode-family session title (#829)", () => {
       hook_source: "opencode-plugin",
       metadata_only: true,
       session_title: "轻松问候",
+      opencode_attach_url: null, // An ordinary TUI must clear a former serve target.
     });
     // Enrichment sanity: the session-directory truth and the plugin pid are
     // always stamped onto the outbound body.

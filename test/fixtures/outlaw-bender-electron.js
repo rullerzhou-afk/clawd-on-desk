@@ -11,6 +11,7 @@ const REQUIRED_ANIMATIONS = [
   "bd-swig",
   "bd-shadow",
   "bd-ember",
+  "bd-ember-hot",
   "bd-rise",
   "bd-float",
 ];
@@ -64,7 +65,8 @@ async function inspect(win, timeMs) {
       eyes: style(".bd-eyes").transform,
       bottle: style(".bd-bottle").transform,
       shadow: style(".bd-shadow").transform,
-      emberFill: style(".bd-ember").fill,
+      emberHot: Number(style(".bd-ember-hot").opacity),
+      emberGroup: Number(style(".bd-ember").opacity),
       smokeOpacity: Number(style(".bd-s1").opacity),
       zOpacity: Number(style(".bd-z1").opacity),
       rootBounds: {
@@ -120,7 +122,9 @@ async function main() {
     assert(samples[0].shadow !== samples[12000].shadow, "shadow did not animate");
     assert(samples[1000].smokeOpacity > 0, "cigarette smoke did not become visible");
     assert(samples[12000].zOpacity > 0, "post-collapse Z did not become visible");
-    assert(samples[0].emberFill !== samples[1000].emberFill, "ember did not pulse");
+    assert(samples[0].emberHot === 0, "ember hot layer should start fully transparent");
+    assert(samples[1000].emberHot > 0, "ember hot layer did not become visible");
+    assert(samples[0].emberGroup !== samples[1000].emberGroup, "ember group opacity did not pulse");
     assert(samples[12000].master === samples[15000].master, "face-plant final pose did not hold");
 
     await win.webContents.executeJavaScript(`new Promise((resolve, reject) => {

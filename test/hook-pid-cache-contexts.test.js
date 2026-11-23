@@ -369,6 +369,8 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
       payload: { hook_event_name: "preToolUse", conversation_id: sid("cur"), cwd: "D:/repo" } },
     { name: "codebuddy-hook.js", ns: "codebuddy", raw: sid("cb"), cacheSid: sid("cb"),
       payload: { hook_event_name: "PreToolUse", session_id: sid("cb"), cwd: "D:/repo" } },
+    { name: "workbuddy-hook.js", ns: "workbuddy", raw: sid("wb"), cacheSid: sid("wb"),
+      payload: { hook_event_name: "PreToolUse", session_id: sid("wb"), cwd: "D:/repo" } },
     { name: "reasonix-hook.js", ns: "reasonix", raw: sid("rx"), cacheSid: `reasonix:${sid("rx")}`,
       payload: { event: "PostToolUse", sessionId: sid("rx"), cwd: "D:/repo", toolName: "bash" } },
   ];
@@ -508,37 +510,21 @@ describe("#634 subprocess — cache hits spawn nothing; kiro degrades gracefully
 // C. Consumer contract — no adapter silently stays on the bare (uncached) path
 // ═════════════════════════════════════════════════════════════════════════════
 
-describe("#634 consumer contract — ctx or explicit exemption", () => {
+describe("#634 consumer contract — every adapter passes ctx", () => {
   // The offline-contract test locks the consumer COUNT; this locks the cache
   // MIGRATION: a createPidResolver consumer must build a cache context
-  // (recognized by its `namespace: "` literal) or be exempted here on purpose.
+  // (recognized by its `namespace: "` literal).
   // Prewarm-style bare resolve() calls are fine — this only catches files with
   // no context anywhere.
-  const EXEMPT = new Set([
-    // #634 scopes exactly 12 adapters; WorkBuddy joined the resolver later
-    // (#618) and is tracked as an explicit follow-up on the issue — remove
-    // this exemption when it migrates.
-    "workbuddy-hook.js",
-  ]);
-
-  it("every createPidResolver consumer passes a cache context or is exempted", () => {
+  it("every createPidResolver consumer passes a cache context", () => {
     const consumers = fs.readdirSync(HOOKS_DIR)
       .filter((f) => f.endsWith("-hook.js"))
       .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes("createPidResolver("));
     assert.ok(consumers.length >= 14, "sanity: the resolver consumers are all visible to this scan");
     const bare = consumers.filter((f) => {
-      if (EXEMPT.has(f)) return false;
       return !fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes('namespace: "');
     });
     assert.deepStrictEqual(bare, [],
-      "these adapters call createPidResolver but never build a cache context — migrate them or add an explicit exemption with a reason");
-  });
-
-  it("exemptions stay honest — an exempted file must still be a consumer", () => {
-    for (const f of EXEMPT) {
-      const p = path.join(HOOKS_DIR, f);
-      assert.ok(fs.existsSync(p), `${f} exempted but missing`);
-      assert.ok(fs.readFileSync(p, "utf8").includes("createPidResolver("), `${f} exempted but no longer a consumer — drop the exemption`);
-    }
+      "these adapters call createPidResolver but never build a cache context — migrate them");
   });
 });

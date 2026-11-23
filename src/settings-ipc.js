@@ -9,6 +9,7 @@ const {
   acknowledgeDeepSeekHarnessNotice: defaultAcknowledgeDshNotice,
 } = require("../hooks/dsh-install");
 const { DEFAULT_INTEGRATION_INSTALLED_IDS } = require("./prefs");
+const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
   listPetTintOptions,
@@ -26,6 +27,12 @@ const CLEANUP_EXEMPT_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 // renderer cannot mint a trusted install binding, advance a deployment
 // transaction, or claim that a remote profile was verified.
 const INTERNAL_SETTINGS_COMMANDS = new Set([
+  // This opt-in can start background requests with a stored key. Only the
+  // trusted balance IPC handlers may ask the main-process owner to change it.
+  "setDeepseekBalanceCollectionEnabled",
+  // Only the trusted Kimi quota IPC handlers may ask the main-process owner
+  // to change this opt-in, matching the DeepSeek balance boundary.
+  "setKimiQuotaCollectionEnabled",
   "remoteSsh.applyInstallationIdentity",
   "remoteSsh.beginIdentityRotation",
   "remoteSsh.updateIdentityStep",
@@ -93,6 +100,16 @@ const AGENT_DISCOVERY_DIALOG_STRINGS = {
   ja: { file: "ツールの実行ファイルを選択", directory: "ツールのインストールフォルダーを選択" },
   "pt-BR": { file: "Escolha o executável da ferramenta", directory: "Escolha a pasta de instalação da ferramenta" },
   es: { file: "Elige el ejecutable de la herramienta", directory: "Elige la carpeta de instalación de la herramienta" },
+};
+
+const CLAUDE_CONFIG_DIR_DIALOG_STRINGS = {
+  en: "Choose a Claude Code config folder",
+  zh: "选择 Claude Code 配置目录",
+  "zh-TW": "選擇 Claude Code 設定資料夾",
+  ko: "Claude Code 설정 폴더 선택",
+  ja: "Claude Code の設定フォルダーを選択",
+  "pt-BR": "Escolha uma pasta de configuração do Claude Code",
+  es: "Elige una carpeta de configuración de Claude Code",
 };
 
 const REMOVE_THEME_DIALOG_STRINGS = {
@@ -348,6 +365,9 @@ function registerSettingsIpc(options = {}) {
   const getUpdateCheckSnapshot = options.getUpdateCheckSnapshot || (() => ({ state: "idle" }));
   const clearUpdateError = options.clearUpdateError || (() => ({ state: "idle" }));
   const copyUpdateError = options.copyUpdateError || (() => ({ status: "error", message: "clipboard unavailable" }));
+  const getHardwareAccelerationDisabledAtStartup =
+    options.getHardwareAccelerationDisabledAtStartup || (() => false);
+  const getPetAlwaysOnTopAtStartup = options.getPetAlwaysOnTopAtStartup || (() => true);
   const showTutorial = options.showTutorial || (() => ({
     status: "error",
     message: "Tutorial is unavailable",
@@ -485,7 +505,7 @@ function registerSettingsIpc(options = {}) {
     }
   });
   // Distinct quota-reporting sources (this machine + WSL / SSH remotes). The
-  // General tab uses it to hide the "merge across machines" switch when it is
+  // Sessions tab uses it to hide the "merge across machines" switch when it is
   // a single-machine no-op.
   handle("settings:get-quota-source-count", () => {
     try {
@@ -559,6 +579,49 @@ function registerSettingsIpc(options = {}) {
     const rejected = rejectUntrustedSettingsEvent(event);
     if (rejected) return rejected;
     const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.forget === "function"
+      ? runtime.forget()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-status", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.getStatus === "function"
+      ? runtime.getStatus()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-connect", async (event, payload) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!payload || typeof payload !== "object" || typeof payload.apiKey !== "string") {
+      return { status: "error", reason: "invalid-credential-input" };
+    }
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.connect === "function"
+      ? runtime.connect(payload.apiKey)
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-reconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.reconnect === "function"
+      ? runtime.reconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-disconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.disconnect === "function"
+      ? runtime.disconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-forget", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
     return runtime && typeof runtime.forget === "function"
       ? runtime.forget()
       : { status: "error", reason: "runtime-unavailable" };
@@ -1024,6 +1087,42 @@ function registerSettingsIpc(options = {}) {
     }
   });
 
+  // Claude config folders as Settings shows them: the primary folder Clawd
+  // resolves itself first, then the extra folders from prefs.
+  handle("settings:claude-config-dirs", () => {
+    try {
+      const snapshot = settingsController.getSnapshot() || {};
+      const claude = snapshot.agents && snapshot.agents["claude-code"];
+      const entries = claude && Array.isArray(claude.configDirs) ? claude.configDirs : [];
+      return {
+        status: "ok",
+        dirs: effectiveClaudeConfigDirs(entries).map((entry) => ({
+          ...entry,
+          exists: fs.existsSync(entry.dir),
+        })),
+      };
+    } catch (err) {
+      return { status: "error", message: `claude config dirs failed: ${err && err.message}` };
+    }
+  });
+
+  handle("settings:pick-claude-config-dir", async (event) => {
+    const title = CLAUDE_CONFIG_DIR_DIALOG_STRINGS[getLang()] || CLAUDE_CONFIG_DIR_DIALOG_STRINGS.en;
+    try {
+      const result = await dialog.showOpenDialog(getDialogParent(event), {
+        title,
+        // Config folders are usually dot-folders (~/.claude-work).
+        properties: ["openDirectory", "showHiddenFiles", "createDirectory"],
+      });
+      if (!result || result.canceled || !Array.isArray(result.filePaths) || !result.filePaths[0]) {
+        return { status: "cancel" };
+      }
+      return { status: "ok", path: result.filePaths[0] };
+    } catch (err) {
+      return { status: "error", message: `claude config folder picker failed: ${err && err.message}` };
+    }
+  });
+
   handle("settings:detect-agent-installations", async (_ev, opts) => {
     try {
       const options = opts && typeof opts === "object" ? opts : {};
@@ -1143,6 +1242,13 @@ function registerSettingsIpc(options = {}) {
     return copyUpdateError(boundedText);
   });
 
+  // #1183/#1275: Settings compares launch values with saved preferences to
+  // offer a restart for GPU mode and macOS pet topmost changes.
+  handle("settings:get-startup-render-state", () => ({
+    hardwareAccelerationDisabled: getHardwareAccelerationDisabledAtStartup() === true,
+    petAlwaysOnTop: getPetAlwaysOnTopAtStartup(),
+  }));
+
   handle("settings:show-tutorial", async () => {
     try {
       const result = await showTutorial();
@@ -1169,42 +1275,42 @@ function registerSettingsIpc(options = {}) {
     try {
       const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
       if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
-      const port = lanWsServer.getPort();
-      const tok = lanWsServer.getToken();
-      if (!Number.isInteger(port) || port <= 0 || typeof tok !== "string" || !tok) {
+      const info = lanWsServer.getConnectionInfo();
+      if (!Number.isInteger(info.port) || info.port <= 0 || typeof info.lanIp !== "string" || !info.lanIp) {
         return { status: "starting", message: "LAN bridge is starting" };
       }
-      const os = require("os");
-      let lanIp = "127.0.0.1";
-      const interfaces = os.networkInterfaces();
-      const wlanPattern = /WLAN|Wi-?Fi|Wireless|无线/i;
-      // 1) 优先找 WLAN 接口
-      for (const name of Object.keys(interfaces)) {
-        if (wlanPattern.test(name)) {
-          for (const iface of interfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) { lanIp = iface.address; break; }
-          }
-          if (lanIp !== "127.0.0.1") break;
-        }
-      }
-      // 2) fallback：第一个非 internal IPv4
-      if (lanIp === "127.0.0.1") {
-        for (const name of Object.keys(interfaces)) {
-          for (const iface of interfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) { lanIp = iface.address; break; }
-          }
-          if (lanIp !== "127.0.0.1") break;
-        }
-      }
-      const pairUrl = `http://${lanIp}:${port}/mobile/?host=${lanIp}&port=${port}&token=${tok}`;
-      return { status: "ok", port, token: tok, lanIp, pairUrl };
+      return { status: "ok", port: info.port, lanIp: info.lanIp,
+        pairUrl: info.pairUrl, pairCode: info.pairCode, pairExpiresAt: info.pairExpiresAt,
+        pairQrSvg: info.pairQrSvg };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }
   });
 
-  handle("settings:regenerate-mobile-token", async () => {
-    return settingsController.applyCommand("mobilePreview.regenerateToken", {});
+  handle("settings:refresh-mobile-pair-code", async () => {
+    return settingsController.applyCommand("mobilePreview.refreshPairCode", {});
+  });
+
+  handle("settings:mobile-devices", async () => {
+    try {
+      const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
+      if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
+      return {
+        status: "ok",
+        devices: lanWsServer.listDevices(),
+        legacyActive: lanWsServer.isLegacyActive(),
+      };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:revoke-mobile-device", async (_event, id) => {
+    return settingsController.applyCommand("mobilePreview.revokeDevice", { id });
+  });
+
+  handle("settings:revoke-mobile-legacy", async () => {
+    return settingsController.applyCommand("mobilePreview.revokeLegacy", {});
   });
 
   handle("settings:reset-mobile-access", async () => {

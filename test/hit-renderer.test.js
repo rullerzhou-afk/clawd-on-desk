@@ -455,3 +455,64 @@ describe("hit-renderer stranded drag release", () => {
     assert.deepStrictEqual(h.apiCalls.filter((c) => c[0] === "dragLock"), []);
   });
 });
+
+describe("hit-renderer context menu during drag (#1260)", () => {
+  function contextmenu(h) {
+    h.context.document._dispatch("contextmenu", { preventDefault() {} });
+  }
+
+  it("ends an active drag through the normal stop path BEFORE showing the menu", () => {
+    const h = createHarness();
+    h.pointerdown({});
+    h.pointermove({ clientX: 120, clientY: 120, buttons: 1 });
+    contextmenu(h);
+
+    const names = h.apiCalls.map((c) => c[0]);
+    const menuAt = names.indexOf("showContextMenu");
+    assert.ok(menuAt >= 0, "the context menu request must still go out");
+    assert.ok(
+      menuAt > names.lastIndexOf("dragLock") && menuAt > names.lastIndexOf("dragEnd"),
+      "release + drag end must precede the menu request",
+    );
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragLock").map((c) => c[1]),
+      [true, false],
+    );
+    assert.strictEqual(names.filter((n) => n === "dragEnd").length, 1);
+
+    // The menu's modal loop may additionally swallow everything; the gesture
+    // state is already clean, so no later stray event may double-report.
+    h.pointermove({ clientX: 140, clientY: 140, buttons: 0 });
+    h.pointerup({ clientX: 140 });
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragLock").map((c) => c[1]),
+      [true, false],
+      "the strand must not reappear after the menu",
+    );
+    assert.strictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragEnd").length,
+      1,
+      "drag end must not be reported twice",
+    );
+  });
+
+  it("releases a held-still grab on right-click without inventing a drag end", () => {
+    const h = createHarness();
+    h.pointerdown({});
+    contextmenu(h);
+
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragLock").map((c) => c[1]),
+      [true, false],
+    );
+    const names = h.apiCalls.map((c) => c[0]);
+    assert.ok(!names.includes("dragEnd"), "no movement means no drag end");
+    assert.ok(names.includes("showContextMenu"));
+  });
+
+  it("plain right-click without a drag shows the menu with no lock traffic", () => {
+    const h = createHarness();
+    contextmenu(h);
+    assert.deepStrictEqual(h.apiCalls, [["showContextMenu"]]);
+  });
+});

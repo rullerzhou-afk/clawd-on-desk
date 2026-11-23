@@ -128,7 +128,20 @@ describe("Windows recovery identity retention across PID cache hits", () => {
       const options = { now: idle.eventAt + TOMBSTONE_RETENTION_MS + 1 };
       if (cause === "missing-cache") pidCache.dropPidCacheV2("claude-code", sessionId, cwd);
       if (cause === "different-agent-pid") cache.agentPid += 1;
-      if (cause === "different-source-pid") cache.stablePid += 1;
+      if (cause === "different-source-pid") {
+        // The retention rule only skips the cache-anchor comparison when the
+        // record's source IS the agent. Make the source a different live process
+        // whose anchor still does not match, so only the mismatch can explain
+        // the deletion.
+        cache.stablePid += 2;
+        fs.writeFileSync(leasePath, JSON.stringify({
+          ...idle,
+          sourcePid: process.pid + 1,
+          sourceProcessStartIdentity: "win32:639203668532454671",
+        }));
+        options.platform = "win32";
+        options.processKill = () => true;
+      }
       if (cause === "headless") cache.headless = true;
       if (["different-agent-pid", "different-source-pid", "headless"].includes(cause)) {
         pidCache.writePidCacheV2("claude-code", sessionId, cwd, cache);
@@ -139,6 +152,22 @@ describe("Windows recovery identity retention across PID cache hits", () => {
       assert.equal(fs.existsSync(leasePath), false);
     });
   }
+
+  it("issue #1392: keeps expired inactive evidence when source is the agent and only the old cache anchor differs", () => {
+    const idle = seedIdle();
+    const leasePath = getLeaseFilePath("claude-code", sessionId, { recoveryDir });
+    const cache = pidCache.readPidCacheV2("claude-code", sessionId, cwd);
+    // The pre-upgrade disk cache still anchors on sihost even though the record
+    // already moved its source onto the agent; the matching agent PID is enough.
+    cache.stablePid += 5;
+    pidCache.writePidCacheV2("claude-code", sessionId, cwd, cache);
+    pruneRecoveryLeaseFiles(recoveryDir, {
+      now: idle.eventAt + TOMBSTONE_RETENTION_MS + 1,
+      platform: "win32",
+      processKill: () => true,
+    });
+    assert.deepEqual(readLeaseFile(leasePath), idle);
+  });
 
   it("rechecks cache lifetime while holding the record lock before deleting", t => {
     const idle = seedIdle();

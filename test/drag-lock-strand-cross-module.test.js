@@ -52,7 +52,7 @@ function createRenderer() {
         dragLock: (v) => apiCalls.push(["dragLock", v]),
         dragMove: () => apiCalls.push(["dragMove"]),
         dragEnd: () => apiCalls.push(["dragEnd"]),
-        showContextMenu: () => {},
+        showContextMenu: () => apiCalls.push(["showContextMenu"]),
         focusTerminal: () => {},
         exitMiniMode: () => {},
         showDashboard: () => {},
@@ -101,6 +101,9 @@ function createRenderer() {
     pointerup: (clientX = 100) => {
       docListeners.get("pointerup")({ button: 0, ctrlKey: false, metaKey: false, clientX });
     },
+    contextmenu: () => {
+      docListeners.get("contextmenu")({ preventDefault() {} });
+    },
     locks: () => apiCalls.filter((c) => c[0] === "dragLock").map((c) => c[1]),
   };
 }
@@ -124,11 +127,21 @@ class FakeIpcMain {
 function createMainSide() {
   const renderer = createRenderer();
   const ipcMain = new FakeIpcMain();
-  const state = { dragLocked: false, idlePaused: false, mouseOverPet: false, pushed: 0 };
+  const state = {
+    dragLocked: false,
+    idlePaused: false,
+    mouseOverPet: false,
+    pushed: 0,
+    menuRequests: 0,
+    dragLockedAtMenu: null,
+  };
 
   registerPetInteractionIpc({
     ipcMain,
-    showContextMenu: () => {},
+    showContextMenu: () => {
+      state.menuRequests += 1;
+      state.dragLockedAtMenu = state.dragLocked;
+    },
     moveWindowForDrag: () => {},
     setIdlePaused: (v) => { state.idlePaused = !!v; },
     setLowPowerIdlePaused: () => {},
@@ -178,6 +191,7 @@ function createMainSide() {
       if (name === "dragLock") ipcMain.send("drag-lock", arg);
       else if (name === "dragMove") ipcMain.send("drag-move");
       else if (name === "dragEnd") ipcMain.send("drag-end");
+      else if (name === "showContextMenu") ipcMain.send("show-context-menu");
     }
     return originalPush(...entries);
   };
@@ -257,5 +271,38 @@ describe("stranded drag release across renderer + main (#997 / #998)", () => {
     const h = createMainSide();
     assert.equal(h.releaseStrandedDragLock(), false);
     assert.equal(h.state.pushed, 0, "no phantom force-drag-release push");
+  });
+
+  // #1260: the context menu's modal loop swallows the closing pointerup while
+  // syncHitWin() defers on the held lock, and with the input window frozen at
+  // its pre-drag rect no later pointer event may reach the renderer — the
+  // buttons=0 self-heal never fires and the strand is permanent. The renderer
+  // must unwind the drag BEFORE the menu request leaves, so main sees the
+  // release first and the menu opens with no lock held.
+  it("right-click during a drag ends the drag on both sides before the menu opens", () => {
+    const h = createMainSide();
+    h.renderer.pointerdown(100, 100);
+    h.renderer.pointermove(120, 120, 1);
+    assert.equal(h.state.dragLocked, true, "the drag holds the lock");
+
+    h.renderer.contextmenu();
+
+    assert.equal(h.state.menuRequests, 1, "the menu still opens");
+    assert.equal(
+      h.state.dragLockedAtMenu, false,
+      "the menu request must arrive with the lock already released",
+    );
+    assert.equal(h.state.dragLocked, false);
+    assert.deepStrictEqual(h.renderer.locks(), [true, false]);
+    assert.equal(
+      h.renderer.apiCalls.filter((c) => c[0] === "dragEnd").length, 1,
+      "the moved drag closes exactly once",
+    );
+
+    // Whatever the menu loop swallows afterwards cannot re-strand the pair.
+    h.renderer.pointermove(140, 140, 0);
+    h.renderer.pointerup(140);
+    assert.deepStrictEqual(h.renderer.locks(), [true, false]);
+    assert.equal(h.state.menuRequests, 1);
   });
 });

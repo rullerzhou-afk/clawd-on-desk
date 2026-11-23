@@ -20,6 +20,12 @@ function createThemeContext(theme, options = {}) {
     return path.join(themeDir, "assets");
   }
 
+  // The directory the theme actually renders from. Dark appearance swaps the
+  // whole asset tree, so every non-cache path must follow `_assetsSourceDir`.
+  function getThemeAssetsSourceDir() {
+    return theme._assetsSourceDir || getExternalAssetsSourceDir(theme._themeDir);
+  }
+
   function resolveAssetPath(filename) {
     const safeFilename = path.basename(filename);
     if (!theme) return path.join(assetsSvgDir, safeFilename);
@@ -31,9 +37,9 @@ function createThemeContext(theme, options = {}) {
     }
 
     if (safeFilename.endsWith(".svg")) {
-      return path.join(theme._assetsDir || getExternalAssetsSourceDir(theme._themeDir), safeFilename);
+      return path.join(theme._assetsDir || getThemeAssetsSourceDir(), safeFilename);
     }
-    return path.join(theme._themeDir, "assets", safeFilename);
+    return path.join(getThemeAssetsSourceDir(), safeFilename);
   }
 
   function getRendererAssetsPath() {
@@ -57,11 +63,16 @@ function createThemeContext(theme, options = {}) {
       }
       return null;
     }
-    return buildFileUrl(path.join(theme._themeDir, "assets"));
+    return buildFileUrl(getThemeAssetsSourceDir());
   }
 
   function getRendererConfig() {
     if (!theme) return null;
+    const eyeTrackingStates = theme.eyeTracking.enabled ? [...theme.eyeTracking.states] : [];
+    if (!(Array.isArray(theme.states.executing) && theme.states.executing.length)
+      && eyeTrackingStates.includes("working") && !eyeTrackingStates.includes("executing")) {
+      eyeTrackingStates.push("executing");
+    }
     const trustedScriptedSvgFiles = theme._builtin && theme.trustedRuntime
       ? (theme.trustedRuntime.scriptedSvgFiles || [])
       : [];
@@ -90,7 +101,7 @@ function createThemeContext(theme, options = {}) {
       // roam-walk bob compensation. Multi-entry bindings count as dedicated
       // even if one entry reuses the idle file.
       hasRoamVisual: hasDedicatedRoamVisual(theme),
-      eyeTrackingStates: theme.eyeTracking.enabled ? theme.eyeTracking.states : [],
+      eyeTrackingStates,
       trustedScriptedSvgFiles: [...trustedScriptedSvgFiles],
       rendering: theme.rendering || { svgChannel: "auto" },
       petTintSupported: !!(theme._capabilities && theme._capabilities.petTint),

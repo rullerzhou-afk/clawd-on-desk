@@ -331,7 +331,18 @@ if (!isMac) {
 }
 
 // --- Right-click context menu ---
+// #1260: a menu popped mid-drag runs a modal loop that takes the OS mouse
+// capture and swallows the closing pointerup, and while dragLocked is held
+// syncHitWin() keeps the input window at its pre-drag rect. After the menu
+// closes no pointer event reaches this renderer again (capture is gone and
+// the cursor sits over the pet's new position, off the stale input rect), so
+// the buttons=0 move self-heal can never fire and the drag strand is
+// permanent — pet frozen in the drag pose, input window stranded at the old
+// rect, right-click falling through to whatever is underneath. Ending the
+// drag through the normal stop path BEFORE the menu opens leaves nothing to
+// strand regardless of what the menu loop swallows.
 document.addEventListener("contextmenu", (e) => {
   e.preventDefault();
+  if (isDragging) stopDrag();
   window.hitAPI.showContextMenu();
 });

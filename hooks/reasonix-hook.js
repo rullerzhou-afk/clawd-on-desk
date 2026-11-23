@@ -8,8 +8,8 @@
 
 // Start the in-process budget before loading helper modules. Reasonix measures
 // its outer timeout from the PowerShell/cmd wrapper, which starts even earlier;
-// the blocking deadline below deliberately leaves another second for that
-// unobservable launch overhead.
+// the blocking deadline below reserves time for that unobservable launch
+// overhead as well as for the wrapper to exit after Node does.
 const HOOK_STARTED_AT = Date.now();
 
 const {
@@ -96,16 +96,20 @@ const STDIN_READ_TIMEOUT_MS = 2000;
 // stdin flush + cold WMI snapshot inside resolve()), and safeExit(0)
 // swallowed the event BEFORE the POST with a clean exit 0: no error anywhere,
 // the pet just looked "disconnected" after every long idle.
-// Blocking hooks (UserPromptSubmit/PreToolUse) get a 5s budget from Reasonix
-// and a timeout becomes a DecisionBlock that ABORTS the user's turn, so the
-// internal deadline leaves a full second for the cmd/PowerShell + Node startup
-// that happens before this script can observe time. Blocking events also never
-// perform a fresh synchronous process walk (see the local PID branch below),
-// so a cold WMI/ps call cannot pin the event loop past this guard. Non-blocking
-// events (upstream budget 30s) use a relaxed deadline instead.
-const HARD_DEADLINE_MS = 4000;
+// Blocking hooks (UserPromptSubmit/PreToolUse) get a 5s budget from Reasonix.
+// A timeout blocks the prompt or tool call even if this observer later exits 0.
+// #1198 retesting measured up to 2.56s before Node readiness plus 0.12s
+// after Node exit. Keep the full 2s stdin window, but allow only 200ms for
+// best-effort blocking delivery and cap this script at 2.2s. The previous
+// 2.5s / 1s budgets still overran the native 5s limit on that machine.
+// This reserves 2.8s for launch/teardown; arbitrary OS stalls remain unbounded.
+// Blocking events also never perform a fresh synchronous process walk (see
+// below), since JS timers cannot interrupt a cold WMI/ps call. Non-blocking
+// events retain their longer delivery allowance and 30s upstream budget.
+const HARD_DEADLINE_MS = 2200;
 const RELAXED_DEADLINE_MS = 15000;
 const STDIN_PHASE_BUDGET_MS = STDIN_READ_TIMEOUT_MS + 500;
+const BLOCKING_POST_STDIN_BUDGET_MS = 200;
 const POST_STDIN_BUDGET_MS = 3500;
 const STOP_EXTRA_MS = STOP_DELAY_MS + 200;
 const BLOCKING_HOOKS = new Set(["UserPromptSubmit", "PreToolUse"]);
@@ -140,7 +144,9 @@ readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
     // its ordering-delay allowance.
     const isStop = hookName === "Stop";
     armSafety(
-      isStop ? POST_STDIN_BUDGET_MS + STOP_EXTRA_MS : POST_STDIN_BUDGET_MS,
+      isBlockingHook
+        ? BLOCKING_POST_STDIN_BUDGET_MS
+        : POST_STDIN_BUDGET_MS + (isStop ? STOP_EXTRA_MS : 0),
       isBlockingHook ? HARD_DEADLINE_MS : RELAXED_DEADLINE_MS
     );
 

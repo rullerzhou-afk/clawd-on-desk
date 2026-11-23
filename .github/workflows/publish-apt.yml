@@ -1,0 +1,132 @@
+name: Publish APT source
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Sign with the production subkey and deploy (main only)'
+        type: boolean
+        default: false
+      initial:
+        description: 'First production activation only: permit a missing previous InRelease (404)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clawd-apt-publication
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      !inputs.publish ||
+      (github.repository == 'rullerzhou-afk/clawd-on-desk' &&
+       github.ref == 'refs/heads/main' &&
+       github.workflow_ref == 'rullerzhou-afk/clawd-on-desk/.github/workflows/publish-apt.yml@refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ${{ inputs.publish && 'apt-production' || 'apt-preview' }}
+    outputs:
+      latest: ${{ steps.version.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repository builder with a disposable signing key
+        run: python3 test/apt-repository.test.py
+      - name: Fetch and validate current stable release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/apt/repository.py download --output "$RUNNER_TEMP/apt-input"
+      - name: Create isolated signing directory
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/apt-gnupg"
+          echo "GNUPGHOME=$RUNNER_TEMP/apt-gnupg" >> "$GITHUB_ENV"
+      - name: Import production signing subkey
+        if: inputs.publish
+        env:
+          APT_SIGNING_SUBKEY: ${{ secrets.APT_SIGNING_SUBKEY }}
+          APT_FINGERPRINT: ${{ vars.APT_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          test -n "$APT_SIGNING_SUBKEY"
+          [[ "$APT_FINGERPRINT" =~ ^[A-F0-9]{40}$ ]]
+          test -f distribution/apt/archive-key.asc
+          printf '%s' "$APT_SIGNING_SUBKEY" | gpg --batch --import
+          python3 scripts/apt/repository.py validate-signing-key --fingerprint "$APT_FINGERPRINT"
+          cp distribution/apt/archive-key.asc "$RUNNER_TEMP/apt-public.asc"
+          echo "APT_BUILD_KEY=$APT_FINGERPRINT" >> "$GITHUB_ENV"
+      - name: Generate preview signing key
+        if: '!inputs.publish'
+        run: |
+          set -euo pipefail
+          gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key 'Clawd PREVIEW ONLY <preview@example.invalid>' rsa3072 sign 1d
+          key=$(gpg --batch --with-colons --list-keys | awk -F: '$1 == "fpr" {print $10; exit}')
+          gpg --armor --export "$key" > "$RUNNER_TEMP/apt-public.asc"
+          echo "APT_BUILD_KEY=$key" >> "$GITHUB_ENV"
+      - name: Stage complete signed source and guide
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          INITIAL: ${{ inputs.initial }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$PUBLISH" == true ]]; then
+            args+=(--previous-url https://apt.clawdondesk.com)
+            if [[ "$INITIAL" == true ]]; then args+=(--allow-initial); fi
+          fi
+          python3 scripts/apt/repository.py build --input "$RUNNER_TEMP/apt-input" --output "$RUNNER_TEMP/apt-site" --public-key "$RUNNER_TEMP/apt-public.asc" --signing-key "$APT_BUILD_KEY" "${args[@]}"
+      - name: Record the staged version
+        id: version
+        run: |
+          python3 - "$RUNNER_TEMP/apt-site/apt/dists/stable/manifest.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, pathlib, sys
+          print('latest=' + json.loads(pathlib.Path(sys.argv[1]).read_text())['latest'])
+          PY
+      - name: Upload preview (test trust only; never install on a normal machine)
+        if: '!inputs.publish'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-preview-test-key-only
+          path: ${{ runner.temp }}/apt-site/apt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload verified Pages snapshot
+        if: inputs.publish
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/apt-site/apt
+      - name: Destroy temporary signing material
+        if: always()
+        run: |
+          if [[ -d "$RUNNER_TEMP/apt-gnupg" ]]; then
+            GNUPGHOME="$RUNNER_TEMP/apt-gnupg" gpgconf --kill gpg-agent || true
+            rm -rf -- "$RUNNER_TEMP/apt-gnupg"
+          fi
+
+  deploy:
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: apt-production
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a stale snapshot before deployment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STAGED_VERSION: ${{ needs.build.outputs.latest }}
+        run: |
+          set -euo pipefail
+          latest=$(python3 scripts/apt/repository.py latest)
+          test "$latest" = "$STAGED_VERSION"
+      - name: Deploy complete verified snapshot
+        id: deployment
+        uses: actions/deploy-pages@v4

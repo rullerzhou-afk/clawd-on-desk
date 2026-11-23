@@ -115,6 +115,41 @@ describe("theme schema validation", () => {
     }
   });
 
+  it("accepts discrete sampling only for object-channel SVGs at 1..60 integer rates", () => {
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({
+      rendering: {
+        objectChannelFiles: ["animated.svg"],
+        discreteSampling: { "animated.svg": 24 },
+      },
+    })), []);
+
+    for (const discreteSampling of [
+      { "animated.svg": 0 },
+      { "animated.svg": 61 },
+      { "animated.svg": -1 },
+      { "animated.svg": 24.5 },
+      { "animated.svg": "24" },
+      { "animated.png": 24 },
+      { "../animated.svg": 24 },
+    ]) {
+      const errors = schema.validateTheme(validThemeJson({
+        rendering: { objectChannelFiles: ["animated.svg"], discreteSampling },
+      }));
+      assert.ok(errors.some((error) => error.includes("rendering.discreteSampling")), JSON.stringify(discreteSampling));
+    }
+
+    // A declared rate on a file that never reaches the object channel is a
+    // silent no-op, so it is rejected; forcing svgChannel=object covers every
+    // file and therefore accepts the same declaration.
+    const unrouted = schema.validateTheme(validThemeJson({
+      rendering: { svgChannel: "auto", discreteSampling: { "animated.svg": 24 } },
+    }));
+    assert.ok(unrouted.some((error) => error.includes("rendering.discreteSampling")));
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({
+      rendering: { svgChannel: "object", discreteSampling: { "animated.svg": 24 } },
+    })), []);
+  });
+
   it("treats sleepSequence.mode=direct as not requiring full sleep art", () => {
     const errors = schema.validateTheme(validThemeJson({
       sleepSequence: { mode: "direct" },
@@ -726,6 +761,30 @@ describe("theme schema defaults and normalization", () => {
     assert.deepStrictEqual(normalized.rendering.objectChannelFiles, ["valid.svg"]);
   });
 
+  it("normalizes discrete sampling to SVG basenames with valid integer rates", () => {
+    const normalized = schema.mergeDefaults(validThemeJson({
+      rendering: {
+        objectChannelFiles: ["animated.svg"],
+        discreteSampling: {
+          "../animated.svg": 24,
+          "animated.svg": 24,
+          "still.png": 12,
+          "zero.svg": 0,
+          "high.svg": 61,
+          "fractional.svg": 24.5,
+        },
+      },
+    }), "external", false);
+
+    assert.deepStrictEqual(normalized.rendering.discreteSampling, { "animated.svg": 24 });
+    assert.strictEqual(
+      schema.mergeDefaults(validThemeJson({ rendering: { discreteSampling: {} } }), "external", false)
+        .rendering.discreteSampling,
+      undefined,
+      "an empty sampling map must stay absent, not become {}"
+    );
+  });
+
   it("collectRequiredAssetFiles returns unique basename-only references", () => {
     const files = schema.collectRequiredAssetFiles({
       states: { idle: ["../idle.svg"], working: ["working.svg"] },
@@ -782,6 +841,12 @@ describe("theme schema defaults and normalization", () => {
     }), []);
     assert.deepStrictEqual(schema.collectRequiredAssetFiles({
       rendering: { objectChannelFiles: {} },
+    }), []);
+    assert.deepStrictEqual(schema.collectRequiredAssetFiles({
+      rendering: { discreteSampling: { "../sampled.svg": 24, "sampled.svg": 24 } },
+    }), ["sampled.svg"]);
+    assert.deepStrictEqual(schema.collectRequiredAssetFiles({
+      rendering: { discreteSampling: 42 },
     }), []);
   });
 

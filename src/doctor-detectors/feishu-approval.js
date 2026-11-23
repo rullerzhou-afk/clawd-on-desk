@@ -41,7 +41,7 @@ function checkFeishuApproval(options = {}) {
     level: "warning",
     reason,
     detail: legacy
-      ? "Saved Feishu/Lark credentials predate platform binding. Open Settings -> Remote Approval, choose Feishu or Lark, save App ID/App Secret again, then save the approver again."
+      ? "Saved Feishu/Lark credentials predate platform binding. Open Settings -> Permissions & approval -> IM channels, choose Feishu or Lark, save App ID/App Secret again, then save the approver again."
       : `Feishu/Lark remote approval is enabled but unavailable: ${(ready && ready.message) || reason}.`,
   };
 }
