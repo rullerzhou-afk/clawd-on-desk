@@ -95,6 +95,8 @@ describe("i18n locales", () => {
         assert.ok(i18n[lang][key].length > 0, `${lang}.${key}`);
       }
       assert.match(i18n[lang].codexHookHealthOptionalNudgeBody, /\/hooks/);
+      // Untrusted Interrupt/SessionEnd hooks leave finished chats in the HUD (#1254).
+      assert.match(i18n[lang].codexHookHealthOptionalNudgeBody, /HUD/);
     }
   });
 
