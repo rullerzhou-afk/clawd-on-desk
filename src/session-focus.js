@@ -97,6 +97,10 @@ function getSessionFocusWtHwnd(session) {
 
 function getSessionFocusTarget(entry, options = {}) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
+  if (entry.agentId === "codex" && entry.codexProfileId
+    && entry.codexProfileId !== "default") {
+    return { canFocus: false, type: null, url: null, reason: "codex-profile-not-active" };
+  }
   if (entry.platform === "webui") return { canFocus: false, type: null, url: null };
 
   // Orca forwards its local pane identity into managed SSH PTYs. That key can

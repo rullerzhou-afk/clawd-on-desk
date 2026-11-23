@@ -10,6 +10,7 @@ const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const CodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const { resolveCodexOfficialHookState } = require("../src/server-codex-official-turns");
 const { makeSessionKey } = require("../src/session-key");
+const { codexProfileIdentity, normalizeCodexProfileConfig } = require("../src/codex-profiles");
 const { digestCodexTurnId } = require("../src/codex-turn-id");
 const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS } = require("../src/state-stale-cleanup");
 const {
@@ -325,6 +326,348 @@ describe("agent-runtime-main", () => {
     assert.ok(!mainSource.includes("CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS"));
     assert.ok(!mainSource.includes("function _deferredStartMonitorForAgent"));
     assert.ok(!mainSource.includes("function _deferredDismissPermissionsByAgent"));
+  });
+
+  it("monitors configured local Codex profiles with isolated session keys and quota sources", () => {
+    const instances = [];
+    const quotas = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const harness = makeRealStateHarness();
+    const classifierSessionIds = [];
+    const home = path.join(os.tmpdir(), "clawd-agent-runtime-profile-test");
+    const personalHome = path.join(home, "personal-codex");
+    const companyHome = path.join(home, ".codex");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home, env: { CODEX_HOME: personalHome } });
+    const bootTimeMs = 1_700_000_000_000;
+    const runtime = createAgentRuntimeMain({
+      codexProfiles,
+      localCodexBootTimeMs: bootTimeMs,
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex", logConfig: { sessionDir: "~/.codex/sessions" } }),
+      codexSubagentClassifier: {
+        registerSession: (sessionId) => { classifierSessionIds.push(sessionId); return "unknown"; },
+        classify: () => "unknown",
+        clear: () => {},
+      },
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      clearCodexNotifyBubbles: () => {},
+    });
+    try {
+      runtime.startCodexLogMonitor();
+      assert.equal(instances.length, 2);
+      assert.deepEqual(instances.map((monitor) => monitor.options.bootTimeMs), [bootTimeMs, bootTimeMs]);
+      assert.equal(instances[0].agent.logConfig.sessionDir, path.join(personalHome, "sessions"));
+      assert.equal(instances[1].agent.logConfig.sessionDir, path.join(companyHome, "sessions"));
+      assert.equal(instances[1].options.codexDir, companyHome);
+
+      const rawSessionId = "codex:shared-session-id";
+      const companyKey = codexProfileIdentity(rawSessionId, codexProfiles[1]).sessionId;
+      instances[1].options.classifier.registerSession(rawSessionId, {});
+      assert.equal(classifierSessionIds[0], companyKey);
+      instances[0].emit(rawSessionId, "thinking", "event_msg:task_started", { turnId: "turn-a" });
+      instances[1].emit(rawSessionId, "thinking", "event_msg:task_started", { turnId: "turn-b" });
+      const personalKey = localSessionKey(rawSessionId);
+      assert.notEqual(personalKey, companyKey);
+      assert.equal(harness.state.sessions.get(personalKey).codexProfileId, undefined);
+      assert.equal(harness.state.sessions.get(companyKey).codexProfileId, "company");
+      assert.equal(harness.state.sessions.get(companyKey).codexProfileLabel, "Company");
+
+      instances[0].emit(rawSessionId, "thinking", "event_msg:token_count", {
+        codexQuota: { codexWeekly: { usedPercent: 10, resetAt: Date.now() + 3600000 } },
+      });
+      instances[1].emit(rawSessionId, "thinking", "event_msg:token_count", {
+        codexQuota: { codexWeekly: { usedPercent: 80, resetAt: Date.now() + 3600000 } },
+      });
+      quotas.push(...harness.state.getAccountQuotaSnapshot());
+      assert.equal(quotas.length, 2);
+      assert.equal(quotas.find((entry) => entry.sourceKey === "").codexQuota.group.codexWeekly.usedPercent, 10);
+      assert.equal(quotas.find((entry) => entry.sourceKey === "codex-profile:company").codexQuota.group.codexWeekly.usedPercent, 80);
+      assert.equal(quotas.find((entry) => entry.sourceKey === "codex-profile:company").host, "Company");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("PR #1196 follow-up: validates official hook keys against the configured Codex profile", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-official-profile-keys");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const { state } = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, getStateRuntime: () => state, updateSession: state.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const personalKey = localSessionKey(rawSessionId);
+    const companyKey = codexProfileIdentity(rawSessionId, codexProfiles[1]).sessionId;
+    const official = { agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId };
+    const prompt = (id, opts) => runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", opts);
+    assert.equal(prompt(personalKey, { ...official, codexProfileId: "unknown", turnId: "unknown" }), false);
+    assert.equal(prompt(personalKey, { ...official, codexProfileId: "company", turnId: "wrong-key" }), false);
+    assert.equal(prompt(companyKey, { ...official, turnId: "wrong-profile" }), false);
+    assert.equal(state.sessions.size, 0);
+    prompt(personalKey, { ...official, turnId: "personal" });
+    prompt(companyKey, { ...official, codexProfileId: "company", turnId: "company" });
+    assert.equal(state.sessions.get(personalKey)?.codexProfileId, undefined);
+    assert.equal(state.sessions.get(companyKey)?.codexProfileId, "company");
+    assert.equal(runtime.getCodexTurnFenceSnapshot(companyKey)?.currentTurnId, "company");
+  });
+
+  it("PR #1196 follow-up: restoring a retired Codex turn preserves its profile and focus restriction", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-exit-profile");
+    const companyHome = path.join(home, "company");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home, env: {} });
+    let alive = true;
+    const { state } = makeRealStateHarness({ ctxOverrides: {
+      processKill: () => {
+        if (alive) return true;
+        throw Object.assign(new Error("synthetic process exit"), { code: "ESRCH" });
+      },
+    } });
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      getStateRuntime: () => state, updateSession: state.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    runtime.startCodexLogMonitor();
+    const monitor = runtime.getCodexMonitors().get("company");
+    const rawId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const { sessionId } = codexProfileIdentity(rawId, codexProfiles[1]);
+    const transcriptPath = path.join(companyHome, "sessions", "rollout.jsonl");
+    const turn = { turnId: "A", transcriptPath };
+    monitor.emit(rawId, "thinking", "event_msg:task_started", {
+      ...turn, sourcePid: 42, agentPid: 42, codexOriginator: "Codex Desktop",
+    });
+    alive = false;
+    state.cleanStaleSessions();
+    assert.equal(state.sessions.has(sessionId), false);
+    assert.equal(state.hasRecoverableCodexProcessExit(sessionId, turn), true);
+    const refreshed = [];
+    for (const [profileId, activeMonitor] of runtime.getCodexMonitors()) {
+      activeMonitor.refreshSubagentsOfParent = (raw) => refreshed.push([profileId, raw]);
+    }
+    monitor.options.onActivity(rawId, "thinking", "event_msg:agent_reasoning", {
+      ...turn, recapOccurredAt: Date.now(),
+    });
+    const entry = state.buildSessionSnapshot().sessions.find((session) => session.id === sessionId);
+    assert.equal(entry?.codexProfileId, "company");
+    assert.equal(entry.codexProfileLabel, "Company");
+    assert.equal(entry.canFocus, false);
+    assert.deepEqual(refreshed, [["company", rawId]]);
+  });
+
+  it("PR #1196 follow-up: delegated activity and terminals stay with the owning profile", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-child-profiles");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const { state } = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      getStateRuntime: () => state, updateSession: state.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    runtime.startCodexLogMonitor();
+    const monitors = runtime.getCodexMonitors();
+    const parent = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const child = "codex:bbbbbbbb-1111-4111-8111-111111111111";
+    const identity = (raw, profile) => codexProfileIdentity(raw, profile).sessionId;
+    const count = (profile) => state.buildSessionSnapshot().sessions
+      .find((entry) => entry.id === identity(parent, profile))?.activeSubagentCount || 0;
+    const childStart = (profile, turnId) => monitors.get(profile.id).options.onSubagentActivity(parent, {
+      phase: "start", childId: child, turnId, occurredAt: Date.now(),
+    });
+    const childHook = (profile, event, turnId) => runtime.updateSessionFromServer(
+      identity(child, profile), event === "UserPromptSubmit" ? "thinking" : "idle", event, {
+        agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId: child,
+        codexProfileId: profile.id, headless: true, turnId,
+      });
+    const calls = [];
+    for (const [id, monitor] of monitors) {
+      monitor.endSubagentTurn = (...args) => calls.push([id, "turn", ...args]);
+      monitor.endSubagent = (raw) => calls.push([id, "child", raw]);
+      monitor.endSubagentsOfParent = (raw) => calls.push([id, "parent", raw]);
+    }
+    const [personal, company] = codexProfiles;
+    childStart(personal, "child");
+    childStart(company, "child");
+    childHook(company, "SessionEnd", "child");
+    for (const profile of codexProfiles) {
+      monitors.get(profile.id).emit(parent, "thinking", "event_msg:task_started", { turnId: "parent" });
+    }
+    assert.equal(count(personal), 1, "ending a child cannot remove another profile's pending child");
+    assert.equal(count(company), 0);
+    assert.deepEqual(calls.splice(0), [["company", "child", child], ["company", "parent", child]]);
+
+    childHook(company, "UserPromptSubmit", "next");
+    childHook(company, "Stop", "next");
+    childStart(company, "next");
+    assert.equal(count(company), 0, "the hook and rollout use the same child turn fence");
+    assert.deepEqual(calls.splice(0), [["company", "turn", child, "next"], ["company", "turn", child, "next"]]);
+
+    childStart(company, "new");
+    assert.equal(count(company), 1);
+    childHook(company, "SessionEnd", "new");
+    assert.equal(count(company), 0);
+    assert.equal(count(personal), 1, "ending a child cannot remove another profile's visible child");
+  });
+
+  it("PR #1196 follow-up: archive evidence revokes only the owning Codex profile's retired turn", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-retired-archive-profiles");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    let alive = true;
+    const { state } = makeRealStateHarness({ ctxOverrides: {
+      processKill: () => {
+        if (alive) return true;
+        throw Object.assign(new Error("synthetic process exit"), { code: "ESRCH" });
+      },
+    } });
+    const runtime = createAgentRuntimeMain({
+      codexProfiles, loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      getStateRuntime: () => state, updateSession: state.updateSession,
+      loadCodexArchiveTracker: () => (options) => options,
+    });
+    t.after(() => { runtime.cleanup(); state.cleanup(); });
+    runtime.startCodexLogMonitor();
+    const [personal, company] = codexProfiles;
+    const sharedId = "aaaaaaaa-1111-4111-8111-111111111111";
+    const companyOnlyId = "bbbbbbbb-1111-4111-8111-111111111111";
+    const start = (profile, id) => {
+      const rawId = `codex:${id}`;
+      const transcriptPath = path.join(profile.home, "sessions", `rollout-${id}.jsonl`);
+      const monitor = runtime.getCodexMonitors().get(profile.id);
+      monitor.emit(rawId, "thinking", "event_msg:task_started", {
+        turnId: "A", transcriptPath, agentPid: 42, sourcePid: 42,
+      });
+      return { monitor, rawId, transcriptPath, turnId: "A", ...codexProfileIdentity(rawId, profile) };
+    };
+    const personalTurn = start(personal, sharedId);
+    const companyTurn = start(company, sharedId);
+    start(company, companyOnlyId);
+    alive = false;
+    state.cleanStaleSessions();
+    assert.equal(state.sessions.size, 0);
+    const trackers = runtime.getCodexArchiveTrackers();
+    assert.deepEqual(trackers.get("default").getLiveCandidateIds(), [sharedId]);
+    assert.deepEqual(new Set(trackers.get("company").getLiveCandidateIds()), new Set([sharedId, companyOnlyId]));
+
+    assert.equal(trackers.get("company").onArchiveConfirmed(sharedId), true);
+    assert.equal(state.hasRecoverableCodexProcessExit(companyTurn.sessionId, companyTurn), false);
+    assert.equal(runtime.getCodexTurnFenceSnapshot(companyTurn.sessionId), null);
+    assert.equal(state.hasRecoverableCodexProcessExit(personalTurn.sessionId, personalTurn), true);
+    assert.equal(runtime.getCodexTurnFenceSnapshot(personalTurn.sessionId)?.currentTurnId, "A");
+    for (const turn of [companyTurn, personalTurn]) {
+      turn.monitor.options.onActivity(turn.rawId, "thinking", "event_msg:agent_reasoning", {
+        turnId: turn.turnId, transcriptPath: turn.transcriptPath, recapOccurredAt: Date.now(),
+      });
+    }
+    assert.equal(state.sessions.has(companyTurn.sessionId), false);
+    assert.equal(state.sessions.has(personalTurn.sessionId), true);
+  });
+
+  it("PR #1196 follow-up: the default archive tracker resolves a relative CODEX_HOME itself", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-archive-home");
+    const env = { CODEX_HOME: " codex-dev " };
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env });
+    const createTracker = require("../src/codex-archive-tracker");
+    for (const override of [undefined, path.join(home, "override")]) {
+      const inputs = [];
+      const runtime = createAgentRuntimeMain({
+        codexProfiles,
+        loadCodexArchiveTracker: () => (options) => {
+          inputs.push(options);
+          return { codexHome: createTracker(options).codexHome };
+        },
+        codexArchiveOptions: {
+          resolveCodexHome: () => createTracker.resolveCodexHome(env, () => home),
+          ...(override ? { codexHome: override } : {}),
+        },
+      });
+      t.after(runtime.cleanup);
+      assert.equal(runtime.startCodexArchiveTracker().codexHome, override || "codex-dev");
+      assert.equal(Object.hasOwn(inputs[0], "codexHome"), override !== undefined);
+      assert.equal(inputs[1].codexHome, codexProfiles[1].home);
+    }
+  });
+
+  it("retires archived sessions only from the owning local Codex profile", () => {
+    const instances = [];
+    const archiveTrackers = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const harness = makeRealStateHarness();
+    const home = path.join(os.tmpdir(), "clawd-codex-archive-profiles");
+    const personalHome = path.join(home, ".codex");
+    const companyHome = path.join(home, "company-codex");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home, env: {} });
+    const runtime = createAgentRuntimeMain({
+      codexProfiles,
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      loadCodexArchiveTracker: () => (options) => {
+        const tracker = {
+          ...options,
+          start() {},
+          stop() {},
+          isArchived: () => false,
+          confirm: (rawSessionId) => options.onArchiveConfirmed(rawSessionId),
+        };
+        archiveTrackers.push(tracker);
+        return tracker;
+      },
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    try {
+      runtime.startCodexLogMonitor();
+      const rawSessionId = "codex:shared-archive-id";
+      const personalKey = localSessionKey(rawSessionId);
+      const companyIdentity = codexProfileIdentity(rawSessionId, codexProfiles[1]);
+      const update = (sessionId, profile) => runtime.updateSessionFromServer(
+        sessionId,
+        "working",
+        "UserPromptSubmit",
+        {
+          agentId: "codex",
+          hookSource: "codex-official",
+          profileId: "local",
+          rawSessionId,
+          transcriptPath: profile.id === "default"
+            ? path.join(personalHome, "sessions", "personal.jsonl")
+            : path.join(companyHome, "sessions", "company.jsonl"),
+          ...(profile.id === "default"
+            ? {}
+            : { codexProfileId: profile.id, codexProfileLabel: profile.label }),
+        }
+      );
+      update(personalKey, codexProfiles[0]);
+      update(companyIdentity.sessionId, codexProfiles[1]);
+      assert.ok(harness.state.sessions.has(personalKey));
+      assert.ok(harness.state.sessions.has(companyIdentity.sessionId));
+
+      const companyTracker = archiveTrackers.find((tracker) => tracker.codexHome === codexProfiles[1].home);
+      companyTracker.confirm("shared-archive-id");
+      assert.ok(harness.state.sessions.has(personalKey));
+      assert.equal(harness.state.sessions.has(companyIdentity.sessionId), false);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
   });
 
   it("marks official Codex sessions and suppresses covered JSONL events until the TTL expires", () => {
@@ -821,7 +1164,13 @@ describe("agent-runtime-main", () => {
     const calls = [];
     const classifier = { classify: () => null };
     const FakeMonitor = makeFakeMonitorClass(instances);
+    const home = path.join(os.tmpdir(), "clawd-codex-jsonl-callbacks");
+    const codexProfiles = normalizeCodexProfileConfig(null, {
+      home,
+      env: {},
+    });
     const runtime = createAgentRuntimeMain({
+      codexProfiles,
       loadCodexLogMonitor: () => FakeMonitor,
       loadCodexAgent: () => ({ id: "codex" }),
       codexSubagentClassifier: classifier,
@@ -834,7 +1183,8 @@ describe("agent-runtime-main", () => {
 
     assert.equal(monitor, instances[0]);
     assert.equal(monitor.started, 1);
-    assert.deepStrictEqual(monitor.agent, { id: "codex" });
+    assert.equal(monitor.agent.id, "codex");
+    assert.equal(monitor.agent.logConfig.sessionDir, path.join(home, ".codex", "sessions"));
     assert.notEqual(monitor.options.classifier, classifier);
 
     monitor.emit("sid", "working", "response_item:web_search_call", {
@@ -947,6 +1297,55 @@ describe("agent-runtime-main", () => {
     assert.ok(recapOnly.every((input) => !Object.hasOwn(input, "recapIsWebSearch")));
   });
 
+  it("scopes late WebSearch-only recaps to their owning local Codex profile", () => {
+    const instances = [];
+    const recaps = [];
+    const home = path.join(os.tmpdir(), "clawd-codex-late-search-profiles");
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const runtime = createAgentRuntimeMain({
+      codexProfiles: profiles,
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => ({
+        recordRecapEventOnly: (recap) => { recaps.push(recap); return true; },
+      }),
+      updateSession: () => {},
+    });
+    try {
+      runtime.startCodexLogMonitor();
+      assert.equal(instances.length, 2);
+      const rawSessionId = "codex:shared-websearch";
+      profiles.forEach((profile, index) => {
+        const identity = codexProfileIdentity(rawSessionId, profile);
+        const options = {
+          agentId: "codex",
+          hookSource: "codex-official",
+          profileId: "local",
+          rawSessionId,
+          codexProfileId: profile.id,
+          turnId: "same-turn",
+        };
+        runtime.updateSessionFromServer(identity.sessionId, "thinking", "UserPromptSubmit", options);
+        runtime.updateSessionFromServer(identity.sessionId, "attention", "Stop", options);
+        instances[index].emit(rawSessionId, "working", "response_item:web_search_call", {
+          turnId: "same-turn",
+          recapOccurredAt: 1234,
+          toolUseId: "same-websearch-call",
+        });
+      });
+      assert.deepEqual(recaps.map((entry) => entry.codexProfileId), [null, "company"]);
+      assert.equal(recaps[0].rawSessionId, recaps[1].rawSessionId);
+      assert.equal(recaps[0].toolUseId, recaps[1].toolUseId);
+      assert.notEqual(recaps[0].sessionId, recaps[1].sessionId);
+    } finally {
+      runtime.cleanup();
+    }
+  });
+
   it("shares canonical classifier identity from local JSONL to official hooks without leaking to remote profiles", () => {
     const instances = [];
     const classifier = new CodexSubagentClassifier();
@@ -981,6 +1380,65 @@ describe("agent-runtime-main", () => {
       resolveCodexOfficialHookState(payload, "idle", new Map(), classifier, remoteId),
       { state: "idle", drop: false }
     );
+  });
+
+  for (const start of ["startCodexLogMonitor", "startMonitorForAgent"]) {
+    it(`PR #1196 follow-up: ${start} isolates a failing Codex scan and starts the archive trackers`, (t) => {
+      const home = path.join(os.tmpdir(), "clawd-codex-start-isolation");
+      const codexProfiles = normalizeCodexProfileConfig({
+        profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+      }, { home, env: {} });
+      const started = [];
+      const warnings = [];
+      let archivesStarted = 0;
+      class Monitor {
+        constructor(agent) { this.dir = agent.logConfig.sessionDir; }
+        start() {
+          started.push(this.dir);
+          if (this.dir === path.join(codexProfiles[0].home, "sessions")) throw new Error("scan failed");
+        }
+        stop() {}
+      }
+      const runtime = createAgentRuntimeMain({
+        codexProfiles,
+        loadCodexLogMonitor: () => Monitor,
+        loadCodexArchiveTracker: () => () => ({ start: () => archivesStarted++ }),
+        logWarn: (...args) => warnings.push(args.join(" ")),
+      });
+      t.after(runtime.cleanup);
+      assert.doesNotThrow(() => runtime[start]("codex"));
+      assert.deepEqual(started, codexProfiles.map((profile) => path.join(profile.home, "sessions")));
+      assert.equal(archivesStarted, 2);
+      assert.match(warnings[0], /Codex.*scan failed/);
+    });
+  }
+
+  it("PR #1196 follow-up: enabling Codex retries profiles that failed to construct", (t) => {
+    const home = path.join(os.tmpdir(), "clawd-codex-construction-retry");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const instances = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    let attempts = 0;
+    const runtime = createAgentRuntimeMain({
+      codexProfiles,
+      loadCodexLogMonitor: () => {
+        if (++attempts === 1) throw new Error("load failed");
+        return FakeMonitor;
+      },
+      logWarn: () => {},
+    });
+    t.after(runtime.cleanup);
+    runtime.startCodexLogMonitor();
+    const company = runtime.getCodexMonitors().get("company");
+    assert.ok(company);
+    assert.equal(runtime.getCodexMonitors().has("default"), false);
+    runtime.stopMonitorForAgent("codex");
+    runtime.startMonitorForAgent("codex");
+    assert.equal(runtime.getCodexMonitors().get("default")?.started, 1);
+    assert.equal(runtime.getCodexMonitors().get("company"), company);
+    assert.equal(company.started, 2);
   });
 
   it("starts and stops the Codex monitor through agent gate hooks and cleanup", () => {

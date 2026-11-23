@@ -52,6 +52,50 @@ describe("CodexLogMonitor", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("PR #1196 follow-up: reads rollouts from both Codex homes without opening auth or token files", (t) => {
+    const companyHome = path.join(tmpDir, "company-home");
+    const companySessions = path.join(companyHome, "sessions");
+    const companyDay = new Date();
+    const companyDateDir = path.join(
+      companySessions,
+      String(companyDay.getFullYear()),
+      String(companyDay.getMonth() + 1).padStart(2, "0"),
+      String(companyDay.getDate()).padStart(2, "0")
+    );
+    fs.mkdirSync(companyDateDir, { recursive: true });
+    const rollout = '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n';
+    const rolloutPaths = [path.join(dateDir, TEST_FILENAME), path.join(companyDateDir, DESKTOP_TURN_FILENAME)];
+    for (const file of rolloutPaths) fs.writeFileSync(file, rollout);
+    for (const home of [tmpDir, companyHome]) {
+      fs.writeFileSync(path.join(home, "auth.json"), '{"access_token":"must-not-read"}');
+      fs.writeFileSync(path.join(home, "tokens.json"), '{"secret":"must-not-read"}');
+    }
+    const accessed = [];
+    const originalOpen = fs.openSync;
+    const originalReadFile = fs.readFileSync;
+    t.mock.method(fs, "openSync", function trackedOpen(file, ...args) {
+      accessed.push(String(file));
+      return originalOpen.call(fs, file, ...args);
+    });
+    t.mock.method(fs, "readFileSync", function trackedRead(file, ...args) {
+      accessed.push(String(file));
+      return originalReadFile.call(fs, file, ...args);
+    });
+    const monitors = [
+      new CodexLogMonitor(makeConfig(tmpDir), () => {}),
+      new CodexLogMonitor(makeConfig(companySessions), () => {}),
+    ];
+    try {
+      monitors.forEach((instance) => instance.start());
+      for (const file of rolloutPaths) assert.ok(accessed.includes(file), `rollout was not read: ${file}`);
+      assert.equal(accessed.some((file) =>
+        ["auth.json", "tokens.json"].includes(path.basename(file))), false,
+      "neither profile scanner may open auth or token data");
+    } finally {
+      monitors.forEach((instance) => instance.stop());
+    }
+  });
+
   it("should extract session ID from filename", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');

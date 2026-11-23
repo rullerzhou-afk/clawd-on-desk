@@ -11,6 +11,9 @@ const {
   classifyPermissionInteraction,
 } = require("../src/permission-automation-policy");
 const createSettingsEffectRouter = require("../src/settings-effect-router");
+const createAgentRuntimeMain = require("../src/agent-runtime-main");
+const { normalizeCodexProfileConfig } = require("../src/codex-profiles");
+const { getSessionFocusTarget, mergeSessionFocusEntry } = require("../src/session-focus");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 const tempLogPaths = new Set();
@@ -296,6 +299,49 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(api.pendingPermissions.length, 0);
     assert.strictEqual(harness.focused.length, 1);
     assert.strictEqual(harness.focused[0][0], "codex-a");
+  });
+
+  it("PR #1196 follow-up: an extra-profile question card dismisses without requesting focus", (t) => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    const home = path.join(os.tmpdir(), "clawd-codex-question-profiles");
+    const codexProfiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    class Monitor {
+      constructor(_agent, _callback, options) { this.onUserInputRequest = options.onUserInputRequest; }
+      start() {}
+      stop() {}
+    }
+    const runtime = createAgentRuntimeMain({
+      codexProfiles,
+      loadCodexLogMonitor: () => Monitor,
+      showCodexUserInputBubble: api.showCodexUserInputBubble,
+    });
+    t.after(() => { runtime.cleanup(); api.cleanup(); });
+    runtime.startCodexLogMonitor();
+    for (const profile of codexProfiles) {
+      runtime.getCodexMonitors().get(profile.id).onUserInputRequest(
+        "codex:aaaaaaaa-1111-4111-8111-111111111111",
+        { callId: "q", questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] },
+        { sourcePid: 42 },
+      );
+      const entry = api.pendingPermissions[0];
+      const payload = api.buildPermissionBubblePayload(entry);
+      api.handleDecide({ sender: { __window: entry.bubble } }, "codex-user-input-focus");
+      assert.strictEqual(api.pendingPermissions.length, 0);
+      if (profile.isDefault) {
+        assert.notStrictEqual(payload.nativeQuestionFocusUnavailable, true);
+        const [id, { fallbackEntry }] = harness.focused.pop();
+        const focus = getSessionFocusTarget(mergeSessionFocusEntry(null, fallbackEntry, id), { osPlatform: "darwin" });
+        assert.strictEqual(Object.hasOwn(fallbackEntry, "codexProfileId"), false);
+        assert.strictEqual(focus.type, "terminal");
+      } else {
+        assert.strictEqual(entry.codexProfileId, profile.id);
+        assert.strictEqual(payload.nativeQuestionFocusUnavailable, true);
+        assert.deepStrictEqual(harness.focused, []);
+      }
+    }
   });
 
   it("turns a stale Codex question expansion request into native focus", () => {

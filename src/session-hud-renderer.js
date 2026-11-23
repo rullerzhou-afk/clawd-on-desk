@@ -310,7 +310,10 @@ function createRowForSession(session, now) {
   }
 
   const title = document.createElement("span");
-  const fullTitle = titleFor(session);
+  const sessionTitle = titleFor(session);
+  const fullTitle = session.codexProfileLabel
+    ? `${session.codexProfileLabel} · ${sessionTitle}`
+    : sessionTitle;
   const shortTitle = shortenHudTitle(fullTitle);
   title.className = feedbackText ? "title session-inline-feedback" : "title";
   const fallbackTag = !feedbackText && taggedFallbackTag(session);

@@ -56,6 +56,7 @@ const { createClaudeToolPhaseLedger } = require("./claude-tool-phase");
 const { classifyPermissionInteraction, INTERACTION_INTENT } = require("./permission-automation-policy");
 const { getStartupRecoveryProcessNames } = require("../agents/registry");
 const { normalizeCodexTurnId } = require("./codex-turn-id");
+const { DEFAULT_CODEX_PROFILE_ID, isValidCodexProfileId, normalizeProfileLabel } = require("./codex-profiles");
 const { TERMINAL_EVENTS: CODEX_TERMINAL_EVENTS } = require("./codex-turn-fence");
 const { hasReusableDefaultIdentity, mapRecapMetrics } = require("./recap-metrics");
 const {
@@ -84,6 +85,23 @@ function normalizeGhosttyTerminalId(value) {
   if (!text || text.length > 160) return null;
   if (/^(error|unsupported|missing|miss)([-:]|$)/i.test(text)) return null;
   return text;
+}
+
+function normalizeLocalCodexProfileFields(input = {}, existing = null) {
+  if (input.agentId !== "codex" || (input.profileId || "local") !== "local"
+    || input.host || input.wslDistro) return {};
+  const candidateId = typeof input.codexProfileId === "string" ? input.codexProfileId.trim() : "";
+  const existingId = existing && typeof existing.codexProfileId === "string"
+    ? existing.codexProfileId
+    : "";
+  const profileId = isValidCodexProfileId(candidateId)
+    ? candidateId
+    : (isValidCodexProfileId(existingId) ? existingId : DEFAULT_CODEX_PROFILE_ID);
+  if (profileId === DEFAULT_CODEX_PROFILE_ID) return {};
+  const profileLabel = normalizeProfileLabel(input.codexProfileLabel)
+    || normalizeProfileLabel(existing && existing.codexProfileLabel)
+    || profileId;
+  return { codexProfileId: profileId, codexProfileLabel: profileLabel };
 }
 
 function normalizePositiveInteger(value) {
@@ -269,11 +287,13 @@ function hasRecoverableCodexProcessExit(sessionId, opts = {}) {
 // This prunes expired records first (without extending retention) and hands the
 // ids to archive scanning, so confirmed archive evidence revokes recovery;
 // otherwise unarchive could let the old turn restore its row.
-function listRecoverableCodexRawSessionIds() {
+function listRecoverableCodexRawSessionIds(codexProfileId = DEFAULT_CODEX_PROFILE_ID) {
   pruneCodexProcessExitRecovery();
   const ids = [];
   for (const entry of codexProcessExitRecovery.values()) {
-    const raw = entry && entry.metadata && entry.metadata.rawSessionId;
+    const metadata = entry?.metadata;
+    if ((metadata?.codexProfileId || DEFAULT_CODEX_PROFILE_ID) !== codexProfileId) continue;
+    const raw = metadata?.rawSessionId;
     if (typeof raw === "string" && raw) ids.push(raw);
   }
   return ids;
@@ -328,7 +348,8 @@ function rememberCodexProcessExit(sessionId, session) {
   pruneCodexProcessExitRecovery();
   const metadata = {};
   for (const key of ["agentId", "profileId", "rawSessionId", "cwd", "transcriptPath",
-    "platform", "provider", "model", "codexOriginator", "codexSource", "codexClientEphemeral"]) {
+    "platform", "provider", "model", "codexOriginator", "codexSource", "codexClientEphemeral",
+    "codexProfileId", "codexProfileLabel"]) {
     if (session[key] !== undefined) metadata[key] = session[key];
   }
   if (session.sessionTitleFromPrompt !== true) metadata.sessionTitle = session.sessionTitle || null;
@@ -347,6 +368,7 @@ const claudeToolPhases = createClaudeToolPhaseLedger();
 // filesystem-free; main.js passes the real path.
 const accountQuota = createAccountQuotaStore({
   persistPath: ctx.accountQuotaPersistPath || null,
+  codexProfiles: ctx.codexProfiles,
   logWarn: console.warn,
 });
 // Upgrade cleanup: older builds retained the last local Claude quota even
@@ -1480,6 +1502,13 @@ function resolveRecapScopeId(input) {
   const scope = resolveRecapScope(input);
   if (scope === "remote") return input.profileId;
   if (scope === "wsl") return input.wslDistro || "wsl";
+  // The journal HMACs the ephemeral scope/session/dedupe identifiers before
+  // persisting them. Keep the legacy default scope exactly as before, but
+  // isolate additional local Codex profiles sharing upstream raw IDs.
+  if (input && input.agentId === "codex" && input.codexProfileId
+    && input.codexProfileId !== DEFAULT_CODEX_PROFILE_ID) {
+    return `codex-profile:${input.codexProfileId}`;
+  }
   return "local";
 }
 
@@ -2458,6 +2487,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
     rawSessionId: session.rawSessionId || sessionId,
     agentId: session.agentId,
     profileId: session.profileId || "local",
+    codexProfileId: session.codexProfileId || null,
     host: session.host || null,
     wslDistro: session.wslDistro || null,
     event: "Stop",
@@ -2683,6 +2713,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     provider = null,
     codexOriginator = null,
     codexSource = null,
+    codexProfileId = null,
+    codexProfileLabel = null,
     dshCarrier = null,
     codebuddyClient = null,
     ghosttyTerminalId = null,
@@ -2792,6 +2824,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       rawSessionId: (sessionForPerm && sessionForPerm.rawSessionId) || rawSessionId || sessionId,
       agentId: permAgentId,
       profileId: (sessionForPerm && sessionForPerm.profileId) || profileId || "local",
+      codexProfileId: (sessionForPerm && sessionForPerm.codexProfileId) || codexProfileId || null,
       host: host || (sessionForPerm && sessionForPerm.host) || null,
       wslDistro: wslDistro || (sessionForPerm && sessionForPerm.wslDistro) || null,
       event,
@@ -2859,6 +2892,14 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcProvider = provider || (existing && existing.provider) || null;
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
+      const srcCodexProfile = normalizeLocalCodexProfileFields({
+        agentId: srcAgentId,
+        profileId: (existing && existing.profileId) || profileId,
+        host: srcHost,
+        wslDistro: srcWslDistro,
+        codexProfileId,
+        codexProfileLabel,
+      }, existing);
       const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
       const {
         title: srcSessionTitle,
@@ -2910,6 +2951,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         provider: srcProvider,
         codexOriginator: srcCodexOriginator,
         codexSource: srcCodexSource,
+        ...srcCodexProfile,
         codexClientEphemeral: mergeCodexClientEphemeral(existing, opts),
         codebuddyClient: (existing && typeof existing.codebuddyClient === "string" ? existing.codebuddyClient : null),
         ghosttyTerminalId: srcGhosttyTerminalId,
@@ -3024,6 +3066,14 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcProvider = provider || (existing && existing.provider) || null;
   const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
   const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
+  const srcCodexProfile = normalizeLocalCodexProfileFields({
+    agentId: srcAgentId,
+    profileId: (existing && existing.profileId) || profileId,
+    host: srcHost,
+    wslDistro: srcWslDistro,
+    codexProfileId,
+    codexProfileLabel,
+  }, existing);
   // Deliberately NOT sticky like codexOriginator: each lifecycle event states
   // its own carrier, so a missing value clears it. A DSH session can be
   // reopened in the other carrier (or a stale field can appear without one),
@@ -3266,6 +3316,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId,
       agentId: srcAgentId,
       profileId: (existing && existing.profileId) || profileId || "local",
+      codexProfileId: srcCodexProfile.codexProfileId || null,
       host: srcHost,
       wslDistro: srcWslDistro,
       event,
@@ -3393,7 +3444,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     opencodeAttachUrl === undefined && existing && existing.opencodeAttachSource === attachSource
       ? existing.opencodeAttachUrl : opencodeAttachUrl
   ) : null;
-  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), codebuddyClient: srcCodebuddyClient, dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
+  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, ...srcCodexProfile, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), codebuddyClient: srcCodebuddyClient, dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
   // Desktop apps can reopen a previous conversation on launch, so a start event
   // (see SESSION_START_EVENTS — "SessionStart", Copilot's raw "sessionStart",
   // Kiro's "agentSpawn") only means "opened" — not "used". A repeated start does
@@ -3501,7 +3552,8 @@ function updateSession(sessionId, state, event, opts = {}) {
       // Only children present before this SessionEnd can settle a deferred cue;
       // an unrelated child must not settle a parent whose evidence expired.
       const activeParents = [...deferredCodexCompletionCues].filter(id => codexSubagentPresentation.has(id));
-      codexSubagentPresentation.endChild(rawSessionId || endingSession?.rawSessionId || sessionId);
+      codexSubagentPresentation.endChild(rawSessionId || endingSession?.rawSessionId || sessionId,
+        srcCodexProfile.codexProfileId);
       for (const id of activeParents) {
         if (codexSubagentPresentation.has(id)) continue;
         deferredCodexCompletionCues.delete(id);

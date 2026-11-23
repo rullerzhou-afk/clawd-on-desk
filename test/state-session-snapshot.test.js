@@ -845,6 +845,38 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get(scopedCodexSessionId).codexSource, "vscode");
   });
 
+  it("labels extra local Codex profiles and disables account-ambiguous focus targets", () => {
+    const rawSessionId = "codex:shared-raw-id";
+    const personalId = makeSessionKey({ profileId: "local", rawSessionId });
+    const companyId = makeSessionKey({
+      profileId: "local",
+      rawSessionId: `codex-profile:company:${rawSessionId}`,
+    });
+    const snapshot = buildSessionSnapshot(new Map([
+      [personalId, session("working", { agentId: "codex", rawSessionId, sourcePid: 123 })],
+      [companyId, session("working", {
+        agentId: "codex",
+        rawSessionId,
+        codexProfileId: "company",
+        codexProfileLabel: "Company",
+        codexOriginator: "codex_work_desktop",
+        sourcePid: 123,
+      })],
+    ]), { focusHostPlatform: "darwin" });
+    const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+
+    assert.equal(byId.get(personalId).canFocus, true);
+    assert.equal(byId.get(companyId).codexProfileLabel, "Company");
+    assert.equal(byId.get(companyId).canFocus, false);
+    assert.equal(byId.get(companyId).focusTarget, null);
+    assert.notEqual(sessionSnapshotSignature(snapshot), sessionSnapshotSignature(buildSessionSnapshot(new Map([
+      [personalId, session("working", { agentId: "codex", rawSessionId, sourcePid: 123 })],
+      [companyId, session("working", {
+        agentId: "codex", rawSessionId, codexProfileId: "company", codexProfileLabel: "Work", sourcePid: 123,
+      })],
+    ]), { focusHostPlatform: "darwin" })));
+  });
+
   it("passes the reason a Linux terminal cannot be focused on to the renderers", () => {
     const saved = { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP };
     process.env.XDG_SESSION_TYPE = "wayland";

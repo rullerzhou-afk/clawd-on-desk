@@ -55,6 +55,7 @@ const {
   opencodeFamilyBridgeTokensEqual,
 } = require("./opencode-family-permission-identity");
 const { resolveSessionIdentity } = require("./session-key");
+const { codexProfileIdentity, resolveExtraCodexHookProfile } = require("./codex-profiles");
 const {
   assessSessionAutomationIdentity,
 } = require("./session-automation-identity");
@@ -163,12 +164,13 @@ function shouldBypassDshBubble(ctx) {
   return !ctx.isAgentPermissionsEnabled("deepseek-harness");
 }
 
-function shouldInterceptCodexPermission(ctx, data) {
+function shouldInterceptCodexPermission(ctx, data, codexProfile) {
   if (typeof ctx.getCodexPermissionMode === "function") {
     const mode = ctx.getCodexPermissionMode();
     if (mode === "intercept") return true;
     if (mode !== "auto") return false;
-    return resolveCodexApprovalRoute(data).owner === "clawd";
+    const options = codexProfile && !codexProfile.isDefault ? { codexHome: codexProfile.home } : undefined;
+    return resolveCodexApprovalRoute(data, options).owner === "clawd";
   }
   // Old callers can still supply the explicit interception gate. With no
   // authoritative settings reader, preserve Codex ownership.
@@ -939,6 +941,7 @@ function handlePermissionPost(req, res, options) {
     // A WSL hook reports Linux PIDs that can alias live processes on this
     // Windows host, so they are stripped exactly like Remote SSH metadata.
     const wslSourced = isWslSourced({ wslDistro: data.wsl_distro, host: data.host });
+    const codexProfile = resolveExtraCodexHookProfile(ctx, data, { agentId, remoteProfile, wslSourced });
     // Intentional exception to the WSL PID strip: per-session automation
     // eligibility only strips Remote SSH, never WSL, to preserve the pre-fix
     // user-visible automation. Its trust therefore ends on session timeout,
@@ -960,14 +963,16 @@ function handlePermissionPost(req, res, options) {
       codexSource: data.codex_source,
       agentPid: automationAgentPid,
     });
-    const resolvePermissionSession = (value, fallback) =>
-      resolveSessionIdentity(value, trustedProfileId, fallback);
+    const resolvePermissionSession = (value, fallback) => codexProfile
+      ? codexProfileIdentity(value, codexProfile, fallback)
+      : resolveSessionIdentity(value, trustedProfileId, fallback);
     // The route owns this identity: callers cannot choose the profile, and the
     // raw id must survive canonical Map-key normalization on both local and
     // remote requests. The display host remains remote-only.
     const trustedSessionFields = (sessionIdentity) => ({
       profileId: sessionIdentity.profileId,
       rawSessionId: sessionIdentity.rawSessionId,
+      ...(codexProfile ? { codexProfileId: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(trustedProfileId !== "local" && trustedDisplayHost ? { host: trustedDisplayHost } : {}),
     });
 
@@ -1444,6 +1449,7 @@ function handlePermissionPost(req, res, options) {
           && ctx.shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
             agentId: "codex",
             profileId: trustedProfileId,
+            ...(codexProfile ? { codexProfileId: codexProfile.id } : {}),
             host: trustedDisplayHost || normalizeString(data.host),
             wslDistro: normalizeString(data.wsl_distro),
           })) {
@@ -1619,7 +1625,7 @@ function handlePermissionPost(req, res, options) {
 
         const codexBubbleBypass = shouldBypassCodexBubble(ctx);
         const codexClaimShape = isCodexAutomationClaimShape(ctx, data);
-        if (!shouldInterceptCodexPermission(ctx, data) && (!codexClaimShape || codexBubbleBypass)) {
+        if (!shouldInterceptCodexPermission(ctx, data, codexProfile) && (!codexClaimShape || codexBubbleBypass)) {
           sendCodexNativePermissionFallback("native permission mode");
           return;
         }
@@ -1685,7 +1691,7 @@ function handlePermissionPost(req, res, options) {
         });
         if (codexAutomationClaim) {
           ctx.permLog(`codex auto mode: global automation claims delegated request (tool=${toolName})`);
-        } else if (!shouldInterceptCodexPermission(ctx, data)) {
+        } else if (!shouldInterceptCodexPermission(ctx, data, codexProfile)) {
           sendCodexNativePermissionFallback("native permission mode");
           return;
         }

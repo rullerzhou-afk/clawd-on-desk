@@ -144,6 +144,7 @@ function translations() {
     sessionFocusUnavailableRemote: "Remote sessions cannot focus a terminal on this computer.",
     sessionFocusUnavailableWebui: "WebUI sessions do not have a local terminal window.",
     sessionFocusUnavailableMissingTerminalInfo: "This session did not provide terminal window information.",
+    sessionFocusUnavailableCodexProfile: "Switch to this profile in Codex before opening the session.",
     sessionOpenFolderFailed: "Could not open folder: {reason}",
     sessionOpenFolderUnavailable: "This folder is no longer available.",
     sessionJustNow: "now",
@@ -744,6 +745,21 @@ test("HUD unfocusable click explains why and offers folder only for local non-we
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
 });
 
+test("HUD labels additional Codex profiles and keeps their cards display-only", async () => {
+  const { root } = await loadHud([
+    session("company-session", {
+      agentId: "codex",
+      displayTitle: "Build",
+      codexProfileId: "company",
+      codexProfileLabel: "Company",
+      canFocus: false,
+    }),
+  ]);
+  assert.strictEqual(byClass(root, "title")[0].textContent, "Company · Build");
+  assert.strictEqual(byClass(root, "row-unfocusable")[0].title,
+    "Switch to this profile in Codex before opening the session.");
+});
+
 test("HUD folder click sends only id and exposes open failure", async () => {
   const { root, openCalls } = await loadHud([session("local")], { status: "not-available" });
   await byClass(root, "open-folder-button")[0].dispatch("click");
@@ -792,6 +808,7 @@ test("unfocusable and folder feedback copy exists in all supported languages", (
     "sessionFocusUnavailableRemote",
     "sessionFocusUnavailableWebui",
     "sessionFocusUnavailableMissingTerminalInfo",
+    "sessionFocusUnavailableCodexProfile",
   ];
   for (const lang of SUPPORTED_LANGS) {
     for (const key of keys) assert.ok(i18n[lang][key], `${lang}.${key} is required`);

@@ -58,6 +58,13 @@ describe("session alias helpers", () => {
     assert.strictEqual(b, "profile:profile-b|shared-host|codex|same-raw");
   });
 
+  it("isolates aliases for local Codex profiles that share a raw session id", () => {
+    const personal = sessionAliasKey(null, "codex", "same-raw");
+    const company = sessionAliasKey(null, "codex", "same-raw", { codexProfileId: "company" });
+    assert.notEqual(personal, company);
+    assert.equal(company, "codex-profile:company|local|codex|same-raw");
+  });
+
   it("adds cwd scope for Kiro's reusable default session id", () => {
     assert.strictEqual(
       sessionAliasKey(null, "kiro-cli", "default", { cwd: "/repo/a" }),

@@ -197,6 +197,7 @@ const { startMobilePreviewServerSafely } = require("./network/mobile-preview-lif
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
+const { loadCodexProfiles } = require("./codex-profiles");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
 const { createRendererConfigChannel } = require("./renderer-config-channel");
@@ -2417,6 +2418,7 @@ function getPendingPermissionFocusEntry(sessionId) {
   if (entry.model) focusEntry.model = entry.model;
   if (entry.codexOriginator) focusEntry.codexOriginator = entry.codexOriginator;
   if (entry.codexSource) focusEntry.codexSource = entry.codexSource;
+  if (entry.codexProfileId) focusEntry.codexProfileId = entry.codexProfileId;
   return focusEntry;
 }
 
@@ -2558,12 +2560,14 @@ const recapRuntime = createRecapRuntime({
   onRecorded: () => settingsWindowRuntime.notifyRecapChanged(),
 });
 
+const codexProfiles = loadCodexProfiles({ logWarn: console.warn });
 const _stateCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get hitWin() { return hitWin; },
   // Last-known account quota survives app restarts (state-account-quota.js).
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
+  codexProfiles,
   recapSink: recapRuntime,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
   get deepseekBalanceCollectionEnabled() { return deepseekBalanceCollectionEnabled; },
@@ -3284,6 +3288,7 @@ agentRuntime = createAgentRuntimeMain({
   // not prove a Codex client has started again in this boot. Null means no
   // boundary (uptime unavailable) and must not block startup.
   localCodexBootTimeMs: estimateHostBootTimeMs(),
+  codexProfiles,
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
@@ -3314,6 +3319,9 @@ const _serverCtx = {
   get PASSTHROUGH_TOOLS() { return PASSTHROUGH_TOOLS; },
   get STATE_SVGS() { return _state.STATE_SVGS; },
   get sessions() { return sessions; },
+  getCodexProfiles: () => agentRuntime && typeof agentRuntime.getCodexProfiles === "function"
+    ? agentRuntime.getCodexProfiles()
+    : [],
   getCustomAgentIds: () => (_settingsController.get("customApplications") || [])
     .map((application) => application && application.id)
     .filter(Boolean),

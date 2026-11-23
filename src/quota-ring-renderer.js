@@ -246,7 +246,7 @@ function selectRingWindow(group, candidates, now, ring, providerSeenAtValue, pro
 }
 
 // Build the visual model for one coin from a source's provider group.
-function buildCoinModel(source, def, now, multiSource) {
+function buildCoinModel(source, def, now, multiSource, hasExtraCodexProfile) {
   const provider = source[def.key];
   const group = provider && provider.group;
   if (!providerHasDrawableQuota(source, def)) return null;
@@ -290,8 +290,15 @@ function buildCoinModel(source, def, now, multiSource) {
   const state = allReset ? "reset" : (stale ? "stale" : "live");
   const near = state === "live" && binding && binding.pct > HOT_AT;
 
-  const visibleHost = multiSource
-    ? (source.host || t("dashboardQuotaSourceLocal"))
+  const localSourceLabel = hasExtraCodexProfile && def.key === "codexQuota"
+    ? t("dashboardQuotaSectionCodex")
+    : t("dashboardQuotaSourceLocal");
+  // An additional local Codex profile must identify itself even when the
+  // default profile has no quota to render.
+  const namedLocalCodex = typeof source.sourceKey === "string"
+    && source.sourceKey.startsWith("codex-profile:");
+  const visibleHost = (multiSource || namedLocalCodex)
+    ? (source.host || localSourceLabel)
     : null;
   return {
     providerKey: def.key,
@@ -335,10 +342,12 @@ function collectCoins(now) {
     if (entries.length === MAX_COINS) break;
   }
   const multiSource = new Set(entries.map(({ source }) => source)).size > 1;
+  const hasExtraCodexProfile = entries.some(({ source }) => typeof source.sourceKey === "string"
+    && source.sourceKey.startsWith("codex-profile:"));
   // Both sides use providerHasDrawableQuota, so accepted buckets produce the
   // same count. Keep the null guard as a backstop for future model changes.
   return entries
-    .map(({ source, def }) => buildCoinModel(source, def, now, multiSource))
+    .map(({ source, def }) => buildCoinModel(source, def, now, multiSource, hasExtraCodexProfile))
     .filter(Boolean);
 }
 

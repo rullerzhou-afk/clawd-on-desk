@@ -23,6 +23,7 @@ const { classifyPermissionInteraction } = require("../src/permission-automation-
 const { buildStateBody } = require("../hooks/clawd-hook");
 const { createMemoryRecapSink } = require("../src/recap-sink");
 const { makeSessionKey } = require("../src/session-key");
+const { codexProfileIdentity, normalizeCodexProfileConfig } = require("../src/codex-profiles");
 const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const { createDshStateSequenceFence } = require("../src/dsh-state-sequence");
 const initState = require("../src/state");
@@ -471,6 +472,93 @@ describe("server-route-state Codex title refresh marker", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("PR #1196 follow-up: routes local Codex state by rollout directory and defaults without one", async () => {
+    const home = path.join(os.tmpdir(), "clawd-codex-state-profiles");
+    const defaultHome = path.join(home, ".codex");
+    const companyHome = path.join(home, "company-codex");
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home, env: {} });
+    const rawSessionId = "codex:shared-state-id";
+    const base = {
+      agent_id: "codex",
+      session_id: rawSessionId,
+      hook_source: "codex-official",
+      event: "UserPromptSubmit",
+      state: "thinking",
+      transcript_path: path.join(companyHome, "sessions", "rollout.jsonl"),
+    };
+    const personal = await callStatePost(JSON.stringify({
+      ...base,
+      transcript_path: path.join(defaultHome, "sessions", "rollout.jsonl"),
+    }), { ctx: { getCodexProfiles: () => profiles } });
+    assert.equal(personal.statusCode, 200);
+    assert.equal(personal.calls.updateSession[0][0], localSessionKey(rawSessionId));
+    assert.equal(Object.hasOwn(personal.calls.updateSession[0][3], "codexProfileId"), false);
+
+    const company = await callStatePost(JSON.stringify(base), {
+      ctx: { getCodexProfiles: () => profiles },
+    });
+    assert.equal(company.statusCode, 200, company.body);
+    const companyIdentity = codexProfileIdentity(rawSessionId, profiles[1]);
+    assert.equal(company.calls.updateSession[0][0], companyIdentity.sessionId);
+    assert.equal(company.calls.updateSession[0][3].codexProfileId, "company");
+    assert.equal(company.calls.updateSession[0][3].codexProfileLabel, "Company");
+    assert.equal(company.calls.updateSession[0][3].rawSessionId, rawSessionId);
+
+    for (const [configured, transcript] of [
+      [profiles, undefined], [profiles.slice(0, 1), undefined], [profiles.slice(0, 1), "relative.jsonl"],
+    ]) {
+      const result = await callStatePost(JSON.stringify({ ...base, transcript_path: transcript }), {
+        ctx: { getCodexProfiles: () => configured },
+      });
+      assert.equal(result.statusCode, 200);
+      assert.equal(result.calls.updateSession[0][0], localSessionKey(rawSessionId));
+      assert.equal(Object.hasOwn(result.calls.updateSession[0][3], "codexProfileId"), false);
+    }
+  });
+
+  it("PR #1196 follow-up: a transcript-less Desktop side chat reaches state with two local profiles", async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-side-chat-"));
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: {} });
+    const api = makeMetadataStateRuntime();
+    const runtime = createAgentRuntimeMain({
+      codexProfiles: profiles,
+      getStateRuntime: () => api,
+      updateSession: api.updateSession,
+    });
+    t.after(() => { runtime.cleanup(); api.cleanup(); fs.rmSync(home, { recursive: true, force: true }); });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const body = {
+      agent_id: "codex", session_id: rawSessionId, hook_source: "codex-official",
+      event: "UserPromptSubmit", state: "thinking",
+      codex_originator: "Codex Desktop", codex_client_ephemeral: true,
+    };
+    const ctx = {
+      getCodexProfiles: runtime.getCodexProfiles,
+      sessions: api.sessions,
+      updateSession: runtime.updateSessionFromServer,
+    };
+    const result = await callStatePost(JSON.stringify(body), { ctx });
+    assert.equal(result.statusCode, 200);
+    const session = api.sessions.get(localSessionKey(rawSessionId));
+    assert.equal(session.state, "thinking");
+    assert.equal(session.codexClientEphemeral, true);
+    assert.equal(Object.hasOwn(session, "codexProfileId"), false);
+
+    const extra = await callStatePost(JSON.stringify({
+      ...body,
+      codex_client_ephemeral: undefined,
+      transcript_path: path.join(profiles[1].home, "sessions", "rollout.jsonl"),
+    }), { ctx });
+    assert.equal(extra.statusCode, 200);
+    const companyId = codexProfileIdentity(rawSessionId, profiles[1]).sessionId;
+    assert.equal(api.sessions.get(companyId)?.codexProfileId, "company");
+    assert.equal(api.sessions.get(localSessionKey(rawSessionId)).codexClientEphemeral, true);
+  });
+
   it("rejects a parsed old-turn compaction after HTTP hooks start a newer Codex turn", async () => {
     const CodexLogMonitor = require("../agents/codex-log-monitor");
     const codexConfig = require("../agents/codex");

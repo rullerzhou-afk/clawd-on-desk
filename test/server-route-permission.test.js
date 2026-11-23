@@ -30,6 +30,7 @@ const {
   isValidInteraction,
 } = require("../src/permission-automation-policy");
 const { makeSessionKey } = require("../src/session-key");
+const { codexProfileIdentity, normalizeCodexProfileConfig } = require("../src/codex-profiles");
 
 function localSessionKey(rawSessionId) {
   return makeSessionKey({ profileId: "local", rawSessionId });
@@ -3121,6 +3122,160 @@ describe("server-route-permission Windows B1a Codex metadata", () => {
     });
     assert.strictEqual(mismatchCalls, 0);
     assert.strictEqual(mismatch.ctx.pendingPermissions[0].sourcePid, 11);
+  });
+});
+
+describe("server-route-permission local Codex profile routing", () => {
+  it("PR #1196 follow-up: Auto checks the extra profile home before and after review", async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-auto-homes-"));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const savedHome = process.env.CODEX_HOME;
+    t.after(() => {
+      if (savedHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedHome;
+    });
+    process.env.CODEX_HOME = "relative-home";
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: path.join(home, "company") }],
+    }, { home, env: process.env });
+    const uuid = "aaaaaaaa-1111-4111-8111-111111111111";
+    const rawSessionId = `codex:${uuid}`;
+    const request = (profile, reviewer) => {
+      const sessions = path.join(profile.home, "sessions");
+      fs.mkdirSync(sessions, { recursive: true });
+      const transcript = path.join(sessions, `rollout-${uuid}.jsonl`);
+      fs.writeFileSync(transcript, [
+        { type: "session_meta", payload: { id: uuid } },
+        { type: "turn_context", payload: { turn_id: "A", approvals_reviewer: reviewer, approval_policy: "on-request" } },
+      ].map((record) => JSON.stringify(record) + "\n").join(""));
+      return JSON.stringify({
+        agent_id: "codex", hook_source: "codex-official", session_id: rawSessionId,
+        turn_id: "A", transcript_path: transcript, permission_mode: "default",
+        tool_name: "Bash", tool_input: { command: "echo test" },
+      });
+    };
+    const ctx = { getCodexProfiles: () => profiles, getCodexPermissionMode: () => "auto" };
+    const marker = path.join(home, "reviewed");
+    const reviewed = await callPermissionPost(request(profiles[1], "user"), {
+      ctx: {
+        ...ctx,
+        getPermissionAutomationMode: () => "auto-tools",
+        getPermissionReviewConfig: () => ({
+          command: [process.execPath, "-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "done")`],
+          timeoutMs: 5000,
+        }),
+      },
+    });
+    assert.notStrictEqual(reviewed.statusCode, 204, "the extra profile's human reviewer can enter review");
+    await waitForRoute(() => reviewed.ctx.pendingPermissions.length > 0 || reviewed.statusCode === 204,
+      "Codex review did not settle");
+    assert.strictEqual(fs.existsSync(marker), true);
+    assert.strictEqual(reviewed.ctx.pendingPermissions[0]?.sessionId,
+      codexProfileIdentity(rawSessionId, profiles[1]).sessionId);
+
+    const invalidated = request(profiles[1], "user");
+    const transcript = JSON.parse(invalidated).transcript_path;
+    const latestTurnContext = JSON.stringify({ type: "turn_context", payload: {
+      turn_id: "A", approvals_reviewer: "auto_review", approval_policy: "on-request",
+    } }) + "\n";
+    const rechecked = await callPermissionPost(invalidated, {
+      ctx: {
+        ...ctx,
+        getPermissionAutomationMode: () => "auto-tools",
+        getPermissionReviewConfig: () => ({
+          command: [process.execPath, "-e",
+            `require("node:fs").appendFileSync(${JSON.stringify(transcript)}, ${JSON.stringify(latestTurnContext)})`],
+          timeoutMs: 5000,
+        }),
+      },
+    });
+    await waitForRoute(() => rechecked.ctx.pendingPermissions.length > 0 || rechecked.statusCode === 204,
+      "Codex review did not settle after the reviewer changed");
+    assert.ok(fs.readFileSync(transcript, "utf8").endsWith(latestTurnContext));
+    assert.strictEqual(rechecked.statusCode, 204);
+    assert.strictEqual(rechecked.ctx.pendingPermissions.length, 0);
+
+    for (const [profile, reviewer] of [[profiles[0], "user"], [profiles[1], "auto_review"]]) {
+      const native = await callPermissionPost(request(profile, reviewer), { ctx });
+      assert.strictEqual(native.statusCode, 204);
+      assert.strictEqual(native.ctx.pendingPermissions.length, 0);
+    }
+  });
+
+  it("retains native default permission handling when config is missing or invalid", async () => {
+    const os = require("node:os");
+    const path = require("node:path");
+    const home = path.join(os.tmpdir(), "clawd-default-codex-route");
+    const rawSessionId = "codex:default-permission-key";
+    const body = JSON.stringify({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      hook_event_name: "PermissionRequest",
+      session_id: rawSessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    for (const config of [null, { profiles: [{ id: "../bad", label: "Bad", home: home }] }]) {
+      const profiles = normalizeCodexProfileConfig(config, { home, env: {} });
+      assert.equal(profiles.length, 1);
+      const response = await callPermissionPost(body, {
+        ctx: { getCodexProfiles: () => profiles },
+      });
+      assert.equal(response.ctx.calls.updateSession[0][0], localSessionKey(rawSessionId));
+      assert.equal(response.ctx.calls.updateSession[0][3].profileId, "local");
+      assert.equal(response.ctx.calls.updateSession[0][3].codexProfileId, undefined);
+      assert.equal(response.ctx.pendingPermissions.length, 1,
+        "default Codex requests still enter Clawd's permission handling");
+      assert.equal(response.ctx.pendingPermissions[0].sessionId, localSessionKey(rawSessionId));
+      assert.notEqual(response.statusCode, 204, "invalid extra config must not trigger native fallback");
+    }
+  });
+
+  it("PR #1196 follow-up: routes Codex permissions by rollout directory and defaults without one", async () => {
+    const os = require("node:os");
+    const path = require("node:path");
+    const home = path.join(os.tmpdir(), "clawd-codex-permission-profiles");
+    const defaultHome = path.join(home, ".codex");
+    const companyHome = path.join(home, "company-codex");
+    const profiles = normalizeCodexProfileConfig({
+      profiles: [{ id: "company", label: "Company", home: companyHome }],
+    }, { home, env: {} });
+    const rawSessionId = "codex:shared-permission-id";
+    const base = {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      hook_event_name: "PermissionRequest",
+      session_id: rawSessionId,
+      transcript_path: path.join(companyHome, "sessions", "rollout.jsonl"),
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    };
+    const personal = await callPermissionPost(JSON.stringify({
+      ...base,
+      transcript_path: path.join(defaultHome, "sessions", "personal.jsonl"),
+    }), { ctx: { getCodexProfiles: () => profiles } });
+    assert.equal(personal.ctx.calls.updateSession[0][0], localSessionKey(rawSessionId));
+    assert.equal(Object.hasOwn(personal.ctx.calls.updateSession[0][3], "codexProfileId"), false);
+
+    const company = await callPermissionPost(JSON.stringify(base), {
+      ctx: { getCodexProfiles: () => profiles },
+    });
+    const companyId = codexProfileIdentity(rawSessionId, profiles[1]).sessionId;
+    assert.equal(company.ctx.calls.updateSession[0][0], companyId);
+    assert.equal(company.ctx.calls.updateSession[0][3].codexProfileId, "company");
+    assert.equal(company.ctx.calls.updateSession[0][3].codexProfileLabel, "Company");
+    assert.equal(company.ctx.pendingPermissions[0].sessionId, companyId);
+
+    for (const [configured, transcript] of [
+      [profiles, undefined], [profiles.slice(0, 1), undefined], [profiles.slice(0, 1), "relative.jsonl"],
+    ]) {
+      const result = await callPermissionPost(JSON.stringify({ ...base, transcript_path: transcript }), {
+        ctx: { getCodexProfiles: () => configured },
+      });
+      assert.equal(result.ctx.pendingPermissions[0].sessionId, localSessionKey(rawSessionId));
+      assert.equal(result.ctx.calls.updateSession[0][0], localSessionKey(rawSessionId));
+      assert.equal(Object.hasOwn(result.ctx.calls.updateSession[0][3], "codexProfileId"), false);
+    }
   });
 });
 

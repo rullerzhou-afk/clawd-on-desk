@@ -20,7 +20,8 @@ function getLocalCodexProcessKey(session) {
   // stable session IDs must remain distinct in the HUD (#581).
   if (isCodexDesktopOriginator(session.codexOriginator)) return null;
   const agentPid = normalizePositiveInteger(session.agentPid);
-  return agentPid ? `codex-agent:${agentPid}` : null;
+  const codexProfileId = session.codexProfileId || "default";
+  return agentPid ? `codex-agent:${codexProfileId}:${agentPid}` : null;
 }
 
 function sessionUpdatedAt(session) {

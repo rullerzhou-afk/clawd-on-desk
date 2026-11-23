@@ -248,9 +248,15 @@ function identifierFallbackTitleCandidates(entry) {
 function completionDisplayTitle(entry, locale) {
   const fallback = locale.session;
   const title = entry && typeof entry.displayTitle === "string" ? entry.displayTitle : "";
-  if (!title.trim()) return fallback;
-  if (identifierFallbackTitleCandidates(entry).has(title)) return fallback;
-  return title;
+  const safeTitle = !title.trim() || identifierFallbackTitleCandidates(entry).has(title)
+    ? fallback
+    : title;
+  const profileLabel = entry && typeof entry.codexProfileLabel === "string"
+    ? entry.codexProfileLabel.trim()
+    : "";
+  return entry && entry.codexProfileId && profileLabel
+    ? `${profileLabel} · ${safeTitle}`
+    : safeTitle;
 }
 
 function clip(value, maxLength) {

@@ -84,6 +84,8 @@ function loadRenderer() {
         dashboardQuotaGroupGemini: "Gemini",
         dashboardQuotaGroupThirdParty: "Claude/GPT",
         dashboardQuotaSourceLocal: "Local",
+        dashboardQuotaSectionCodex: "Codex",
+        dashboardQuotaSectionCodexSpark: "Codex Spark",
         quotaRingReset: "reset",
         quotaRingRemainingWord: "remaining",
         dashboardQuotaResetIn: "resets in {time}",
@@ -298,6 +300,55 @@ describe("quota ring renderer model", () => {
     assert.strictEqual(model.displayWindow.field, "codexWeekly");
     assert.strictEqual(readout.children[0].textContent, "12%");
     assert.strictEqual(readout.children[1].textContent, "7d");
+  });
+
+  it("PR #1196 follow-up: the ring labels default Codex by provider only alongside a displayed local profile", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const source = {
+      sourceKey: null,
+      host: null,
+      codexQuota: {
+        group: { codexWeekly: { usedPercent: 12, resetAt: now + 3_600_000, windowMinutes: 10080 } },
+        lastSeenAt: now,
+      },
+    };
+    const remote = { ...source, sourceKey: "remote:workbox", host: "workbox" };
+    const company = { ...source, sourceKey: "codex-profile:company", host: "Company" };
+    for (const [sources, labels] of [
+      [[source, remote], ["Local", "workbox"]],
+      [[source, company], ["Codex", "Company"]],
+      [[company], ["Company"]],
+      [[source, remote, { ...remote, sourceKey: "remote:lab", host: "lab" }, company], ["Local", "workbox", "lab"]],
+    ]) {
+      context.__sources = sources;
+      context.__now = now;
+      const markers = vm.runInContext("payload.accountQuota = __sources; collectCoins(__now).map(m => m.sourceMarker)", context);
+      assert.deepStrictEqual(Array.from(markers), labels);
+    }
+  });
+
+  it("shows an additional Codex profile label when it is the only quota source", () => {
+    const context = loadRenderer();
+    const now = 1_000_000;
+    const quota = {
+      group: { codexWeekly: { usedPercent: 80, resetAt: now + 3_600_000, windowMinutes: 10080 } },
+      lastSeenAt: now,
+    };
+    const onlyExtra = modelFor(context, {
+      sourceKey: "codex-profile:company", host: "Company", codexQuota: quota,
+    }, 2, now, false);
+    assert.equal(onlyExtra.sourceMarker, "Company");
+    context.__model = onlyExtra;
+    context.__now = now;
+    const row = vm.runInContext("buildCoinRow(__model, __now)", context);
+    assert.equal(row.children[0].children.find((child) => child.className === "source").textContent, "Company");
+
+    const defaultOnly = modelFor(context, {
+      sourceKey: null, host: null, codexQuota: quota,
+    }, 2, now, false);
+    assert.equal(defaultOnly.sourceMarker, null,
+      "the legacy single default subscription still has no source marker");
   });
 
   it("uses a fresh weekly readout instead of presenting a stale short window as live", () => {

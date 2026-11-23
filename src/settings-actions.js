@@ -1261,14 +1261,14 @@ function setSessionAlias(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "setSessionAlias: payload must be an object" };
   }
-  const { host, agentId, sessionId, rawSessionId, profileId, cwd, alias } = payload;
+  const { host, agentId, sessionId, rawSessionId, profileId, codexProfileId, cwd, alias } = payload;
   // sessionId is the canonical action id for remote sessions. Alias storage
   // is keyed by the trusted profile scope plus the separately transported raw
   // id so the opaque action id never leaks into visible/legacy alias keys.
   const aliasSessionId = typeof rawSessionId === "string" && rawSessionId.trim()
     ? rawSessionId
     : sessionId;
-  const key = sessionAliasKey(host, agentId, aliasSessionId, { cwd, profileId });
+  const key = sessionAliasKey(host, agentId, aliasSessionId, { cwd, profileId, codexProfileId });
   if (!key) {
     return { status: "error", message: "setSessionAlias.sessionId must be a non-empty string" };
   }

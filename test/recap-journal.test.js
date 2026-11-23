@@ -47,6 +47,34 @@ test("journal stores only frozen allowlisted data and irreversible identity keys
   }
 });
 
+test("local Codex recap dedupe isolates additional profiles without exposing raw IDs", (t) => {
+  const { journal, store } = fixture(t);
+  const event = {
+    occurredAt: Date.UTC(2026, 7, 29, 18, 30),
+    agentId: "codex",
+    scope: "local",
+    metrics: ["activity", "tool-call"],
+  };
+  const ticket = { sessionId: "shared-session-secret", dedupeId: "tool-call:shared-tool-secret" };
+  const defaultRecord = journal.buildRecord(event, ticket);
+  const legacyDefault = journal.buildRecord(event, { ...ticket, scopeId: "local" });
+  const companyRecord = journal.buildRecord(event, { ...ticket, scopeId: "codex-profile:company" });
+  assert.equal(defaultRecord.scopeKeyHash, legacyDefault.scopeKeyHash);
+  assert.equal(defaultRecord.sessionKeyHash, legacyDefault.sessionKeyHash);
+  assert.equal(defaultRecord.dedupeKeyHash, legacyDefault.dedupeKeyHash);
+  assert.notEqual(defaultRecord.scopeKeyHash, companyRecord.scopeKeyHash);
+  assert.notEqual(defaultRecord.sessionKeyHash, companyRecord.sessionKeyHash);
+  assert.notEqual(defaultRecord.dedupeKeyHash, companyRecord.dedupeKeyHash);
+  assert.equal(journal.append(defaultRecord), true);
+  assert.equal(journal.append(companyRecord), true, "distinct profiles must not dedupe one another");
+  assert.equal(journal.append(defaultRecord), false);
+  assert.equal(journal.append(companyRecord), false);
+  const disk = fs.readFileSync(store.childPath("events", defaultRecord.localDate + ".jsonl"), "utf8");
+  for (const secret of ["company", "shared-session-secret", "shared-tool-secret"]) {
+    assert.equal(disk.includes(secret), false);
+  }
+});
+
 test("journal dedupes stable upstream identities and survives a corrupt tail", (t) => {
   const { journal, store, warnings } = fixture(t);
   const event = {

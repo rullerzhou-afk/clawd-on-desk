@@ -5,7 +5,7 @@
 Claude Code and Codex CLI are set up on first launch. Install any other integration from **Settings → AI Coding Tools**; Clawd then keeps it synced while it stays enabled.
 
 - **Claude Code** — full integration via command hooks + HTTP permission hooks. Several Claude config folders (`CLAUDE_CONFIG_DIR` profiles such as `~/.claude-work`) can be added under **Settings → AI Coding Tools → Claude Code → Claude config folders**; their sessions reach the same pet and carry a small profile label in the dashboard, HUD and permission bubble.
-- **Codex CLI** — official hooks with JSONL fallback (`~/.codex/sessions/`), auto-synced by default with real permission bubbles
+- **Codex CLI** — official hooks with JSONL fallback (`$CODEX_HOME/sessions/` or `~/.codex/sessions/`), auto-synced by default with real permission bubbles. Optional local homes can be added as separate profiles ([guide](codex-profiles.md)).
 - **Copilot CLI** — optional command hooks via `~/.copilot/hooks/hooks.json` (install from Settings → AI Coding Tools; see the Copilot guide for manual JSON fallback)
 - **Gemini CLI** — optional command hooks via `~/.gemini/settings.json` (install from Settings → AI Coding Tools or run `npm run install:gemini-hooks`)
 - **Antigravity CLI (agy)** — optional command hooks via `~/.gemini/config/hooks.json` (install from Settings → AI Coding Tools or run `npm run install:antigravity-hooks`); **state-only**: Clawd never pops a permission bubble for agy. Every Allow / Deny / Always-allow choice happens in agy's own terminal menu

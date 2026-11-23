@@ -84,6 +84,25 @@ describe("session focus helpers", () => {
     });
   });
 
+  it("never opens a Codex Desktop thread or terminal for a non-default profile card", () => {
+    const entry = {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      agentId: "codex",
+      codexOriginator: "codex_work_desktop",
+      sourcePid: 123,
+      codexProfileId: "company",
+      codexProfileLabel: "Company",
+    };
+    assert.deepStrictEqual(getSessionFocusTarget(entry), {
+      canFocus: false,
+      type: null,
+      url: null,
+      reason: "codex-profile-not-active",
+    });
+    assert.equal(isFocusableLocalHudSession({ ...entry, state: "working" }), false);
+    assert.equal(getDirectSendFocusTarget(entry).canFocus, false);
+  });
+
   it("keeps Codex CLI UUIDs on the terminal focus path", () => {
     const entry = {
       id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",

@@ -25,6 +25,7 @@ const {
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { getAgent } = require("../agents/registry");
 const { isPassiveNotifyEntry, isNativeQuestionNotify } = require("./passive-notify-entry");
+const { DEFAULT_CODEX_PROFILE_ID } = require("./codex-profiles");
 const { isCodexRemoteFallbackSuppressed } = require("./codex-remote-fallback-notice");
 const { validateQuestionAnswers } = require("./agent-question-wire");
 const { reminderHolds } = require("./permission-reminder");
@@ -784,6 +785,11 @@ function validateAndRemapIndexedElicitationAnswers(toolInput, indexedAnswers) {
   return { ok: true, answers };
 }
 
+function canFocusNativeQuestion(perm) {
+  return !perm.host && !(perm.isCodexUserInputNotify && perm.codexProfileId
+    && perm.codexProfileId !== DEFAULT_CODEX_PROFILE_ID);
+}
+
 function buildPermissionFocusEntry(perm) {
   if (!perm || typeof perm !== "object") return null;
   const sessionId = String(perm.sessionId || "");
@@ -801,6 +807,7 @@ function buildPermissionFocusEntry(perm) {
   if (perm.model) focusEntry.model = perm.model;
   if (perm.codexOriginator) focusEntry.codexOriginator = perm.codexOriginator;
   if (perm.codexSource) focusEntry.codexSource = perm.codexSource;
+  if (perm.codexProfileId) focusEntry.codexProfileId = perm.codexProfileId;
   if (typeof perm.codexClientEphemeral === "boolean") focusEntry.codexClientEphemeral = perm.codexClientEphemeral;
   // An approval can arrive before the session lifecycle event, so the fallback
   // entry needs the carrier and raw id to raise the app and select the session.
@@ -3308,6 +3315,7 @@ function buildPermissionBubblePayload(permEntry) {
     // read-only native-question card as Codex request_user_input.
     isClaudeTurnAskNotify: permEntry.isClaudeTurnAskNotify || false,
     isRemote: !!permEntry.host,
+    nativeQuestionFocusUnavailable: isNativeQuestionNotify(permEntry) && !canFocusNativeQuestion(permEntry),
     // Hermes must NOT get the regular go-to-terminal fallback: its opt-in
     // permission gate has no native approval prompt to hand back to. A 204 is
     // converted into a retryable block by the plugin. Clarify elicitation is
@@ -4952,7 +4960,7 @@ function handleBubbleExpanded(event, expanded) {
   if (isNativeQuestionNotify(perm)) {
     if (expanded === true) {
       dismissPassiveNotify(perm, "expand-focus");
-      if (!perm.host) {
+      if (canFocusNativeQuestion(perm)) {
         ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
       }
     }
@@ -5271,7 +5279,7 @@ function handleDecide(event, behavior) {
     dismissPassiveNotify(perm, "ipc-decide");
     // "codex-user-input-focus" is the renderer's generic native-question focus
     // action (name kept for compatibility); it covers the Claude card too.
-    if (behavior === "codex-user-input-focus" && !perm.host) {
+    if (behavior === "codex-user-input-focus" && canFocusNativeQuestion(perm)) {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
     return;
@@ -5743,6 +5751,7 @@ function showCodexUserInputBubble({
   host,
   codexOriginator,
   codexSource,
+  codexProfileId,
 }) {
   if (!sessionId || !callId || !Array.isArray(questions) || !questions.length) return false;
   if (shouldSuppressCodexUserInputBubble(ctx)) {
@@ -5789,6 +5798,7 @@ function showCodexUserInputBubble({
     host: host || null,
     codexOriginator: codexOriginator || null,
     codexSource: codexSource || null,
+    ...(codexProfileId ? { codexProfileId } : {}),
     autoExpireTimer: null,
   };
   addPendingPermission(permEntry, "passive-added");

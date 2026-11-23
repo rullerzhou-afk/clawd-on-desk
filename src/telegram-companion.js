@@ -219,6 +219,14 @@ function truncateNotificationText(text, locale) {
   return `${clipUtf16Safe(text, Math.max(0, NOTIFICATION_TEXT_MAX - marker.length))}${marker}`;
 }
 
+function completionEntryTitle(entry, locale) {
+  const title = entry.displayTitle || locale.session;
+  const profileLabel = typeof entry.codexProfileLabel === "string"
+    ? entry.codexProfileLabel.trim()
+    : "";
+  return entry.codexProfileId && profileLabel ? `${profileLabel} · ${title}` : title;
+}
+
 // Privacy note: displayTitle is the same session title shown on the desktop
 // HUD / tray (it can derive from the user's prompt first line via
 // sessionTitle). The message carries the title + identity fields only when
@@ -234,7 +242,7 @@ function formatNotification(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅"; // ⚠️ / ✅
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || locale.session;
+  const title = completionEntryTitle(entry, locale);
   const displaySessionTag = getEntryDisplaySessionTag(entry);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);
@@ -261,7 +269,7 @@ function formatTelegramNotificationMessage(entry, options = {}) {
   const interrupted = entry.badge === "interrupted";
   const icon = interrupted ? "⚠️" : "✅";
   const status = interrupted ? locale.interrupted : locale.done;
-  const title = entry.displayTitle || locale.session;
+  const title = completionEntryTitle(entry, locale);
   const displaySessionTag = getEntryDisplaySessionTag(entry);
   const meta = [];
   if (entry.agentId) meta.push(entry.agentId);

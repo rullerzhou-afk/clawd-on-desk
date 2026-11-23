@@ -46,6 +46,9 @@ function sessionAliasKey(host, agentId, sessionId, options = {}) {
   const profileId = options && typeof options.profileId === "string"
     ? options.profileId.trim()
     : "";
+  const codexProfileId = options && typeof options.codexProfileId === "string"
+    ? options.codexProfileId.trim()
+    : "";
   const parts = [
     normalizeSessionHost(host),
     normalizeSessionAgent(agentId),
@@ -53,6 +56,10 @@ function sessionAliasKey(host, agentId, sessionId, options = {}) {
   ];
   if (profileId && profileId !== "local") {
     parts.unshift(`profile:${encodeURIComponent(profileId)}`);
+  }
+  if (normalizeSessionAgent(agentId) === "codex"
+    && codexProfileId && codexProfileId !== "default") {
+    parts.unshift(`codex-profile:${encodeURIComponent(codexProfileId)}`);
   }
   const scope = normalizeSessionScope(agentId, normalizedSessionId, options);
   if (scope) parts.push(scope);

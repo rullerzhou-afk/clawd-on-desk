@@ -623,6 +623,16 @@ test("formatNotification falls back to the session label and uses the display ta
   assert.doesNotMatch(text, /sess-z/);
 });
 
+test("completion reminders identify an additional Codex profile", () => {
+  const entry = doneEntry({
+    displayTitle: "Build",
+    codexProfileId: "company",
+    codexProfileLabel: "Company",
+  });
+  assert.match(formatNotification(entry), /Company · Build/);
+  assert.match(formatTelegramNotificationMessage(entry).plainText, /Company · Build/);
+});
+
 test("formatted completion falls back to the session label and display tag when title missing", () => {
   const message = formatTelegramNotificationMessage({
     id: "s1.bG9jYWw.c2Vzcy16enp6eno5",

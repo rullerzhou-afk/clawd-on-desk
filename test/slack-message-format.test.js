@@ -23,6 +23,19 @@ test("buildCompletionMessage renders a done card with fallback text", () => {
   assert.ok(!section.includes("#abc123"));
 });
 
+test("completion cards identify an additional Codex profile", () => {
+  const msg = fmt.buildCompletionMessage({
+    id: "company-session",
+    displayTitle: "Build",
+    badge: "done",
+    agentId: "codex",
+    codexProfileId: "company",
+    codexProfileLabel: "Company",
+  }, { lang: "en" });
+  assert.ok(msg.text.includes("Company · Build"));
+  assert.ok(msg.blocks[0].text.text.includes("Company · Build"));
+});
+
 test("interrupted sessions use the warning icon", () => {
   const msg = fmt.buildCompletionMessage({ id: "s1", badge: "interrupted", displayTitle: "T" }, { lang: "en" });
   assert.ok(msg.text.startsWith("⚠️"));
