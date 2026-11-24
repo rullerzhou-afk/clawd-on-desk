@@ -92,6 +92,14 @@ function isLocalWorkBuddyDesktopIdleSession(session) {
     && session.state === "idle";
 }
 
+function isLocalQoderDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "qoder"
+    && !session.host
+    && !session.headless
+    && session.state === "idle";
+}
+
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
   const config = options.staleConfig || {};
@@ -241,6 +249,18 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "workbuddy-desktop-idle-timeout" };
   }
 
+  // Qoder Desktop keeps its main process alive after an individual task ends
+  // and does not emit SessionEnd for every finished conversation. Apply the
+  // configured idle cutoff to each local Qoder row so finished HUD entries do
+  // not survive indefinitely while the desktop app remains open.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalQoderDesktopIdleSession(session)
+  ) {
+    return { action: "delete", reason: "qoder-desktop-idle-timeout" };
+  }
+
   // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
   // The completion notification (e.g. Telegram push) already fires once at the
   // completion instant, so an unacknowledged remote session has already been
@@ -329,5 +349,6 @@ module.exports = {
   isLocalZcodeDesktopIdleSession,
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
+  isLocalQoderDesktopIdleSession,
   getStaleSessionDecision,
 };
