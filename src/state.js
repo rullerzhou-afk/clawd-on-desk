@@ -4038,6 +4038,8 @@ function cleanStaleSessions() {
       // that the parent exited. Keep the parent's own state and timestamp.
       if (s.agentId === "qoder" && (decision.reason === "unreachable" || decision.reason === "no-source")
         && qoderSubagentPresentation.has(id)) continue;
+      if (s.agentId === "qoder" && decision.reason === "qoder-desktop-idle-timeout"
+        && qoderSubagentPresentation.has(id)) continue;
       const badgeSuffix = decision.reason === "detached-ended" ? ` badge=${decision.badge}` : "";
       debugSession(`stale-delete ${decision.reason} ${describeSession(id, s)}${badgeSuffix}`);
       if (s && s.agentId === "codex") cancelCodexExitProbe(id, `stale-delete-${decision.reason}`);
