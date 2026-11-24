@@ -6,6 +6,7 @@
 (function initSettingsTabSessions(root) {
   const SESSIONS_IN_PLACE_KEYS = new Set([
     "sessionHudEnabled",
+    "sessionStatusBadgeEnabled",
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
     "sessionHudShowContextUsage",
@@ -547,6 +548,11 @@
       helpers.buildSwitchRow({
         key: "sessionHudEnabled",
         labelKey: "rowSessionHudMaster",
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionStatusBadgeEnabled",
+        labelKey: "rowSessionStatusBadge",
+        descKey: "rowSessionStatusBadgeDesc",
       }),
       helpers.buildSwitchRow({
         key: "sessionHudShowStateLabels",

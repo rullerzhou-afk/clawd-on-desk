@@ -6,6 +6,8 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const { hasTaggedFallbackRow } = require("./session-hud-tagged-fallback");
 const { clampTextScale, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const ringGeom = require("./quota-ring-geometry");
+const statusSummary = require("./session-status-summary");
+const statusBadgeGeom = require("./session-status-badge-geometry");
 
 const isLinux = process.platform === "linux";
 const isMac = process.platform === "darwin";
@@ -98,13 +100,23 @@ function pointInExpandedRect(point, rect, pad) {
     && point.y <= rect.bottom + p;
 }
 
-function computeAutoHideHotZone({ petHitRect, expectedHudContentBounds, expectedRingContentBounds, pad }) {
+function computeAutoHideHotZone({
+  petHitRect,
+  expectedHudContentBounds,
+  expectedRingContentBounds,
+  expectedStatusBadgeContentBounds,
+  pad,
+}) {
   const rects = [];
   if (isScreenRect(petHitRect)) rects.push(petHitRect);
-  // Both the HUD (below the pet) and the quota ring (beside the pet) are part
-  // of the hot zone: the cursor moving from the pet onto either one must keep
-  // the whole floating UI alive.
-  for (const r of [expectedHudContentBounds, expectedRingContentBounds]) {
+  // The expanded HUD, persistent status badge, and quota ring all belong to
+  // the pet's interactive surface. Moving onto any of them keeps a revealed
+  // list alive.
+  for (const r of [
+    expectedHudContentBounds,
+    expectedRingContentBounds,
+    expectedStatusBadgeContentBounds,
+  ]) {
     if (!r) continue;
     if (Number.isFinite(r.x) && Number.isFinite(r.y)
         && Number.isFinite(r.width) && Number.isFinite(r.height)
@@ -123,6 +135,18 @@ function pointInHotZone(point, hotZone) {
     if (pointInExpandedRect(point, rect, hotZone.pad)) return true;
   }
   return false;
+}
+
+function evaluateStatusBadgeEligible({
+  snapshot,
+  enabled,
+  petHidden,
+  miniMode,
+  miniTransitioning,
+}) {
+  if (enabled !== true) return false;
+  if (petHidden || miniMode || miniTransitioning) return false;
+  return statusSummary.summarizeSessions(snapshot).total > 0;
 }
 
 function evaluateShouldShow({
@@ -339,13 +363,19 @@ module.exports = function initSessionHud(ctx) {
   let latestSnapshot = null;
   let hudFlippedAbove = false;
   let lastReservedOffset = 0;
-  const hiddenDestroyTimers = { hud: null, ring: null };
+  const hiddenDestroyTimers = { hud: null, ring: null, badge: null };
   // Pet-attached quota ring — a sibling floating window (quota-ring.html) that
   // shares this module's reveal / pin / grace / hot-zone lifecycle. The HUD now
   // shows sessions only; the ring shows account quota beside the pet.
   let ringWindow = null;
   let ringDidFinishLoad = false;
   let ringSide = "left";
+  // Persistent compact status badge. This window is independent from the
+  // click-revealed session list: it remains visible while the list is hidden
+  // and can toggle between all three counts and the working count alone.
+  let statusBadgeWindow = null;
+  let statusBadgeDidFinishLoad = false;
+  let statusBadgeCollapsed = false;
 
   function getTextScale() {
     return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale() : 1);
@@ -383,6 +413,16 @@ module.exports = function initSessionHud(ctx) {
     });
   }
 
+  function statusBadgeEligible(snapshot = latestSnapshot) {
+    return evaluateStatusBadgeEligible({
+      snapshot,
+      enabled: ctx.sessionStatusBadgeEnabled,
+      petHidden: ctx.petHidden,
+      miniMode: getMiniMode(),
+      miniTransitioning: getMiniTransitioning(),
+    });
+  }
+
   function shouldShow(snapshot = latestSnapshot) {
     if (!baseEligible(snapshot)) return false;
     if (ctx.sessionHudPinned === true) return true;
@@ -395,9 +435,10 @@ module.exports = function initSessionHud(ctx) {
     return clickRevealed === true;
   }
 
-  function collectRingAvoidRects(hudContentBounds) {
+  function collectRingAvoidRects(hudContentBounds, statusBadgeContentBounds) {
     const rects = [];
     if (hudContentBounds) rects.push(hudContentBounds);
+    if (statusBadgeContentBounds) rects.push(statusBadgeContentBounds);
 
     if (typeof ctx.getPermissionBubbleBounds === "function") {
       try {
@@ -457,7 +498,22 @@ module.exports = function initSessionHud(ctx) {
       const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale, widthScale });
       contentBounds = computed && computed.contentBounds;
     }
-    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders, ctx.quotaRingShownProviders);
+    const badge = statusBadgeEligible(snapshot)
+      ? statusBadgeGeom.computeStatusBadgeBounds({
+        hitRect,
+        anchorRect,
+        workArea,
+        collapsed: statusBadgeCollapsed,
+        scale,
+      })
+      : null;
+    const statusBadgeContentBounds = badge && badge.contentBounds;
+    const coinCount = countQuotaCoins(
+      snapshot,
+      ctx.sessionHudShowQuota !== false,
+      ctx.quotaRingHiddenProviders,
+      ctx.quotaRingShownProviders
+    );
     const ring = coinCount > 0
       ? ringGeom.computeQuotaRingBounds({
         hitRect,
@@ -465,10 +521,15 @@ module.exports = function initSessionHud(ctx) {
         workArea,
         coinCount,
         scale,
-        avoidRects: collectRingAvoidRects(contentBounds),
+        avoidRects: collectRingAvoidRects(contentBounds, statusBadgeContentBounds),
       })
       : null;
-    return { hitRect, contentBounds, ringContentBounds: ring && ring.contentBounds };
+    return {
+      hitRect,
+      contentBounds,
+      statusBadgeContentBounds,
+      ringContentBounds: ring && ring.contentBounds,
+    };
   }
 
   function evaluateAutoHideCursorNow({ syncOnChange = true } = {}) {
@@ -492,6 +553,7 @@ module.exports = function initSessionHud(ctx) {
         petHitRect: expected && expected.hitRect,
         expectedHudContentBounds: expected && expected.contentBounds,
         expectedRingContentBounds: expected && expected.ringContentBounds,
+        expectedStatusBadgeContentBounds: expected && expected.statusBadgeContentBounds,
         pad: Math.round(HOT_ZONE_PAD * scale),
       });
       inHotZone = pointInHotZone(cursor, hotZone);
@@ -559,11 +621,13 @@ module.exports = function initSessionHud(ctx) {
   }
 
   function managedWindow(kind) {
-    return kind === "ring" ? ringWindow : hudWindow;
+    if (kind === "ring") return ringWindow;
+    if (kind === "badge") return statusBadgeWindow;
+    return hudWindow;
   }
 
   function cancelHiddenDestroy(kind) {
-    const kinds = kind ? [kind] : ["hud", "ring"];
+    const kinds = kind ? [kind] : ["hud", "ring", "badge"];
     for (const key of kinds) {
       const timer = hiddenDestroyTimers[key];
       if (!timer) continue;
@@ -676,6 +740,147 @@ module.exports = function initSessionHud(ctx) {
         && ringWindow.webContents && !ringWindow.webContents.isDestroyed()) {
       ringWindow.webContents.send("quota-ring:lang-change", payload);
     }
+    if (statusBadgeWindow && !statusBadgeWindow.isDestroyed() && statusBadgeDidFinishLoad
+        && statusBadgeWindow.webContents && !statusBadgeWindow.webContents.isDestroyed()) {
+      statusBadgeWindow.webContents.send("session-hud:lang-change", payload);
+    }
+  }
+
+  function sendStatusBadgeSnapshot(snapshot = latestSnapshot) {
+    if (!snapshot || !statusBadgeWindow || statusBadgeWindow.isDestroyed() || !statusBadgeDidFinishLoad) return;
+    if (!statusBadgeWindow.webContents || statusBadgeWindow.webContents.isDestroyed()) return;
+    const summary = statusSummary.summarizeSessions(snapshot);
+    statusBadgeWindow.webContents.send("session-status-badge:snapshot", {
+      sessions: summary.sessions,
+      orderedIds: summary.sessions.map((session) => session.id),
+      collapsed: statusBadgeCollapsed,
+    });
+  }
+
+  function ensureStatusBadge() {
+    cancelHiddenDestroy("badge");
+    if (statusBadgeWindow && !statusBadgeWindow.isDestroyed()) return statusBadgeWindow;
+    if (!ctx.win || ctx.win.isDestroyed()) return null;
+
+    statusBadgeDidFinishLoad = false;
+    const scale = getTextScale();
+    const content = statusBadgeGeom.computeStatusBadgeContentSize(statusBadgeCollapsed);
+    const shell = statusBadgeGeom.constants.STATUS_BADGE_SHELL;
+    statusBadgeWindow = new BrowserWindow({
+      parent: ctx.win,
+      width: Math.round(content.width * scale)
+        + Math.round(shell.left * scale)
+        + Math.round(shell.right * scale),
+      height: Math.round(content.height * scale)
+        + Math.round(shell.top * scale)
+        + Math.round(shell.bottom * scale),
+      show: false,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      alwaysOnTop: !isMac,
+      focusable: false,
+      hasShadow: false,
+      backgroundColor: "#00000000",
+      ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
+      ...(isMac ? { type: "panel" } : {}),
+      webPreferences: {
+        preload: path.join(__dirname, "preload-session-status-badge.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    if (isWin) statusBadgeWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    if (typeof ctx.guardAlwaysOnTop === "function") ctx.guardAlwaysOnTop(statusBadgeWindow);
+    statusBadgeWindow.loadFile(path.join(__dirname, "session-status-badge.html"));
+    statusBadgeWindow.webContents.once("did-finish-load", () => {
+      statusBadgeDidFinishLoad = true;
+      applyZoomToWindow(statusBadgeWindow, getTextScale());
+      sendI18n();
+      syncSessionHud();
+    });
+    statusBadgeWindow.on("closed", () => {
+      cancelHiddenDestroy("badge");
+      statusBadgeWindow = null;
+      statusBadgeDidFinishLoad = false;
+      notifyReservedOffsetIfChanged();
+    });
+    return statusBadgeWindow;
+  }
+
+  function hideStatusBadge() {
+    if (statusBadgeWindow && !statusBadgeWindow.isDestroyed()) statusBadgeWindow.hide();
+    scheduleHiddenDestroy("badge");
+  }
+
+  function showStatusBadge(win) {
+    if (!win || win.isDestroyed() || !statusBadgeDidFinishLoad) return;
+    cancelHiddenDestroy("badge");
+    if (!win.isVisible()) {
+      win.showInactive();
+      keepOutOfTaskbar(win);
+      if (isMac) deferMacFloatingVisibility(ctx, win);
+      else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+    }
+  }
+
+  function computeStatusBadgeBounds(snapshot, scale = getTextScale()) {
+    if (!ctx.win || ctx.win.isDestroyed()) return null;
+    const petBounds = typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
+    if (!petBounds) return null;
+    const hitRect = typeof ctx.getHitRectScreen === "function"
+      ? ctx.getHitRectScreen(petBounds)
+      : null;
+    const anchorRect = typeof ctx.getSessionHudAnchorRect === "function"
+      ? ctx.getSessionHudAnchorRect(petBounds)
+      : null;
+    const cx = petBounds.x + petBounds.width / 2;
+    const cy = petBounds.y + petBounds.height / 2;
+    const workArea = typeof ctx.getNearestWorkArea === "function"
+      ? ctx.getNearestWorkArea(cx, cy)
+      : { x: 0, y: 0, width: 1280, height: 800 };
+    return statusBadgeGeom.computeStatusBadgeBounds({
+      hitRect,
+      anchorRect,
+      workArea,
+      collapsed: statusBadgeCollapsed,
+      scale,
+    });
+  }
+
+  function syncStatusBadge(snapshot, scale = getTextScale(), computed = null, options = {}) {
+    if (!statusBadgeEligible(snapshot)) {
+      hideStatusBadge();
+      return null;
+    }
+    const result = computed || computeStatusBadgeBounds(snapshot, scale);
+    if (!result) {
+      hideStatusBadge();
+      return null;
+    }
+    const win = ensureStatusBadge();
+    if (!win || win.isDestroyed()) return result;
+    applyZoomToWindow(win, scale);
+    win.setBounds(result.bounds);
+    if (options.sendSnapshot !== false) sendStatusBadgeSnapshot(snapshot);
+    showStatusBadge(win);
+    return result;
+  }
+
+  function toggleStatusBadgeCollapsed() {
+    statusBadgeCollapsed = !statusBadgeCollapsed;
+    const snapshot = latestSnapshot || getCurrentSnapshot();
+    latestSnapshot = snapshot;
+    syncStatusBadge(snapshot, getTextScale(), null, { sendSnapshot: true });
+    if (typeof ctx.onReservedOffsetChange === "function") {
+      ctx.onReservedOffsetChange(readHudReservedOffset());
+    }
+    return { collapsed: statusBadgeCollapsed };
   }
 
   function sendRingSnapshot(snapshot = latestSnapshot, side = ringSide) {
@@ -927,9 +1132,13 @@ module.exports = function initSessionHud(ctx) {
     notifyReservedOffsetIfChanged();
   }
 
-  function syncQuotaRing(snapshot, scale, hudContentBounds, options = {}) {
+  function syncQuotaRing(snapshot, scale, hudContentBounds, statusBadgeContentBounds, options = {}) {
     const ring = shouldShow(snapshot)
-      ? computeRingBounds(snapshot, scale, collectRingAvoidRects(hudContentBounds))
+      ? computeRingBounds(
+        snapshot,
+        scale,
+        collectRingAvoidRects(hudContentBounds, statusBadgeContentBounds)
+      )
       : null;
     if (!ring) {
       hideQuotaRing();
@@ -967,6 +1176,9 @@ module.exports = function initSessionHud(ctx) {
     const hudEnabled = ctx.sessionHudEnabled !== false;
     const hasSessions = snapshotHasVisibleSessions(snapshot);
     const hudComputed = show && hudEnabled && hasSessions ? computeBounds(snapshot, scale) : null;
+    const statusBadgeComputed = statusBadgeEligible(snapshot)
+      ? computeStatusBadgeBounds(snapshot, scale)
+      : null;
     if (!hudComputed) {
       hideSessionHud();
     } else {
@@ -980,8 +1192,16 @@ module.exports = function initSessionHud(ctx) {
       }
     }
 
+    syncStatusBadge(snapshot, scale, statusBadgeComputed, options);
+
     // ── Quota ring (quota only; attached beside the pet) ──
-    syncQuotaRing(snapshot, scale, hudComputed ? hudComputed.contentBounds : null, options);
+    syncQuotaRing(
+      snapshot,
+      scale,
+      hudComputed ? hudComputed.contentBounds : null,
+      statusBadgeComputed ? statusBadgeComputed.contentBounds : null,
+      options
+    );
   }
 
   function broadcastSessionSnapshot(snapshot) {
@@ -1000,9 +1220,17 @@ module.exports = function initSessionHud(ctx) {
       && snapshotHasVisibleSessions(snapshot)
       ? computeBounds(snapshot, scale)
       : null;
-    syncQuotaRing(snapshot, scale, hudComputed ? hudComputed.contentBounds : null, {
-      sendSnapshot: false,
-    });
+    const statusBadgeComputed = statusBadgeEligible(snapshot)
+      ? computeStatusBadgeBounds(snapshot, scale)
+      : null;
+    syncStatusBadge(snapshot, scale, statusBadgeComputed, { sendSnapshot: false });
+    syncQuotaRing(
+      snapshot,
+      scale,
+      hudComputed ? hudComputed.contentBounds : null,
+      statusBadgeComputed ? statusBadgeComputed.contentBounds : null,
+      { sendSnapshot: false }
+    );
   }
 
   function getHudReservedOffset() {
@@ -1034,6 +1262,9 @@ module.exports = function initSessionHud(ctx) {
     if (ringWindow && !ringWindow.isDestroyed()) ringWindow.destroy();
     ringWindow = null;
     ringDidFinishLoad = false;
+    if (statusBadgeWindow && !statusBadgeWindow.isDestroyed()) statusBadgeWindow.destroy();
+    statusBadgeWindow = null;
+    statusBadgeDidFinishLoad = false;
     lastHudHeight = HUD_ROW_HEIGHT;
     lastHudLayout = null;
     notifyReservedOffsetIfChanged();
@@ -1050,6 +1281,8 @@ module.exports = function initSessionHud(ctx) {
     cleanup,
     getWindow: () => hudWindow,
     getQuotaRingWindow: () => ringWindow,
+    getStatusBadgeWindow: () => statusBadgeWindow,
+    toggleStatusBadgeCollapsed,
     // v5 three-state API
     revealFromPet,
     handlePinnedChanged,
@@ -1074,6 +1307,7 @@ module.exports.__test = {
   pointInExpandedRect,
   computeAutoHideHotZone,
   pointInHotZone,
+  evaluateStatusBadgeEligible,
   constants: {
     HUD_WIDTH,
     HUD_WIDTH_COMPACT,

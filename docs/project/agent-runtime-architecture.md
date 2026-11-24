@@ -220,7 +220,7 @@ Direct Send 保持原生手动粘贴边界。未知的旧会话和持久化会�
   活动偏好不依赖完成偏好：只开活动偏好时，临时会话工作期间收起，完成后重新显示；
   两者都开时，符合各自门槛的活动行与完成行都收起。清扫及其他强提示不属于活动过滤范围。
 
-HUD 原生几何、renderer、HUD 快捷导航和 HUD 统计统一消费独立 snapshot 字段
+HUD 原生几何、renderer、HUD 快捷导航和常驻状态徽标统一消费独立 snapshot 字段
 `hudHiddenByPreference`，不复用 `hiddenFromHud`。活动偏好还复用同一 active-only 判定，
 为宠物状态和 SVG 层级生成只读会话投影；已收起的临时活动不再驱动思考/工作动画，
 也不能仅凭该活动唤醒被动 sleep/Mini 状态。已有子代理/待输入呈现投影须先应用再过滤，
@@ -229,6 +229,11 @@ HUD 原生几何、renderer、HUD 快捷导航和 HUD 统计统一消费独立 s
 额度、审批决定、完成确认、小结或活动时间。开关变化经 controller/effect router 重发 snapshot，
 活动开关还在 mirror 更新后重新选择宠物呈现；pending 卡增删经合并微任务重算。
 关闭相应选项立即恢复仍存活且不被另一个选项收起的行。老 hook 没有 typed 临时标记时维持原显示。
+
+常驻状态徽标由默认关闭的 `sessionStatusBadgeEnabled` 独立控制，复用同一 HUD 可见集合，
+只统计 working / done / needs-input。它与点击桌宠展开的旧列表分离：启用后默认展开三项，
+点击徽标只保留 working 数；点击桌宠仍打开旧列表。徽标不展示 idle、标题、上下文或计划，
+也不把点击行为改成 Dashboard 跳转。
 
 本机 Codex 会话标题：现有 JSONL monitor 每轮为已观察到生命周期的会话合并读取一次
 `session_index.jsonl`（沿用 512 KiB tail 上限）。新标题/改名以 `session_index:title`

@@ -449,6 +449,7 @@ const updateRegistry = {
     "bottom-right",
   ]),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
+  sessionStatusBadgeEnabled: requireBoolean("sessionStatusBadgeEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
