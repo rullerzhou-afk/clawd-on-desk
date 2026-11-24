@@ -15,6 +15,7 @@ const {
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
   isLocalClaudeDesktopIdleSession,
+  isLocalQoderDesktopIdleSession,
   isLocalCodeBuddyIdeSession,
   getStaleSessionDecision,
 } = require("../src/state-stale-cleanup");
@@ -75,6 +76,15 @@ function workbuddyDesktopSession(overrides = {}) {
     agentId: "workbuddy",
     agentPid: 50,
     sourcePid: 51,
+    ...overrides,
+  });
+}
+
+function qoderDesktopSession(overrides = {}) {
+  return session({
+    agentId: "qoder",
+    agentPid: 60,
+    sourcePid: 61,
     ...overrides,
   });
 }
@@ -774,6 +784,47 @@ describe("state stale cleanup decisions", () => {
       alivePids: new Set([60, 61]),
       staleConfig,
     }).result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
+  });
+
+  it("deletes an idle local Qoder conversation after timeout while the desktop app stays alive", () => {
+    const target = qoderDesktopSession({ updatedAt: 1000000 - 60_001 });
+    const result = decision(target, {
+      alivePids: new Set([60, 61]),
+      staleConfig: { sessionStaleMs: 60_000 },
+    }).result;
+
+    assert.strictEqual(isLocalQoderDesktopIdleSession(qoderDesktopSession()), true);
+    assert.deepStrictEqual(result, { action: "delete", reason: "qoder-desktop-idle-timeout" });
+  });
+
+  it("keeps Qoder conversations before the cutoff or when the cutoff is disabled", () => {
+    const alivePids = new Set([60, 61]);
+    assert.deepStrictEqual(decision(qoderDesktopSession({
+      updatedAt: 1000000 - 59_999,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 60_000 },
+    }).result, { action: null });
+    assert.deepStrictEqual(decision(qoderDesktopSession({
+      updatedAt: 1000000 - 24 * 60 * 60 * 1000,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 0 },
+    }).result, { action: null });
+  });
+
+  it("does not apply the Qoder idle timeout to remote, headless, or working sessions", () => {
+    const updatedAt = 1000000 - 60_001;
+    const alivePids = new Set([60, 61]);
+    const staleConfig = { sessionStaleMs: 60_000 };
+    for (const target of [
+      qoderDesktopSession({ host: "remote-box", updatedAt }),
+      qoderDesktopSession({ headless: true, updatedAt }),
+      qoderDesktopSession({ state: "working", updatedAt }),
+    ]) {
+      const result = decision(target, { alivePids, staleConfig }).result;
+      assert.notStrictEqual(result.reason, "qoder-desktop-idle-timeout");
+    }
   });
 
   it("treats sessionStaleMs=0 as disabled — does not delete by age", () => {
