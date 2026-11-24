@@ -80,6 +80,7 @@ TERMINAL_NAMES = {
         "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
         "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
         "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+        "t3code",
     },
 }
 SYSTEM_BOUNDARY = {

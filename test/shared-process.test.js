@@ -162,6 +162,46 @@ describe("createPidResolver()", () => {
     const { pidChain } = resolve();
     assert.ok(pidChain.length <= 1);
   });
+
+  it("identifies t3code ancestor as terminal and stable pid on Linux", () => {
+    const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      platform: "linux",
+      execFileSyncMock: (command, args) => {
+        const invocation = `${command} ${args.join(" ")}`;
+        if (invocation === "ps -o ppid= -p 100") return "200\n";
+        if (invocation === "ps -o comm= -p 100") return "bash\n";
+        if (invocation === "ps -o ppid= -p 200") return "300\n";
+        if (invocation === "ps -o comm= -p 200") return "claude\n";
+        if (invocation === "ps -o ppid= -p 300") return "400\n";
+        if (invocation === "ps -o comm= -p 300") return "t3code\n";
+        if (invocation === "ps -o ppid= -p 400") return "500\n";
+        if (invocation === "ps -o comm= -p 400") return "t3code\n";
+        if (invocation === "ps -o ppid= -p 500") return "600\n";
+        if (invocation === "ps -o comm= -p 500") return "gnome-shell\n";
+        if (invocation === "ps -o ppid= -p 600") return "1\n";
+        if (invocation === "ps -o comm= -p 600") return "systemd\n";
+        const err = new Error(`unexpected command: ${invocation}`);
+        err.code = "ENOENT";
+        throw err;
+      },
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      assert.ok(cfg.terminalNames.has("t3code"));
+      const resolve = mod.createPidResolver({
+        ...LIVE_GATE,
+        platformConfig: cfg,
+        agentNames: { mac: new Set(["claude"]), linux: new Set(["claude"]) },
+        startPid: 100,
+      });
+      const result = resolve();
+      assert.strictEqual(result.terminalPid, 400);
+      assert.strictEqual(result.stablePid, 400);
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 describe("createPidResolver() — POSIX Desktop preference boundary", () => {
