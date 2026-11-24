@@ -92,6 +92,7 @@ describe("persistent status badge renderer contract", () => {
     assert.match(renderer, /createMetric\("working"/);
     assert.match(renderer, /createMetric\("done"/);
     assert.match(renderer, /createMetric\("attention"/);
+    assert.match(renderer, /normalized > 99 \? "99\+" : String\(normalized\)/);
     assert.match(html, /\.metric-working/);
     assert.match(html, /\.metric-done/);
     assert.match(html, /\.metric-attention/);

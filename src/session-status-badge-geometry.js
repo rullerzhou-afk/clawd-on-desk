@@ -1,6 +1,9 @@
 "use strict";
 
-const STATUS_BADGE_WIDTH = 112;
+// Leave enough room for three capped two-digit-plus counters. The rendered
+// pill stays content-sized; this reserves transparent shell width so high
+// counts cannot overflow when the user changes text scale.
+const STATUS_BADGE_WIDTH = 144;
 const STATUS_BADGE_COLLAPSED_WIDTH = 46;
 const STATUS_BADGE_HEIGHT = 28;
 const STATUS_BADGE_SHELL = Object.freeze({

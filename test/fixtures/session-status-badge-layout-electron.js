@@ -20,7 +20,12 @@ function snapshot(language) {
     badge: "running",
     headless: false,
   }));
-  const done = { id: "done-1", state: "idle", badge: "done", headless: false };
+  const done = Array.from({ length: 120 }, (_, index) => ({
+    id: `done-${index}`,
+    state: "idle",
+    badge: "done",
+    headless: false,
+  }));
   const attention = {
     id: "input-1",
     state: "working",
@@ -28,9 +33,17 @@ function snapshot(language) {
     pendingAttention: true,
     headless: false,
   };
+  const attentionSessions = Array.from({ length: 100 }, (_, index) => ({
+    ...attention,
+    id: `input-${index}`,
+  }));
   return {
-    sessions: [...working, done, attention],
-    orderedIds: [...working.map((session) => session.id), attention.id, done.id],
+    sessions: [...working, ...done, ...attentionSessions],
+    orderedIds: [
+      ...working.map((session) => session.id),
+      ...attentionSessions.map((session) => session.id),
+      ...done.map((session) => session.id),
+    ],
     collapsed: false,
     language,
   };

@@ -25,7 +25,10 @@ function createMetric(status, count) {
   symbol.setAttribute("aria-hidden", "true");
   const value = document.createElement("span");
   value.className = "metric-count";
-  value.textContent = String(Math.max(0, Math.floor(Number(count) || 0)));
+  const normalized = Math.max(0, Math.floor(Number(count) || 0));
+  // Keep the persistent pill compact when a large backlog is present. The
+  // hover title still reports the exact uncapped count.
+  value.textContent = normalized > 99 ? "99+" : String(normalized);
   metric.appendChild(symbol);
   metric.appendChild(value);
   return metric;
