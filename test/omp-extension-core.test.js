@@ -2,6 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const core = require("../hooks/omp-extension-core");
 const piCore = require("../hooks/pi-extension-core");
@@ -48,6 +50,126 @@ function attachRecorder(omp, options = {}) {
 }
 
 describe("omp-extension-core", () => {
+  it("PR #1414 follow-up: picks the outer T3 Code process on Linux", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 30, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 40, name: "gnome-shell", isTerminal: false, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 30);
+  });
+
+  it("PR #1414 follow-up: walks through all consecutive T3 Code processes", () => {
+    const entries = [
+      { pid: 10, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 30, name: "t3code", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 30);
+  });
+
+  it("PR #1414 follow-up: stops at a nonterminal between T3 Code processes", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 30, name: "bash", isTerminal: false, isEditor: false },
+      { pid: 40, name: "t3code", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 20);
+  });
+
+  it("PR #1414 follow-up: stops at a nonterminal parent named t3code", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 30, name: "t3code", isTerminal: false, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 20);
+  });
+
+  it("PR #1414 follow-up: stops at a different terminal after T3 Code", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 30, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 40, name: "kitty", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 30);
+  });
+
+  it("PR #1414 follow-up: picks the nearest of two consecutive Konsole processes", () => {
+    const entries = [
+      { pid: 10, name: "bash", isTerminal: false, isEditor: false },
+      { pid: 20, name: "konsole", isTerminal: true, isEditor: false },
+      { pid: 30, name: "konsole", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 20);
+  });
+
+  it("PR #1414 follow-up: picks a single matching terminal", () => {
+    const entries = [
+      { pid: 10, name: "bash", isTerminal: false, isEditor: false },
+      { pid: 20, name: "kitty", isTerminal: true, isEditor: false },
+      { pid: 30, name: "systemd", isTerminal: false, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 20);
+  });
+
+  it("PR #1414 follow-up: picks an editor-only match before a terminal on Linux", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "code", isTerminal: false, isEditor: true },
+      { pid: 30, name: "kitty", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 20);
+  });
+
+  it("PR #1414 follow-up: picks the first match when it is also an editor", () => {
+    const linuxEntries = [
+      { pid: 10, name: "t3code", isTerminal: true, isEditor: true },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+    ];
+    const windowsEntries = [
+      { pid: 10, name: "pi.exe", isTerminal: false, isEditor: false },
+      { pid: 20, name: "code.exe", isTerminal: true, isEditor: true },
+      { pid: 30, name: "windowsterminal.exe", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(linuxEntries, "linux"), 10);
+    assert.strictEqual(core.pickSourcePid(windowsEntries, "win32"), 20);
+  });
+
+  it("PR #1414 follow-up: picks the nearest T3 Code process on Windows and macOS", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "t3code", isTerminal: true, isEditor: false },
+      { pid: 30, name: "t3code", isTerminal: true, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid(entries, "win32"), 20);
+    assert.strictEqual(core.pickSourcePid(entries, "darwin"), 20);
+  });
+
+  it("PR #1414 follow-up: returns zero with no terminal or editor match", () => {
+    const entries = [
+      { pid: 10, name: "node", isTerminal: false, isEditor: false },
+      { pid: 20, name: "bash", isTerminal: false, isEditor: false },
+    ];
+    assert.strictEqual(core.pickSourcePid([], "linux"), 0);
+    assert.strictEqual(core.pickSourcePid(entries, "linux"), 0);
+  });
+
+  it("PR #1414 follow-up: both extensions call the selector and fall back for an older core", () => {
+    for (const filename of ["pi-extension.ts", "omp-extension.ts"]) {
+      const source = fs.readFileSync(path.join(__dirname, "../hooks", filename), "utf8");
+      assert.match(source,
+        /typeof core\.pickSourcePid === "function"\s*\?\s*core\.pickSourcePid\(entries, process\.platform\)/,
+        filename);
+      assert.match(source,
+        /:\s*entries\.find\(\(entry\) => entry\.isTerminal \|\| entry\.isEditor\)\?\.pid \?\? 0/,
+        filename);
+    }
+  });
+
   describe("reporting gate", () => {
     it("detects non-interactive OMP modes from argv", () => {
       assert.strictEqual(core.parseMode(["node", "omp"]), "interactive");

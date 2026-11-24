@@ -254,7 +254,7 @@ function getProcessMetadata(): ProcessMetadata {
   }
 
   const pidChain: number[] = [];
-  let sourcePid = 0;
+  const entries: Array<{ pid: number; name: string; isTerminal: boolean; isEditor: boolean }> = [];
   let editor: "code" | "cursor" | undefined;
   let pid = process.pid;
   const { terminalNames, systemBoundary, editorByProcess } = getPlatformProcessConfig();
@@ -276,14 +276,21 @@ function getProcessMetadata(): ProcessMetadata {
 
     const editorName = detectEditor(info.rawName || info.name, editorByProcess);
     if (!editor && editorName) editor = editorName;
-    if (!sourcePid && (terminalNames.has(info.name) || editorName)) {
-      sourcePid = info.pid;
-    }
+    entries.push({
+      pid: info.pid,
+      name: info.name,
+      isTerminal: terminalNames.has(info.name),
+      isEditor: Boolean(editorName),
+    });
 
     if (systemBoundary.has(info.name)) break;
     if (!info.ppid || info.ppid === pid) break;
     pid = info.ppid;
   }
+  // The installer replaces this file before the core, so an older core may still be loaded.
+  const sourcePid = typeof core.pickSourcePid === "function"
+    ? core.pickSourcePid(entries, process.platform)
+    : entries.find((entry) => entry.isTerminal || entry.isEditor)?.pid ?? 0;
 
   let tmuxSocket: string | undefined;
   let tmuxClient: string | undefined;
