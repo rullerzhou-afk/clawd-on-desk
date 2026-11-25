@@ -52,6 +52,7 @@ html.pet-hidden * {
   #pet-media-layer,
   #pet-accessory-layer,
   #pet-mouth-accessory-layer,
+  #pet-balls-layer,
 #pet-effect-stage,
 #pet-particle-layer {
   position: absolute;
@@ -168,4 +169,21 @@ html.pet-hidden * {
   50% {
     translate: 3px 0;
   }
+}
+
+/* Juggling front layer ---------------------------------------------------
+   The juggling animation paints its three packets behind the pet body, and
+   every accessory layer paints above the media object, so a worn hat hides
+   the balls while they cross its brim. The packets are duplicated into this
+   layer (above the accessory layers) and follow the media document's live
+   packet transforms; the pet's own painting order is untouched. The layer is
+   only mounted while the media file is the clawd juggling animation. */
+#pet-balls-layer {
+  display: none;
+  pointer-events: none;
+}
+
+#pet-balls-layer > .clawd-balls-object {
+  position: absolute;
+  pointer-events: none;
 }

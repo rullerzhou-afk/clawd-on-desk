@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <!-- Front overlay: the three juggling packets only, no animation of its own.
+       The renderer copies the media document's packet transforms here each
+       frame, so this copy stays phase-locked with the sampled media animation. -->
+  <g class="packets">
+    <g class="packet p1">
+      <circle cx="0" cy="0" r="1.2" fill="#FF5252"/>
+      <circle cx="-0.35" cy="-0.35" r="0.45" fill="#FF8A80" opacity="0.7"/>
+      <circle cx="0.3" cy="0.4" r="0.6" fill="#D32F2F" opacity="0.3"/>
+    </g>
+    <g class="packet p2">
+      <circle cx="0" cy="0" r="1.2" fill="#FFC107"/>
+      <circle cx="-0.35" cy="-0.35" r="0.45" fill="#FFE082" opacity="0.7"/>
+      <circle cx="0.3" cy="0.4" r="0.6" fill="#FFA000" opacity="0.3"/>
+    </g>
+    <g class="packet p3">
+      <circle cx="0" cy="0" r="1.2" fill="#4CAF50"/>
+      <circle cx="-0.35" cy="-0.35" r="0.45" fill="#81C784" opacity="0.7"/>
+      <circle cx="0.3" cy="0.4" r="0.6" fill="#388E3C" opacity="0.3"/>
+    </g>
+  </g>
+</svg>
