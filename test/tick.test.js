@@ -1962,6 +1962,11 @@ describe("tick visual cursor source", () => {
     mock.timers.tick(1);
   }
 
+  // Chained timers only fire on time when the mock clock moves in small steps.
+  function run(ms) {
+    for (let t = 0; t < ms; t += 50) mock.timers.tick(50);
+  }
+
   it("follows the visual point while the regular query stays still", () => {
     visual = { x: 60, y: 60 };
     start();
@@ -1987,6 +1992,45 @@ describe("tick visual cursor source", () => {
     visual = { x: 600, y: 600 };
     mock.timers.tick(100);
     assert.ok(eyeMoves.length > afterFirst, "expected an eye update within the 100 ms boost tick");
+  });
+
+  it("stays awake while only the visual point moves, then sleeps once it stops", () => {
+    const states = [];
+    ctx.setState = (state) => { states.push(state); };
+    visual = { x: 60, y: 60 };
+    start();
+    for (let i = 0; i < 70; i++) {
+      visual = { x: 600 + i, y: 600 };
+      run(1000);
+    }
+    assert.deepStrictEqual(states, []);
+    run(62000);
+    assert.ok(states.includes("yawning"), `expected yawning, got ${states}`);
+  });
+
+  it("does not take the visual point appearing or going away for movement", () => {
+    const states = [];
+    ctx.setState = (state) => { states.push(state); };
+    visual = { x: 600, y: 600 };
+    start();
+    run(40000);
+    visual = null;
+    run(5000);
+    visual = { x: 900, y: 100 };
+    run(17000);
+    assert.ok(states.includes("yawning"), `expected yawning, got ${states}`);
+  });
+
+  it("cancels roaming when only the visual point moves", () => {
+    let cancels = 0;
+    ctx.roam = { enabled: true, cancelRoam() { cancels++; }, tick() {} };
+    visual = { x: 600, y: 600 };
+    start();
+    mock.timers.tick(1000);
+    assert.strictEqual(cancels, 0);
+    visual = { x: 700, y: 600 };
+    mock.timers.tick(300);
+    assert.strictEqual(cancels, 1);
   });
 
   it("uses the regular query when there is no visual point", () => {

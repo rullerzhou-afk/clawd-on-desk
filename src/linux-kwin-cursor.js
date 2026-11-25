@@ -10,9 +10,10 @@
 //
 //   KWin: Workspace.cursorPosChanged → POST 127.0.0.1:<bound port>/kwin-cursor
 //         {"x":…,"y":…} with a per-launch token header
-//   Clawd: tick.js reads getPoint() for eye follow and theme pointer payloads
-//          only; drag, menus and hover tests keep screen.getCursorScreenPoint()
-//          because a ~20/s async push would lag a drag.
+//   Clawd: tick.js reads getPoint() for eye follow, theme pointer payloads and
+//          idle/sleep timing, and state.js for the wake poll. Drag, menus and
+//          hover tests keep screen.getCursorScreenPoint() because a ~20/s async
+//          push would lag a drag.
 //
 // Bounds on the KWin side (the script runs inside the compositor): one request
 // in flight, the point read at send time (only the latest matters), at most one

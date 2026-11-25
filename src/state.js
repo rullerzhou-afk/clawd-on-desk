@@ -494,6 +494,9 @@ let wakePollStartTimer = null;
 let wakePollStartState = null;
 let wakePollTimer = null;
 let lastWakeCursorX = null, lastWakeCursorY = null;
+// #1410: on Plasma Wayland the regular query freezes over native windows, so
+// movement of the KWin point wakes the pet too.
+let lastWakeVisual = null;
 
 function isWakePollState(state) {
   return state === "dozing" || state === "collapsing" || state === "sleeping";
@@ -1225,12 +1228,17 @@ function scheduleWakePollStart(state) {
   }, WAKE_POLL_START_DELAY_MS);
 }
 
+function getVisualCursorPoint() {
+  return typeof ctx.getVisualCursorPoint === "function" ? ctx.getVisualCursorPoint() : null;
+}
+
 function startWakePoll() {
   if (!_getCursor || wakePollTimer) return;
   if (!isWakePollState(currentState) || ctx.doNotDisturb) return;
   const cursor = _getCursor();
   lastWakeCursorX = cursor.x;
   lastWakeCursorY = cursor.y;
+  lastWakeVisual = getVisualCursorPoint();
   scheduleWakePollTick();
 }
 
@@ -1244,7 +1252,13 @@ function runWakePollTick() {
   wakePollTimer = null;
   if (!_getCursor || !isWakePollState(currentState) || ctx.doNotDisturb) return;
   const cursor = _getCursor();
-  const moved = cursor.x !== lastWakeCursorX || cursor.y !== lastWakeCursorY;
+  const visual = getVisualCursorPoint();
+  // Only movement between two visual points counts, not the source coming up
+  // or going away.
+  const visualMoved = !!visual && !!lastWakeVisual
+    && (visual.x !== lastWakeVisual.x || visual.y !== lastWakeVisual.y);
+  lastWakeVisual = visual;
+  const moved = cursor.x !== lastWakeCursorX || cursor.y !== lastWakeCursorY || visualMoved;
 
   if (moved) {
     stopWakePoll();

@@ -2590,6 +2590,8 @@ const _stateCtx = {
   get forceEyeResend() { return forceEyeResend; },
   set forceEyeResend(v) { setForceEyeResend(v); },
   get mouseStillSince() { return _tick ? _tick._mouseStillSince : Date.now(); },
+  // Wake poll (#1410): called from timers only, after _kwinCursor is set up.
+  getVisualCursorPoint: () => (_kwinCursor ? _kwinCursor.getPoint() : null),
   get pendingPermissions() { return pendingPermissions; },
   notifyUpdaterSilentExit: () => notifyUpdaterSilentExit(),
   sendToRenderer,
@@ -2912,7 +2914,8 @@ function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHud
 // ── KDE Plasma Wayland eye follow (#1410) — src/linux-kwin-cursor.js ──
 // Under the XWayland relaunch the X11 cursor query freezes over native Wayland
 // windows; a KWin script pushes the global cursor to the local server instead.
-// Only eye follow and theme pointer payloads read it (tick.js).
+// Eye follow, theme pointer payloads, idle/sleep timing, roam cancel (tick.js)
+// and the wake poll (state.js) read it; drag, menus and hover do not.
 const _kwinCursorModule = require("./linux-kwin-cursor");
 const kwinCursorEligible = _kwinCursorModule.isLinuxKwinCursorEligible({
   ozonePlatform: app.commandLine.getSwitchValue("ozone-platform"),
@@ -2974,7 +2977,7 @@ const _tickCtx = {
   getObjRect,
   getHitRectScreen,
   getAssetPointerPayload,
-  // Eye follow / pointer payloads only; null → use the regular cursor query.
+  // Never drag, menus or hover; null → use the regular cursor query.
   getVisualCursorPoint: _kwinCursor ? () => _kwinCursor.getPoint() : null,
   get roam() { return _roam; },
   get idleActivity() { return _idleActivity; },

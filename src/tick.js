@@ -13,7 +13,7 @@ let lastCursorX = null, lastCursorY = null;
 // #1410: eye follow can read a separate cursor source (ctx.getVisualCursorPoint,
 // KWin on Plasma Wayland). Without one these mirror lastCursorX/Y exactly.
 let lastEyeCursorX = null, lastEyeCursorY = null;
-let lastVisualMoveAt = 0;
+let lastVisualCursor = null;
 let mouseStillSince = Date.now();
 let isMouseIdle = false;       // showing idle-look
 let hasTriggeredYawn = false;  // 60s threshold already fired
@@ -188,7 +188,6 @@ function getBaseTickDelay(idleNow, miniIdleNow) {
   if (ctx.miniMode || miniIdleNow) return FAST_TICK_MS;
   if (idleNow) {
     if (Date.now() - mouseStillSince <= RECENT_MOUSE_MS) return BOOST_TICK_MS;
-    if (Date.now() - lastVisualMoveAt <= RECENT_MOUSE_MS) return BOOST_TICK_MS;
     return IDLE_TICK_MS;
   }
   if (ctx.idlePaused) return REACTION_TICK_MS;
@@ -333,6 +332,7 @@ function runMainTickOnce() {
         lastCursorY = null;
         lastEyeCursorX = null;
         lastEyeCursorY = null;
+        lastVisualCursor = null;
         mouseStillSince = Date.now();
         if (ctx.idleActivity) ctx.idleActivity.noteIdleEntered();
       }
@@ -358,8 +358,9 @@ function runMainTickOnce() {
     lastCursorY = cursor.y;
 
     // #1410: eye follow and theme pointer payloads prefer the visual source,
-    // which also sees the cursor over native Wayland windows. Hover, mini
-    // peek, roam cancel and idle timing below keep the regular query.
+    // which also sees the cursor over native Wayland windows. Its movement also
+    // counts for idle timing and roam cancel. Hover and mini peek below keep
+    // the regular query.
     const visualCursor = typeof ctx.getVisualCursorPoint === "function"
       ? ctx.getVisualCursorPoint()
       : null;
@@ -368,7 +369,12 @@ function runMainTickOnce() {
       && (eyeCursor.x !== lastEyeCursorX || eyeCursor.y !== lastEyeCursorY);
     lastEyeCursorX = eyeCursor.x;
     lastEyeCursorY = eyeCursor.y;
-    if (visualCursor && eyeMoved) lastVisualMoveAt = Date.now();
+    // Only movement between two visual points counts: the source coming up or
+    // going away moves eyeCursor without anyone touching the mouse.
+    const visualMoved = !!visualCursor && !!lastVisualCursor
+      && (visualCursor.x !== lastVisualCursor.x || visualCursor.y !== lastVisualCursor.y);
+    lastVisualCursor = visualCursor;
+    const mouseMoved = moved || visualMoved;
 
     // ── Cursor-over-pet tracking (for mini peek + eye tracking, NOT for input routing) ──
     const pointerBridgeKey = getPointerBridgeKey();
@@ -424,7 +430,7 @@ function runMainTickOnce() {
     if (!idleNow && !miniIdleNow && !roamNow) return nextDelay();
 
     // ── Free roam: cancel roaming when mouse moves ──
-    if (ctx.roam && moved && ctx.roam.enabled) {
+    if (ctx.roam && mouseMoved && ctx.roam.enabled) {
       // Pointer movement during an idle gap must defer the queued walk;
       // during a walk it also ends the unattended period.
       if (roamNow) resetIdlePeriodForMouseMove();
@@ -434,7 +440,7 @@ function runMainTickOnce() {
     // ── Below: idle or mini-idle logic ──
     // Normal idle: mouse idle detection + sleep sequence
     if (idleNow) {
-      if (moved) {
+      if (mouseMoved) {
         resetIdlePeriodForMouseMove();
       }
 
@@ -704,7 +710,7 @@ function cleanup() {
   lastCursorY = null;
   lastEyeCursorX = null;
   lastEyeCursorY = null;
-  lastVisualMoveAt = 0;
+  lastVisualCursor = null;
   isMouseIdle = false;
   hasTriggeredYawn = false;
   idleLookPlayed = false;
