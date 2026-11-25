@@ -3,9 +3,6 @@
 // Exercises src/gravity.js against a fake context (real time, a few seconds).
 const test = require("node:test");
 const assert = require("node:assert");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
 const initGravity = require("../src/gravity");
 
 const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1032 };
@@ -48,24 +45,14 @@ function makeCtx(y, x = 500) {
   return ctx;
 }
 
-// A path in a fresh folder: no floor file yet, as on a first run.
-function tempFloorFile() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-gravity-test-"));
-  return path.join(dir, "gravity-floor.json");
-}
-
 // Gravity is off by default (the `gravity` pref), so the tests turn it on.
-function makeGravity(ctx, floorFile = tempFloorFile(), enabled = true) {
-  return initGravity(ctx, {
-    enabled,
-    floorFile,
-    getDisplayKey: () => "test-display",
-  });
+function makeGravity(ctx) {
+  return initGravity(ctx, { enabled: true });
 }
 
-function fallFrom(y, floorFile) {
+function fallFrom(y) {
   const ctx = makeCtx(y);
-  const gravity = makeGravity(ctx, floorFile);
+  const gravity = makeGravity(ctx);
   return new Promise((resolve) => {
     const started = gravity.startFall((landed, info) => resolve({ started, landed, info, ctx }));
     if (!started) resolve({ started, ctx });
@@ -146,64 +133,26 @@ test("mini mode: does not fall", () => {
   assert.strictEqual(gravity.startFall(() => {}), false);
 });
 
-test("Shift on release saves the height above the taskbar, and the shelf survives a restart", async () => {
-  const floorFile = tempFloorFile();
-  const shelfY = FLOOR_Y - 300;
-  const setter = makeGravity(makeCtx(shelfY), floorFile);
-  assert.strictEqual(setter.setFloorHere(), true);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).floors, {
-    "test-display": { heightAboveTaskbar: 300 },
-  });
-  const above = await fallFrom(shelfY - 300, floorFile);
-  assert.strictEqual(above.landed, true);
-  assert.strictEqual(lastY(above.ctx), shelfY, "from above it lands on the shelf");
-});
-
-test("below the shelf it falls to the taskbar; on top of it, it does not fall", async () => {
-  const floorFile = tempFloorFile();
-  const shelfY = FLOOR_Y - 300;
-  makeGravity(makeCtx(shelfY), floorFile).setFloorHere();
-  const below = await fallFrom(shelfY + 100, floorFile);
-  assert.strictEqual(below.landed, true);
-  assert.strictEqual(lastY(below.ctx), FLOOR_Y);
-  const onShelf = await fallFrom(shelfY + 1, floorFile);
-  assert.strictEqual(onShelf.started, false);
-});
-
-test("Shift on release at the taskbar clears the shelf", () => {
-  const floorFile = tempFloorFile();
-  const savedFloors = () => JSON.parse(fs.readFileSync(floorFile, "utf8")).floors;
-  makeGravity(makeCtx(FLOOR_Y - 300), floorFile).setFloorHere();
-  assert.deepStrictEqual(savedFloors(), { "test-display": { heightAboveTaskbar: 300 } });
-  makeGravity(makeCtx(FLOOR_Y), floorFile).setFloorHere();
-  assert.deepStrictEqual(savedFloors(), {});
-});
-
-test("off by default: it neither falls nor marks a floor", () => {
-  const floorFile = tempFloorFile();
+test("off by default: it does not fall", () => {
   const ctx = makeCtx(100);
-  const gravity = initGravity(ctx, { floorFile, getDisplayKey: () => "test-display" });
+  const gravity = initGravity(ctx);
   assert.strictEqual(gravity.isEnabled(), false);
   assert.strictEqual(gravity.startFall(() => assert.fail("should not fall")), false);
-  assert.strictEqual(gravity.setFloorHere(), false);
   assert.strictEqual(ctx.applied.length, 0);
-  assert.strictEqual(fs.existsSync(floorFile), false, "nothing is saved while it is off");
 });
 
-test("turned off: no fall and no floor marking", () => {
+test("turned off: it does not fall", () => {
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx);
   gravity.setEnabled(false);
   assert.strictEqual(gravity.isEnabled(), false);
   assert.strictEqual(gravity.startFall(() => assert.fail("should not fall")), false);
-  assert.strictEqual(gravity.setFloorHere(), false);
   assert.strictEqual(ctx.applied.length, 0);
 });
 
 test("turning off mid-fall stops it where it is; turning back on with the pet in the air makes it fall", async () => {
-  const floorFile = tempFloorFile();
   const ctx = makeCtx(100);
-  const gravity = makeGravity(ctx, floorFile);
+  const gravity = makeGravity(ctx);
   const ends = [];
   gravity.setFallEndHandler((landed) => ends.push(landed));
   gravity.startFall();

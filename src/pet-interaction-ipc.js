@@ -83,7 +83,6 @@ function registerPetInteractionIpc(options = {}) {
   const startGravityFall = options.startGravityFall || (() => false);
   const beginGravityDrag = options.beginGravityDrag || (() => {});
   const isGravityFalling = options.isGravityFalling || (() => false);
-  const setGravityFloorHere = options.setGravityFloorHere || (() => false);
   const setGravityFallEndHandler = options.setGravityFallEndHandler || (() => {});
   const statPath = requiredDependency(options.statPath, "statPath");
   const openTerminalAt = requiredDependency(options.openTerminalAt, "openTerminalAt");
@@ -173,7 +172,7 @@ function registerPetInteractionIpc(options = {}) {
     else sendToRenderer("play-click-reaction", svg, duration);
   });
 
-  on("drag-end", (_event, setFloor) => {
+  on("drag-end", () => {
     try {
       if (!isMiniMode() && !isMiniTransitioning()) {
         if (!getDisableMiniMode()) checkMiniModeSnap();
@@ -192,12 +191,8 @@ function registerPetInteractionIpc(options = {}) {
           syncDisplayedVisualGeometry();
           repositionFloatingBubbles();
           refreshIdleVisualAfterDrag();
-          // Shift on release: this height becomes the floor; a light squash confirms it.
-          if (setFloor === true) {
-            if (setGravityFloorHere()) sendToRenderer("gravity-landed", 0.35);
-          } else {
-            startGravityFall(finishGravityFall);
-          }
+          // Gravity on: a pet released in mid-air drops to the floor.
+          startGravityFall(finishGravityFall);
         }
       }
     } finally {

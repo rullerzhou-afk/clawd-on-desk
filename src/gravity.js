@@ -7,14 +7,8 @@
 // Same frame loop as roam.js: applyPetWindowBounds every 16 ms with the size
 // frozen at the start (#569), hit window and anchored surfaces synced per frame.
 //
-// Floors per display: the taskbar one (lowest resting spot) and an optional
-// shelf set with Shift+release, stored in ~/.clawd/gravity-floor.json as its
-// height above the taskbar floor. The shelf is one-way: it only catches a pet
-// coming down onto it, and below it the pet falls to the taskbar.
-
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+// The floor is the display's lowest resting spot, from the rest clamp the pet
+// already obeys.
 
 const GRAVITY_PX_PER_S2 = 2800;
 const MAX_FALL_SPEED_PX_PER_S = 2400;
@@ -22,9 +16,6 @@ const FRAME_MS = 16;
 // A late frame advances the fall by at most this much.
 const MAX_FRAME_MS = 32;
 const MIN_DROP_PX = 2;
-// Released this close below the shelf still counts as standing on it.
-const SHELF_TOLERANCE_PX = 2;
-const FLOOR_FILE = path.join(os.homedir(), ".clawd", "gravity-floor.json");
 // Landing squash intensity (0..1) follows the impact speed: no squash up to a
 // ~40 px drop, full squash from ~500 px (v = sqrt(2 * g * h)).
 const SQUASH_MIN_SPEED = Math.sqrt(2 * GRAVITY_PX_PER_S2 * 40);
@@ -50,49 +41,14 @@ function advanceFall(motion, elapsedMs) {
   return { y, vy };
 }
 
-// Display bounds as the key: stable across restarts while the monitor layout stays the same.
-function electronDisplayKey(x, y) {
-  try {
-    const { screen } = require("electron");
-    const display = screen.getDisplayNearestPoint({ x: Math.round(x), y: Math.round(y) });
-    const b = display && display.bounds;
-    return b ? `${b.x},${b.y},${b.width}x${b.height}` : null;
-  } catch {
-    return null;
-  }
-}
-
 module.exports = function initGravity(ctx, options = {}) {
-  const floorFile = options.floorFile || FLOOR_FILE;
-  const getDisplayKey = options.getDisplayKey || electronDisplayKey;
   const now = options.now || (() => performance.now());
   // Starts from the `gravity` pref; main.js passes later changes to setEnabled.
   let enabled = options.enabled === true;
-  let floors = loadFloors();
   let falling = false;
   let fallTimer = null;
   let onFallEnd = null;
   let defaultFallEnd = null;
-
-  function loadFloors() {
-    try {
-      const data = JSON.parse(fs.readFileSync(floorFile, "utf8"));
-      return data && data.floors && typeof data.floors === "object" ? data.floors : {};
-    } catch {
-      return {};
-    }
-  }
-
-  function saveFloors() {
-    try {
-      fs.mkdirSync(path.dirname(floorFile), { recursive: true });
-      const tmp = `${floorFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, floors }, null, 2));
-      fs.renameSync(tmp, floorFile);
-    } catch (err) {
-      console.warn("Clawd gravity: floor not saved:", err && err.message);
-    }
-  }
 
   function isWindowAlive() {
     return !!(ctx.win && !ctx.win.isDestroyed());
@@ -112,35 +68,17 @@ module.exports = function initGravity(ctx, options = {}) {
     };
   }
 
-  // Floors and top of the display where the pet is, all from the rest clamp it
-  // already obeys, edge pinning included (as if dragged against each edge).
-  // shelfY is null without a custom floor there.
+  // Floor of the display where the pet is: where a drag to the bottom would
+  // rest, from the rest clamp it already obeys, edge pinning included.
   function resolveArea(bounds) {
     const { width, height } = frozenSize(bounds);
     const cx = bounds.x + width / 2;
     const cy = bounds.y + height / 2;
     const wa = ctx.getNearestWorkArea(cx, cy);
     if (!wa) return null;
-    const rest = (x, y) => ctx.clampToScreenVisual(x, y, width, height, { workArea: wa });
-    const lowest = rest(bounds.x, wa.y + wa.height);
-    const highest = rest(bounds.x, wa.y - height);
-    const valid = (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y);
-    if (![lowest, highest].every(valid)) return null;
-    const taskbarY = Math.round(lowest.y);
-    const topY = Math.round(highest.y);
-    const key = getDisplayKey(cx, cy);
-    const savedFloor = key ? floors[key] : null;
-    let shelfY = null;
-    if (savedFloor && Number.isFinite(savedFloor.heightAboveTaskbar) && savedFloor.heightAboveTaskbar > 0) {
-      shelfY = Math.max(topY, taskbarY - Math.round(savedFloor.heightAboveTaskbar));
-    }
-    return {
-      width,
-      height,
-      key,
-      taskbarY,
-      shelfY,
-    };
+    const lowest = ctx.clampToScreenVisual(bounds.x, wa.y + wa.height, width, height, { workArea: wa });
+    if (!lowest || !Number.isFinite(lowest.y)) return null;
+    return { width, height, floorY: Math.round(lowest.y) };
   }
 
   function finish(landed, landing) {
@@ -167,10 +105,7 @@ module.exports = function initGravity(ctx, options = {}) {
     if (!start) return false;
     const area = resolveArea(start);
     if (!area) return false;
-    const { width, height } = area;
-    // On or above the shelf it lands there; below it, on the taskbar floor.
-    const onShelfSide = area.shelfY !== null && start.y <= area.shelfY + SHELF_TOLERANCE_PX;
-    const floorY = onShelfSide ? area.shelfY : area.taskbarY;
+    const { width, height, floorY } = area;
     if (floorY - start.y < MIN_DROP_PX) return false;
 
     falling = true;
@@ -239,20 +174,6 @@ module.exports = function initGravity(ctx, options = {}) {
     return startFall(onEnd);
   }
 
-  // Shift+release: the current height becomes this display's floor. Released
-  // on (or below) the taskbar floor, it clears the custom floor instead.
-  function setFloorHere() {
-    if (!enabled) return false;
-    const bounds = ctx.getPetWindowBounds();
-    const here = bounds && resolveArea(bounds);
-    if (!here || !here.key) return false;
-    const heightAboveTaskbar = Math.round(here.taskbarY - bounds.y);
-    if (heightAboveTaskbar <= SHELF_TOLERANCE_PX) delete floors[here.key];
-    else floors[here.key] = { heightAboveTaskbar };
-    saveFloors();
-    return true;
-  }
-
   // Off: stops a fall where it is. On: a pet left in mid-air drops right away.
   function setEnabled(value) {
     const next = !!value;
@@ -284,7 +205,6 @@ module.exports = function initGravity(ctx, options = {}) {
     beginDrag,
     cancel,
     isFalling,
-    setFloorHere,
     setEnabled,
     isEnabled,
     setFallEndHandler,

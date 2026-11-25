@@ -67,8 +67,8 @@ module.exports = function initRoam(ctx) {
     );
   }
 
-  // Gravity on: walks only go sideways, at the height of the floor or shelf
-  // the pet stands on, so roam never lifts it into the air.
+  // Gravity on: walks only go sideways, at the height of the floor the pet
+  // stands on, so roam never lifts it into the air.
   function isGroundWalkOnly() {
     return !!(
       typeof ctx.isGravityEnabled === "function"

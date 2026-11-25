@@ -5788,7 +5788,6 @@ function createWindow() {
     startGravityFall: (onEnd) => _gravity.release(onEnd),
     beginGravityDrag: () => _gravity.beginDrag(),
     isGravityFalling: () => _gravity.isFalling(),
-    setGravityFloorHere: () => _gravity.setFloorHere(),
     setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
@@ -6092,7 +6091,7 @@ const _roamCtx = {
   get win() { return win; },
   get dragLocked() { return petWindowRuntime.isDragLocked(); },
   // Gravity (_gravity is built below): roam holds still while the pet falls
-  // and, with gravity on, walks only along the floor or shelf.
+  // and, with gravity on, walks only along the floor.
   isGravityFalling: () => _gravity.isFalling(),
   isGravityEnabled: () => _gravity.isEnabled(),
   getPetWindowBounds,
