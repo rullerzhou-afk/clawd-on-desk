@@ -11,9 +11,10 @@
 //
 // Forcing XWayland (--ozone-platform=x11) restores window positioning (drag
 // works again), matching the workaround reporters find by hand. Cursor
-// tracking stays limited to our own surfaces; full-screen tracking is NOT
-// recoverable under Wayland for an ordinary client — that needs a real X11
-// session (Xorg login), which is a user-side choice we can't paper over.
+// tracking stays limited to X11 surfaces: an ordinary client cannot see the
+// pointer over native Wayland windows. KDE Plasma 6 is the exception for eye
+// follow, via a KWin script (src/linux-kwin-cursor.js, #1410); elsewhere that
+// needs a real X11 session (Xorg login).
 //
 // Since Electron 38 / Chromium 140 the default is --ozone-platform-hint=auto, so
 // an out-of-the-box app runs as a NATIVE WAYLAND client on a Wayland session —
