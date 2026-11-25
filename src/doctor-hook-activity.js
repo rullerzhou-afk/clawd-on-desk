@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
+const { resolveCodexHome } = require("../hooks/codex-install-utils");
 
 const DEFAULT_CONNECTION_TEST_DURATION_MS = 10000;
 const MAX_CONNECTION_TEST_DURATION_MS = 30000;
@@ -107,8 +107,9 @@ function summarizeActivity(agentId, files) {
 
 function scanCodexMtimeActivity(options = {}) {
   const pathApi = options.path || path;
-  const homeDir = options.homeDir || os.homedir();
-  const rootDir = pathApi.join(homeDir, ".codex", "sessions");
+  // Only scan activity from the Codex home where Clawd installs its hooks.
+  const codexHome = resolveCodexHome({ env: options.env, homeDir: options.homeDir });
+  const rootDir = pathApi.join(codexHome, "sessions");
   const files = findRecentMatchingFiles({
     ...options,
     rootDir,
