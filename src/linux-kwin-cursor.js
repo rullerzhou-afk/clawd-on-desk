@@ -20,8 +20,8 @@
 // send per SEND_INTERVAL_MS, a request timeout, exponential backoff, and a full
 // stop after MAX_FAILURES consecutive failures or any 4xx answer. KWin emits
 // cursorPosChanged only on movement, so the script also sends once on start and
-// then every HEARTBEAT_MS; Clawd falls back to the X11 query only when the
-// heartbeat lapses, the load fails, or the script is unloaded — never just
+// then every HEARTBEAT_MS. Clawd uses the X11 query when no point has arrived,
+// the heartbeat lapses, the load fails, or the script is unloaded — never just
 // because the cursor sits still.
 //
 // Coordinates: KWin reports logical (scaled) coordinates. Under XWayland KWin
@@ -43,7 +43,7 @@ const BACKOFF_BASE_MS = 500;        // 0.5, 1, 2, 4, 8 s, then stop
 const MAX_FAILURES = 6;
 const MAX_BODY_BYTES = 128;
 const MAX_COORDINATE = 1e6;
-const MAX_RESTARTS = 3;             // reloads after a lapsed heartbeat
+const MAX_RESTARTS = 3;             // reloads after a lapse
 const STABLE_RESET_MS = 300000;     // live this long without a lapse: reloads start over
 const RESTART_DELAY_MS = 10000;
 
@@ -86,11 +86,18 @@ Item {
         xhr.onreadystatechange = function () {
             if (xhr.readyState === XMLHttpRequest.DONE && root.active === xhr) root.finish(xhr.status);
         };
-        xhr.open("POST", endpoint);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.setRequestHeader("X-Clawd-Kwin-Token", token);
-        xhr.send(JSON.stringify({ x: pos.x, y: pos.y }));
-        timeoutTimer.restart();
+        // A synchronous error may never reach onreadystatechange.
+        try {
+            xhr.open("POST", endpoint);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.setRequestHeader("X-Clawd-Kwin-Token", token);
+            xhr.send(JSON.stringify({ x: pos.x, y: pos.y }));
+        } catch (err) {
+            if (root.active === xhr) finish(0);
+            return;
+        }
+        // send() can complete synchronously and clear active.
+        if (root.active === xhr) timeoutTimer.restart();
     }
 
     function finish(status) {
@@ -121,6 +128,7 @@ Item {
 
     Connections {
         target: Workspace
+        enabled: !root.stopped
         function onCursorPosChanged() {
             root.pending = true;
             root.schedule();
@@ -197,6 +205,7 @@ function createKwinCursorBridge(options = {}) {
   let generation = 0;
   // "off" | "loading" | "live" | "lapsed" | "failed"
   let state = "off";
+  let loadedAt = null;
   let point = null;
   let pointAt = 0;
   let liveSince = 0;
@@ -242,6 +251,7 @@ function createKwinCursorBridge(options = {}) {
   function load() {
     const myGeneration = ++generation;
     token = crypto.randomBytes(16).toString("hex");
+    loadedAt = null;
     point = null;
     pointAt = 0;
     state = "loading";
@@ -254,8 +264,14 @@ function createKwinCursorBridge(options = {}) {
       try {
         written = await writeScript(script);
       } catch (err) {
+        if (myGeneration !== generation) return;
         state = "failed";
+        token = null;
         logWarn(`Clawd: KWin cursor script not written: ${err && err.message}`);
+        return;
+      }
+      if (myGeneration !== generation) {
+        fs.rm(written.dir, { recursive: true, force: true }, () => {});
         return;
       }
       const reason = await loadAndRun(written.file);
@@ -267,15 +283,19 @@ function createKwinCursorBridge(options = {}) {
       }
       if (reason) {
         state = "failed";
+        token = null;
         if (reason === "kwin-script-run-failed") await unload();
         logWarn(`Clawd: KWin cursor script unavailable (${reason}); eye follow keeps the X11 query`);
+        return;
       }
+      loadedAt = now();
     });
   }
 
   function stop() {
     generation++;
     token = null;
+    loadedAt = null;
     point = null;
     state = "off";
     clearRestartTimer();
@@ -312,6 +332,12 @@ function createKwinCursorBridge(options = {}) {
 
   // The latest KWin point in DIP, or null when the X11 query should be used.
   function getPoint() {
+    if (state === "loading" && loadedAt !== null && now() - loadedAt > HEARTBEAT_TIMEOUT_MS) {
+      state = "lapsed";
+      logWarn("Clawd: KWin cursor script sent no point; eye follow keeps the X11 query");
+      scheduleRestart();
+      return null;
+    }
     if (state !== "live") return null;
     if (now() - pointAt > HEARTBEAT_TIMEOUT_MS) {
       state = "lapsed";
@@ -384,6 +410,7 @@ function createKwinCursorBridge(options = {}) {
     wanted = false;
     generation++;
     token = null;
+    loadedAt = null;
     state = "off";
     clearRestartTimer();
     try {
