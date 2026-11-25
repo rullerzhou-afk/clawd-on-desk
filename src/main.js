@@ -4985,7 +4985,6 @@ const _menuCtx = {
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
-  getGravityMenuItem: () => _gravity.buildMenuItem(),
   startGravityFall: () => _gravity.startFall(),
   openDashboard: () => showDashboard(),
   launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
@@ -6151,9 +6150,10 @@ const _roamCtx = {
   roamFence: roamFenceLoader,
 };
 const _roam = require("./roam")(_roamCtx);
-// Gravity: the fall reuses roam's window context.
+// Gravity: the fall reuses roam's window context. It starts from the
+// `gravity` pref and follows its changes below, next to Free roam's.
 const _gravity = require("./gravity")(_roamCtx, {
-  t: (key) => translate(key),
+  enabled: _settingsController.get("gravity") === true,
 });
 // #810: resolve the fence's initial status right away so the first roam
 // round doesn't have to hold on an UNKNOWN state (get() === null) when a
@@ -6172,6 +6172,13 @@ try {
   });
 } catch (err) {
   console.warn("Clawd: freeRoam subscribeKey failed:", err && err.message);
+}
+try {
+  _settingsController.subscribeKey("gravity", (value) => {
+    _gravity.setEnabled(value === true);
+  });
+} catch (err) {
+  console.warn("Clawd: gravity subscribeKey failed:", err && err.message);
 }
 
 // ── Idle activities — decorative state beats while no agent is active (#1252) ──

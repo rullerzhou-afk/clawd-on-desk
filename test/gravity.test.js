@@ -7,7 +7,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const initGravity = require("../src/gravity");
-const { i18n, SUPPORTED_LANGS, createTranslator } = require("../src/i18n");
 
 const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1032 };
 const BOTTOM_MARGIN = 10;
@@ -49,17 +48,16 @@ function makeCtx(y, x = 500) {
   return ctx;
 }
 
-// Gravity is off by default, so the tests start from a saved "on" switch;
-// null leaves no file, as on a first run.
-function tempFloorFile(saved = { version: 1, enabled: true, floors: {} }) {
+// A path in a fresh folder: no floor file yet, as on a first run.
+function tempFloorFile() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-gravity-test-"));
-  const file = path.join(dir, "gravity-floor.json");
-  if (saved) fs.writeFileSync(file, JSON.stringify(saved));
-  return file;
+  return path.join(dir, "gravity-floor.json");
 }
 
-function makeGravity(ctx, floorFile = tempFloorFile()) {
+// Gravity is off by default (the `gravity` pref), so the tests turn it on.
+function makeGravity(ctx, floorFile = tempFloorFile(), enabled = true) {
   return initGravity(ctx, {
+    enabled,
     floorFile,
     getDisplayKey: () => "test-display",
   });
@@ -174,71 +172,32 @@ test("below the shelf it falls to the taskbar; on top of it, it does not fall", 
 
 test("Shift on release at the taskbar clears the shelf", () => {
   const floorFile = tempFloorFile();
+  const savedFloors = () => JSON.parse(fs.readFileSync(floorFile, "utf8")).floors;
   makeGravity(makeCtx(FLOOR_Y - 300), floorFile).setFloorHere();
-  const gravity = makeGravity(makeCtx(FLOOR_Y), floorFile);
-  assert.strictEqual(gravity.hasCustomFloor(), true);
-  gravity.setFloorHere();
-  assert.strictEqual(gravity.hasCustomFloor(), false);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).floors, {});
+  assert.deepStrictEqual(savedFloors(), { "test-display": { heightAboveTaskbar: 300 } });
+  makeGravity(makeCtx(FLOOR_Y), floorFile).setFloorHere();
+  assert.deepStrictEqual(savedFloors(), {});
 });
 
-test("the reset-floor menu item clears the shelf and the pet on it falls", async () => {
+test("off by default: it neither falls nor marks a floor", () => {
   const floorFile = tempFloorFile();
-  const shelfY = FLOOR_Y - 300;
-  const ctx = makeCtx(shelfY);
-  const gravity = makeGravity(ctx, floorFile);
-  gravity.setFloorHere();
-  const reset = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityResetFloor);
-  assert.strictEqual(reset(gravity).enabled, true);
-  const landed = new Promise((resolve) => gravity.setFallEndHandler((value) => resolve(value)));
-  reset(gravity).click();
-  assert.strictEqual(await landed, true);
-  assert.strictEqual(lastY(ctx), FLOOR_Y);
-  assert.strictEqual(reset(gravity).enabled, false);
-});
-
-test("the menu is translated into every supported language, English by default", () => {
-  const labels = (item) => [item.label, ...item.submenu.filter((i) => i.type !== "separator").map((i) => i.label)];
-  const keys = ["gravity", "gravityFallWhenReleased", "gravitySetFloorHint", "gravityResetFloor"];
-  assert.deepStrictEqual(labels(makeGravity(makeCtx(100)).buildMenuItem()), keys.map((key) => i18n.en[key]));
-  for (const lang of SUPPORTED_LANGS) {
-    const gravity = initGravity(makeCtx(100), {
-      floorFile: tempFloorFile(),
-      getDisplayKey: () => "test-display",
-      t: createTranslator(() => lang),
-    });
-    assert.deepStrictEqual(labels(gravity.buildMenuItem()), keys.map((key) => i18n[lang][key]), lang);
-  }
-});
-
-const toggle = (g) => g.buildMenuItem().submenu.find((i) => i.label === i18n.en.gravityFallWhenReleased);
-
-test("off by default: with no saved switch it neither falls nor marks a floor", () => {
-  const floorFile = tempFloorFile(null);
   const ctx = makeCtx(100);
-  const gravity = makeGravity(ctx, floorFile);
+  const gravity = initGravity(ctx, { floorFile, getDisplayKey: () => "test-display" });
   assert.strictEqual(gravity.isEnabled(), false);
-  assert.strictEqual(toggle(gravity).checked, false);
   assert.strictEqual(gravity.startFall(() => assert.fail("should not fall")), false);
   assert.strictEqual(gravity.setFloorHere(), false);
   assert.strictEqual(ctx.applied.length, 0);
-  assert.strictEqual(fs.existsSync(floorFile), false, "nothing is saved until it is turned on");
+  assert.strictEqual(fs.existsSync(floorFile), false, "nothing is saved while it is off");
 });
 
-test("turned off from the menu: no fall and no floor marking, and it stays off after a restart", () => {
-  const floorFile = tempFloorFile();
+test("turned off: no fall and no floor marking", () => {
   const ctx = makeCtx(100);
-  const gravity = makeGravity(ctx, floorFile);
-  assert.strictEqual(toggle(gravity).checked, true, "starts on");
-  toggle(gravity).click();
+  const gravity = makeGravity(ctx);
+  gravity.setEnabled(false);
   assert.strictEqual(gravity.isEnabled(), false);
-  assert.strictEqual(toggle(gravity).checked, false);
   assert.strictEqual(gravity.startFall(() => assert.fail("should not fall")), false);
   assert.strictEqual(gravity.setFloorHere(), false);
-  assert.strictEqual(JSON.parse(fs.readFileSync(floorFile, "utf8")).enabled, false);
-  const restarted = makeGravity(makeCtx(100), floorFile);
-  assert.strictEqual(restarted.isEnabled(), false);
-  assert.strictEqual(restarted.startFall(() => {}), false);
+  assert.strictEqual(ctx.applied.length, 0);
 });
 
 test("turning off mid-fall stops it where it is; turning back on with the pet in the air makes it fall", async () => {

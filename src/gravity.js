@@ -1,7 +1,8 @@
 "use strict";
 
 // src/gravity.js — a drag released in mid-air makes the pet fall to the floor
-// instead of hanging there.
+// instead of hanging there. Off unless the `gravity` pref is on (Settings →
+// Pet → Movement & position).
 //
 // Same frame loop as roam.js: applyPetWindowBounds every 16 ms with the size
 // frozen at the start (#569), hit window and anchored surfaces synced per frame.
@@ -9,13 +10,11 @@
 // Floors per display: the taskbar one (lowest resting spot) and an optional
 // shelf set with Shift+release, stored in ~/.clawd/gravity-floor.json as its
 // height above the taskbar floor. The shelf is one-way: it only catches a pet
-// coming down onto it, and below it the pet falls to the taskbar. The same
-// file keeps the on/off switch from the Gravity menu (off by default).
+// coming down onto it, and below it the pet falls to the taskbar.
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createTranslator } = require("./i18n");
 
 const GRAVITY_PX_PER_S2 = 2800;
 const MAX_FALL_SPEED_PX_PER_S = 2400;
@@ -67,33 +66,28 @@ module.exports = function initGravity(ctx, options = {}) {
   const floorFile = options.floorFile || FLOOR_FILE;
   const getDisplayKey = options.getDisplayKey || electronDisplayKey;
   const now = options.now || (() => performance.now());
-  // Menu labels in the app's language; English when no translator is given.
-  const translate = options.t || createTranslator(() => "en");
-  const saved = loadState();
-  let enabled = saved.enabled === true;
-  let floors = saved.floors;
+  // Starts from the `gravity` pref; main.js passes later changes to setEnabled.
+  let enabled = options.enabled === true;
+  let floors = loadFloors();
   let falling = false;
   let fallTimer = null;
   let onFallEnd = null;
   let defaultFallEnd = null;
 
-  function loadState() {
+  function loadFloors() {
     try {
       const data = JSON.parse(fs.readFileSync(floorFile, "utf8"));
-      return {
-        enabled: !!(data && data.enabled === true),
-        floors: data && data.floors && typeof data.floors === "object" ? data.floors : {},
-      };
+      return data && data.floors && typeof data.floors === "object" ? data.floors : {};
     } catch {
-      return { enabled: false, floors: {} };
+      return {};
     }
   }
 
-  function saveState() {
+  function saveFloors() {
     try {
       fs.mkdirSync(path.dirname(floorFile), { recursive: true });
       const tmp = `${floorFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, enabled, floors }, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, floors }, null, 2));
       fs.renameSync(tmp, floorFile);
     } catch (err) {
       console.warn("Clawd gravity: floor not saved:", err && err.message);
@@ -255,24 +249,7 @@ module.exports = function initGravity(ctx, options = {}) {
     const heightAboveTaskbar = Math.round(here.taskbarY - bounds.y);
     if (heightAboveTaskbar <= SHELF_TOLERANCE_PX) delete floors[here.key];
     else floors[here.key] = { heightAboveTaskbar };
-    saveState();
-    return true;
-  }
-
-  function hasCustomFloor() {
-    const bounds = ctx.getPetWindowBounds();
-    const here = bounds && resolveArea(bounds);
-    return !!(here && here.shelfY !== null);
-  }
-
-  // The shelf goes away: a pet standing on it drops to the taskbar.
-  function resetFloor() {
-    const bounds = ctx.getPetWindowBounds();
-    const here = bounds && resolveArea(bounds);
-    if (!here || !here.key || !floors[here.key]) return false;
-    delete floors[here.key];
-    saveState();
-    startFall();
+    saveFloors();
     return true;
   }
 
@@ -281,29 +258,12 @@ module.exports = function initGravity(ctx, options = {}) {
     const next = !!value;
     if (next === enabled) return;
     enabled = next;
-    saveState();
     if (enabled) startFall();
     else cancel();
   }
 
   function isEnabled() {
     return enabled;
-  }
-
-  function buildMenuItem() {
-    return {
-      label: translate("gravity"),
-      submenu: [
-        { label: translate("gravityFallWhenReleased"), type: "checkbox", checked: enabled, click: () => setEnabled(!enabled) },
-        { type: "separator" },
-        { label: translate("gravitySetFloorHint"), enabled: false },
-        {
-          label: translate("gravityResetFloor"),
-          enabled: enabled && hasCustomFloor(),
-          click: () => resetFloor(),
-        },
-      ],
-    };
   }
 
   function setFallEndHandler(handler) {
@@ -325,11 +285,8 @@ module.exports = function initGravity(ctx, options = {}) {
     cancel,
     isFalling,
     setFloorHere,
-    hasCustomFloor,
-    resetFloor,
     setEnabled,
     isEnabled,
-    buildMenuItem,
     setFallEndHandler,
   };
 };

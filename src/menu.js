@@ -642,17 +642,11 @@ module.exports = function initMenu(ctx) {
       buildPermissionAutomationMenuItem(),
     ];
 
-    // Display group: the gravity submenu, plus the multi-display "send to
-    // display" entry when there is more than one display. The mac
+    // Display group: just the multi-display "send to display" entry. The mac
     // dock / menu-bar visibility toggles deliberately do NOT live here — they
     // are set-once OS-integration prefs and live in the tray menu + Settings
-    // instead. Mini mode leaves both out, so joinGroups drops the empty group.
+    // instead. On a single display this group is empty and joinGroups drops it.
     const displayGroup = [];
-    // Gravity submenu: fall on/off and floor.
-    if (typeof ctx.getGravityMenuItem === "function" && !ctx.getMiniMode()) {
-      const gravityItem = ctx.getGravityMenuItem();
-      if (gravityItem) displayGroup.push(gravityItem);
-    }
     const displays = screen.getAllDisplays();
     if (displays.length > 1 && !ctx.getMiniMode()) {
       displayGroup.push({
