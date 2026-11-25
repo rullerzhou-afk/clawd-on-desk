@@ -28,6 +28,8 @@
 // "Legacy applications (X11)" scaling modes, so the point is used as DIP as is
 // (no physicalToDipPoint, which is for X11 physical pixels).
 
+const { performance } = require("perf_hooks");
+
 const PLUGIN_NAME = "clawd-kwin-cursor";
 const ROUTE = "/kwin-cursor";
 const TOKEN_HEADER = "x-clawd-kwin-token";
@@ -40,7 +42,8 @@ const BACKOFF_BASE_MS = 500;        // 0.5, 1, 2, 4, 8 s, then stop
 const MAX_FAILURES = 6;
 const MAX_BODY_BYTES = 128;
 const MAX_COORDINATE = 1e6;
-const MAX_RESTARTS = 3;             // reloads after a lapsed heartbeat, per enable
+const MAX_RESTARTS = 3;             // reloads after a lapsed heartbeat
+const STABLE_RESET_MS = 300000;     // live this long without a lapse: reloads start over
 const RESTART_DELAY_MS = 10000;
 
 function isLinuxKwinCursorEligible({ platform = process.platform, ozonePlatform, isKdeWaylandSession } = {}) {
@@ -67,7 +70,8 @@ Item {
 
     function schedule() {
         if (stopped || active || !pending || sendTimer.running || backoffTimer.running) return;
-        sendTimer.interval = Math.max(1, lastSentAt + ${SEND_INTERVAL_MS} - Date.now());
+        // Date.now() may step back; without the cap the wait grows by the step.
+        sendTimer.interval = Math.max(1, Math.min(${SEND_INTERVAL_MS}, lastSentAt + ${SEND_INTERVAL_MS} - Date.now()));
         sendTimer.start();
     }
 
@@ -178,7 +182,8 @@ function createKwinCursorBridge(options = {}) {
     path = require("path"),
     crypto = require("crypto"),
     spawn = require("child_process").spawn,
-    now = Date.now,
+    // Monotonic: a wall-clock step must neither fake a lapse nor hide one.
+    now = () => performance.now(),
     setTimeoutFn = setTimeout,
     clearTimeoutFn = clearTimeout,
     logWarn = () => {},
@@ -193,6 +198,7 @@ function createKwinCursorBridge(options = {}) {
   let state = "off";
   let point = null;
   let pointAt = 0;
+  let liveSince = 0;
   let restarts = 0;
   let restartTimer = null;
   let queue = Promise.resolve();
@@ -350,9 +356,20 @@ function createKwinCursorBridge(options = {}) {
       if (token !== requestToken) return reply(res, 403);
       const parsed = parseKwinCursorBody(Buffer.concat(chunks).toString("utf8"));
       if (!parsed) return reply(res, 400);
+      const at = now();
+      // A silent gap ends the steady run even when getPoint never saw it (the
+      // tick does not read the cursor while the pet sleeps or works).
+      const gap = at - pointAt > HEARTBEAT_TIMEOUT_MS;
       point = parsed;
-      pointAt = now();
-      if (state === "loading" || state === "lapsed") state = "live";
+      pointAt = at;
+      if (state === "loading" || state === "lapsed") {
+        state = "live";
+        liveSince = at;
+      } else if (gap) {
+        liveSince = at;
+      } else if (state === "live" && at - liveSince >= STABLE_RESET_MS) {
+        restarts = 0;
+      }
       reply(res, 204);
     });
     req.on("error", () => { rejected = true; });
@@ -393,6 +410,8 @@ module.exports = {
   ROUTE,
   TOKEN_HEADER,
   HEARTBEAT_TIMEOUT_MS,
+  MAX_RESTARTS,
+  STABLE_RESET_MS,
   MAX_BODY_BYTES,
   isLinuxKwinCursorEligible,
   buildKwinCursorScript,

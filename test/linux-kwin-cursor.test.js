@@ -13,6 +13,8 @@ const {
   ROUTE,
   TOKEN_HEADER,
   HEARTBEAT_TIMEOUT_MS,
+  MAX_RESTARTS,
+  STABLE_RESET_MS,
   MAX_BODY_BYTES,
   isLinuxKwinCursorEligible,
   buildKwinCursorScript,
@@ -69,6 +71,8 @@ describe("KWin cursor script", () => {
     assert.match(script, /id: heartbeat\n\s+interval: 2000\n\s+repeat: true\n\s+running: true/);
     assert.match(script, /Component\.onCompleted: schedule\(\)/);
     assert.match(script, /status >= 400 && status < 500\) return stop\(\)/);
+    // Date.now() can step back (NTP, a dual-boot RTC); the wait stays capped.
+    assert.match(script, /sendTimer\.interval = Math\.max\(1, Math\.min\(50, lastSentAt \+ 50 - Date\.now\(\)\)\);/);
   });
 
   it("refuses anything but a valid port and a hex token", () => {
@@ -224,6 +228,83 @@ describe("KWin cursor bridge", () => {
     }
     assert.equal(kwin.scripts.length, loadsBefore + 2);
     assert.equal(timers.length, 0);
+  });
+
+  it("earns its reloads back after running steadily, not right after a reload", async () => {
+    const { bridge, kwin, timers, advance } = makeBridge();
+    await bridge.setEnabled(true, 23335);
+    const beat = () => {
+      const token = tokenFromScript(kwin.scripts.at(-1));
+      assert.equal(post(bridge, '{"x":1,"y":2}', { [TOKEN_HEADER]: token }).status, 204);
+    };
+    const lapse = async () => {
+      advance(HEARTBEAT_TIMEOUT_MS + 1);
+      assert.equal(bridge.getPoint(), null);
+      const timer = timers.shift();
+      if (!timer) return false;
+      timer.fn();
+      await bridge.setEnabled(true);
+      beat();
+      return true;
+    };
+    const runSteadily = (ms) => {
+      for (let t = 0; t < ms; t += 2000) { advance(2000); beat(); bridge.getPoint(); }
+    };
+
+    beat();
+    for (let i = 0; i < MAX_RESTARTS; i++) assert.equal(await lapse(), true);
+    runSteadily(STABLE_RESET_MS - 2000);
+    assert.equal(await lapse(), false, "still exhausted just before the stable period ends");
+
+    // A late heartbeat revives it; a full stable period restores the budget.
+    beat();
+    runSteadily(STABLE_RESET_MS + 2000);
+    for (let i = 0; i < MAX_RESTARTS; i++) assert.equal(await lapse(), true);
+    assert.equal(await lapse(), false);
+  });
+
+  it("counts an unpolled silent gap as the end of a steady run", async () => {
+    const { bridge, kwin, timers, advance } = makeBridge();
+    await bridge.setEnabled(true, 23335);
+    const beat = () => post(bridge, '{"x":1,"y":2}', { [TOKEN_HEADER]: tokenFromScript(kwin.scripts.at(-1)) });
+    beat();
+    for (let i = 0; i < MAX_RESTARTS; i++) {
+      advance(HEARTBEAT_TIMEOUT_MS + 1);
+      assert.equal(bridge.getPoint(), null);
+      timers.shift().fn();
+      await bridge.setEnabled(true);
+      beat();
+    }
+    // Nobody calls getPoint (pet asleep) while the script goes silent, so the
+    // state never leaves "live"; the elapsed time alone must not restore the budget.
+    advance(STABLE_RESET_MS + 1);
+    beat();
+    advance(2000);
+    beat();
+    advance(HEARTBEAT_TIMEOUT_MS + 1);
+    assert.equal(bridge.getPoint(), null);
+    assert.equal(timers.length, 0);
+  });
+
+  it("measures the heartbeat on a monotonic clock, not the wall clock", async (t) => {
+    const { performance } = require("node:perf_hooks");
+    let wall = 1_000_000_000;
+    let mono = 5000;
+    t.mock.method(Date, "now", () => wall);
+    t.mock.method(performance, "now", () => mono);
+    const kwin = fakeKwinScripting();
+    const bridge = createKwinCursorBridge({ kwinScripting: kwin, setTimeoutFn: () => ({}) });
+    await bridge.setEnabled(true, 23335);
+    const token = tokenFromScript(kwin.scripts[0]);
+    post(bridge, '{"x":1,"y":2}', { [TOKEN_HEADER]: token });
+
+    wall += 3_600_000; // forward step: the script is still alive
+    assert.deepEqual(bridge.getPoint(), { x: 1, y: 2 });
+
+    wall -= 7_200_000; // backward step: a dead script still lapses
+    mono += HEARTBEAT_TIMEOUT_MS + 1;
+    assert.equal(bridge.getPoint(), null);
+    assert.equal(bridge.getStatus(), "lapsed");
   });
 
   it("reports a failed load once and keeps the X11 query", async () => {
