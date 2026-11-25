@@ -13,6 +13,18 @@ const {
   scanFileMtimeActivity,
 } = require("../src/doctor-hook-activity");
 
+function makeTempHome(t) {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-doctor-activity-"));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  return homeDir;
+}
+
+function writeCodexRollout(codexHome) {
+  const sessionDir = path.join(codexHome, "sessions", "2026", "04", "28");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionDir, "rollout-2026-04-28T00-00-00-11111111-2222-3333-4444-555555555555.jsonl"), "{}\n");
+}
+
 describe("doctor hook activity connection test", () => {
   it("passes when any HTTP event was accepted", () => {
     const result = evaluateConnectionTest({
@@ -137,21 +149,99 @@ describe("doctor hook activity connection test", () => {
     assert.strictEqual(result.level, "warning");
   });
 
-  it("scans only Codex fallback mtime activity without collecting file names in the summary", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-doctor-activity-"));
-    const since = Date.now() - 1000;
-    const codexDir = path.join(tmp, ".codex", "sessions", "2026", "04", "28");
-    const geminiDir = path.join(tmp, ".gemini", "tmp", "project", "chats");
-    fs.mkdirSync(codexDir, { recursive: true });
+  it("scans only Codex fallback mtime activity without collecting file names in the summary", (t) => {
+    const homeDir = makeTempHome(t);
+    const geminiDir = path.join(homeDir, ".gemini", "tmp", "project", "chats");
+    writeCodexRollout(path.join(homeDir, ".codex"));
     fs.mkdirSync(geminiDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, "rollout-2026-04-28T00-00-00-11111111-2222-3333-4444-555555555555.jsonl"), "{}\n");
     fs.writeFileSync(path.join(geminiDir, "session-abc.json"), "{}");
 
-    const activity = scanFileMtimeActivity({ homeDir: tmp, since });
+    const activity = scanFileMtimeActivity({ homeDir, env: {}, since: 0 });
 
     assert.deepStrictEqual(activity.map((entry) => entry.agentId).sort(), ["codex"]);
     assert.ok(activity.every((entry) => !Object.prototype.hasOwnProperty.call(entry, "path")));
-    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("PR #1196 follow-up: finds rollout activity in an absolute CODEX_HOME", (t) => {
+    const homeDir = makeTempHome(t);
+    const codexHome = path.join(homeDir, "codex-dev");
+    writeCodexRollout(codexHome);
+
+    const activity = scanFileMtimeActivity({ homeDir, env: { CODEX_HOME: codexHome }, since: 0 });
+
+    assert.deepStrictEqual(activity.map((entry) => entry.agentId), ["codex"]);
+  });
+
+  it("PR #1196 follow-up: skips the default home when CODEX_HOME is set", (t) => {
+    const homeDir = makeTempHome(t);
+    const codexHome = path.join(homeDir, "codex-dev");
+    fs.mkdirSync(codexHome);
+    writeCodexRollout(path.join(homeDir, ".codex"));
+
+    const activity = scanFileMtimeActivity({ homeDir, env: { CODEX_HOME: codexHome }, since: 0 });
+
+    assert.deepStrictEqual(activity, []);
+  });
+
+  it("PR #1196 follow-up: falls back for unset, empty, and whitespace-only CODEX_HOME", (t) => {
+    const homeDir = makeTempHome(t);
+    writeCodexRollout(path.join(homeDir, ".codex"));
+
+    for (const env of [{}, { CODEX_HOME: "" }, { CODEX_HOME: " \t " }]) {
+      const activity = scanFileMtimeActivity({ homeDir, env, since: 0 });
+      assert.deepStrictEqual(activity.map((entry) => entry.agentId), ["codex"],
+        `CODEX_HOME=${JSON.stringify(env.CODEX_HOME)}`);
+    }
+  });
+
+  it("PR #1196 follow-up: trims whitespace around an absolute CODEX_HOME", (t) => {
+    const homeDir = makeTempHome(t);
+    const codexHome = path.join(homeDir, "codex-dev");
+    writeCodexRollout(codexHome);
+
+    const activity = scanFileMtimeActivity({ homeDir, env: { CODEX_HOME: ` \t${codexHome} \t` }, since: 0 });
+
+    assert.deepStrictEqual(activity.map((entry) => entry.agentId), ["codex"]);
+  });
+
+  it("PR #1196 follow-up: preserves relative and literal tilde CODEX_HOME paths", (t) => {
+    const homeDir = makeTempHome(t);
+
+    for (const codexHome of ["codex-dev", "~/codex-dev"]) {
+      const scannedDirs = [];
+      scanFileMtimeActivity({
+        homeDir,
+        env: { CODEX_HOME: codexHome },
+        fs: {
+          readdirSync(dir) {
+            scannedDirs.push(dir);
+            return [];
+          },
+        },
+      });
+      assert.strictEqual(scannedDirs[0], path.join(codexHome, "sessions"));
+    }
+  });
+
+  it("PR #1196 follow-up: counts a rollout only from the hook installation home", async (t) => {
+    const homeDir = makeTempHome(t);
+    const profileHome = path.join(homeDir, ".codex-work");
+    writeCodexRollout(profileHome);
+
+    const options = {
+      homeDir,
+      events: [],
+      startedAt: 0,
+      durationMs: 1000,
+      setTimeout: (fn) => fn(),
+    };
+
+    // Extra profiles have no Clawd hooks, so their logs do not count in the connection test.
+    const extraProfileResult = await runConnectionTest({ ...options, env: {} });
+    assert.strictEqual(extraProfileResult.status, "no-activity");
+
+    const hookHomeResult = await runConnectionTest({ ...options, env: { CODEX_HOME: profileHome } });
+    assert.strictEqual(hookHomeResult.status, "http-blocked");
   });
 
   it("waits for the requested window and then evaluates server events", async () => {

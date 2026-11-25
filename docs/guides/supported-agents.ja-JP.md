@@ -5,7 +5,7 @@
 Claude Code と Codex CLI は初回起動時に接続されます。ほかの連携は **Settings → AI コーディングツール** からインストールしてください。有効なあいだは Clawd が同期を保ちます。
 
 - **Claude Code** — command hook と HTTP permission hook による完全統合
-- **Codex CLI** — official hooks を主経路にし、JSONL フォールバック（`~/.codex/sessions/`）も利用。自動登録され、実際の権限バブルに対応
+- **Codex CLI** — official hooks を主経路にし、JSONL フォールバック（`$CODEX_HOME/sessions/` または `~/.codex/sessions/`）も利用。自動登録され、実際の権限バブルに対応
 - **Copilot CLI** — `~/.copilot/hooks/hooks.json` の command hook に対応
 - **Gemini CLI** — `~/.gemini/settings.json` の command hook に対応（Clawd 起動時に自動登録、または `npm run install:gemini-hooks`）
 - **Antigravity CLI (agy)** — `~/.gemini/config/hooks.json` の command hook に対応（Antigravity config がある場合は Clawd 起動時に自動登録、または `npm run install:antigravity-hooks`）。**state-only** のため、Clawd は agy の権限バブルを表示しません。Allow / Deny / Always-allow は agy 自身のターミナルメニューで選択します
