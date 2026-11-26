@@ -173,6 +173,10 @@ describe("package build config", () => {
       "build.files should include assets/accessories/**/*"
     );
     assert.ok(
+      pkg.build.files.includes("assets/juggling/**/*"),
+      "build.files should include assets/juggling/**/*"
+    );
+    assert.ok(
       pkg.build.asarUnpack.includes("assets/accessories/**/*"),
       "asarUnpack should include assets/accessories/**/*"
     );

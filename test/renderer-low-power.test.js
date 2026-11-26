@@ -251,6 +251,21 @@ function createRendererHarness(options = {}) {
   const mouthAccessory = new FakeElement("object");
   mouthAccessory.id = "clawd-mouth-accessory";
   mouthAccessory.className = "clawd-accessory";
+  const ballsLayer = new FakeElement("div");
+  ballsLayer.id = "pet-balls-layer";
+  ballsLayer.style.display = "none";
+  const balls = new FakeElement("object");
+  balls.id = "clawd-balls";
+  balls.className = "clawd-balls-object";
+  const ballsDataWrites = [];
+  let ballsData = "";
+  Object.defineProperty(balls, "data", {
+    get: () => ballsData,
+    set(value) {
+      ballsData = value;
+      ballsDataWrites.push(value);
+    },
+  });
   const effectStage = new FakeElement("div");
   effectStage.id = "pet-effect-stage";
   const particleLayer = new FakeElement("div");
@@ -276,6 +291,8 @@ function createRendererHarness(options = {}) {
   assetDirectionStage.appendChild(mediaLayer);
   assetDirectionStage.appendChild(accessoryLayer);
   assetDirectionStage.appendChild(mouthAccessoryLayer);
+  assetDirectionStage.appendChild(ballsLayer);
+  ballsLayer.appendChild(balls);
   mediaLayer.appendChild(clawd);
   accessoryLayer.appendChild(accessory);
   mouthAccessoryLayer.appendChild(mouthAccessory);
@@ -290,11 +307,13 @@ function createRendererHarness(options = {}) {
     ["pet-media-layer", mediaLayer],
     ["pet-accessory-layer", accessoryLayer],
     ["pet-mouth-accessory-layer", mouthAccessoryLayer],
+    ["pet-balls-layer", ballsLayer],
     ["pet-effect-stage", effectStage],
     ["pet-particle-layer", particleLayer],
     ["clawd", clawd],
     ["clawd-accessory", accessory],
     ["clawd-mouth-accessory", mouthAccessory],
+    ["clawd-balls", balls],
   ]);
   const documentListeners = new Map();
 
@@ -303,6 +322,10 @@ function createRendererHarness(options = {}) {
     documentElement: new FakeElement("html"),
     getElementById(id) {
       return elementsById.get(id) || null;
+    },
+    querySelector(selector) {
+      if (selector !== "#pet-media-layer > object#clawd") return null;
+      return mediaLayer.children.find((child) => child.tagName === "OBJECT" && child.id === "clawd") || null;
     },
     createElement(tagName) {
       return new FakeElement(tagName);
@@ -322,8 +345,17 @@ function createRendererHarness(options = {}) {
   });
   const windowListeners = new Map();
   const mediaQueries = [];
+  const getComputedStyle = (el) => ({
+    opacity: el.style.opacity || "1",
+    transform: el.style.transform || "none",
+    visibility: document.documentElement.classList.contains("pet-hidden")
+      ? "hidden"
+      : el.style.visibility || "visible",
+    display: el.style.display || "block",
+  });
   const context = {
     document,
+    getComputedStyle,
     window: {
       themeConfig: {
         assetsPath: "../assets/svg",
@@ -346,7 +378,7 @@ function createRendererHarness(options = {}) {
           },
         };
       },
-      getComputedStyle: (el) => ({ opacity: el.style.opacity || "1" }),
+      getComputedStyle,
       addEventListener(event, callback) {
         windowListeners.set(event, callback);
       },
@@ -467,6 +499,9 @@ globalThis.__rendererTest = {
     assetDirectionStage,
     accessory,
     mouthAccessory,
+    ballsLayer,
+    balls,
+    ballsDataWrites,
     particleLayer,
     clawd,
     timers,
@@ -3590,6 +3625,514 @@ describe("renderer pet accessory wardrobe", () => {
       ...overrides,
     };
   }
+
+  describe("juggling balls in front of the hat", () => {
+    const jugglingFile = "clawd-working-juggling.svg";
+    const pose = ["matrix(1, 0, 0, 1, 4, 8)", "none", "matrix(1, 0, 0, 1, 7, 3)"];
+    const nextPose = ["matrix(1, 0, 0, 1, 9, 2)", pose[1], "matrix(1, 0, 0, 1, 3, 6)"];
+    const stepMs = 1000 / 24;
+
+    class JugglingAnimation {
+      constructor(startTime = 0) {
+        this.startTime = startTime;
+        this.currentTime = 0;
+        this.playState = "running";
+        this.playbackRate = 1;
+        this.timingUpdates = [];
+        this.effect = {
+          getComputedTiming: () => ({ duration: 1200, delay: 0, iterations: Infinity }),
+          updateTiming: (timing) => this.timingUpdates.push(timing),
+        };
+      }
+    }
+
+    function jugglingHarness({ follow = false, sampled = false, ...overrides } = {}) {
+      const descriptor = { staticFrame: { cx: 50, baseY: 40, width: 20 } };
+      if (follow) {
+        descriptor.followTarget = { id: "anchor", frame: { cx: 8, baseY: 6, width: 4 } };
+      }
+      const themeConfig = accessoryConfig({
+        idleFollowSvg: "current.svg",
+        accessoryAttachments: { default: descriptor, files: { [jugglingFile]: descriptor } },
+        rendering: { discreteSampling: sampled ? { [jugglingFile]: 24 } : {} },
+        ...overrides,
+      });
+      const harness = createRendererHarness({ themeConfig });
+      harness.accessory.onload();
+      return harness;
+    }
+
+    function attachPackets(object, transforms = pose, animation = null) {
+      const { svgDoc, elements, root } = attachFakeSvgDocument(object, {
+        animations: animation ? [animation] : null,
+      });
+      if (animation) object.contentWindow.CSSAnimation = JugglingAnimation;
+      root.setAttribute("viewBox", "-15 -25 45 45");
+      elements.set("anchor", { getCTM: () => ({ a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 }) });
+      let reads = 0;
+      const writes = [];
+      const packets = transforms.map((transform) => {
+        const packet = new FakeElement("g");
+        Object.defineProperty(packet.style, "transform", { get() { reads++; return transform; } });
+        const setAttribute = packet.setAttribute.bind(packet);
+        packet.setAttribute = (name, value) => {
+          writes.push({ value, visibility: object.style.visibility });
+          setAttribute(name, value);
+        };
+        return packet;
+      });
+      svgDoc.querySelectorAll = (selector) => {
+        assert.strictEqual(selector, ".packet");
+        return packets;
+      };
+      return { packets, writes, reads: () => reads };
+    }
+
+    function commitJuggling(harness, { transforms = pose, animation = null } = {}) {
+      harness.api.swapToFile(jugglingFile, "working", true);
+      const media = harness.api.pendingNext;
+      const source = transforms ? attachPackets(media, transforms, animation) : null;
+      media.listeners.get("load")();
+      assert.strictEqual(harness.api.clawdEl, media);
+      return { media, source };
+    }
+
+    function loadCopy(harness) {
+      const copy = attachPackets(harness.balls);
+      harness.balls.onload();
+      return copy;
+    }
+
+    function frontCallbacks(harness) {
+      // The hat can schedule the same delay. Exclude its callback by identity.
+      const { raf, followTimer } = harness.api.accessorySlots.head;
+      return harness.activeTimers().filter((timer) => (
+        (timer.raf || timer.ms <= stepMs) && timer !== raf && timer !== followTimer
+      ));
+    }
+
+    function runFrontCallback(harness, { raf = true } = {}) {
+      const callbacks = frontCallbacks(harness);
+      assert.strictEqual(callbacks.length, 1, "expected exactly one pending callback for the balls");
+      const [callback] = callbacks;
+      assert.strictEqual(!!callback.raf, raf);
+      callback.cleared = true;
+      callback.callback();
+    }
+
+    function assertFirstPose(harness, copy, transforms = pose) {
+      assert.strictEqual(harness.balls.style.visibility, "visible");
+      assert.deepStrictEqual(copy.writes, transforms.map((value) => ({
+        value: value === "none" ? "" : value,
+        visibility: "hidden",
+      })));
+    }
+
+    function assertUnmounted(harness) {
+      assert.strictEqual(harness.ballsLayer.style.display, "none");
+      assert.strictEqual(harness.balls.data, "");
+      assert.deepStrictEqual(frontCallbacks(harness), []);
+    }
+
+    it("PR #1424 follow-up: mounts for the committed built-in juggling URL", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      assert.strictEqual(harness.api.currentDisplayedAssetUrl, `../assets/svg/${jugglingFile}`);
+      assert.match(harness.balls.data, /^\.\.\/assets\/juggling\/clawd-juggling-front\.svg\?/);
+      assert.strictEqual(harness.ballsLayer.style.display, "block");
+    });
+
+    it("PR #1424 follow-up: ignores an external asset with the same file name and packets", () => {
+      const harness = jugglingHarness({ assetsPath: "file:///external/theme" });
+      commitJuggling(harness);
+      assert.strictEqual(harness.accessory.style.visibility, "visible");
+      assertUnmounted(harness);
+      assert.deepStrictEqual(harness.ballsDataWrites, []);
+    });
+
+    it("PR #1424 follow-up: follows the new commit while a previous juggling object fades", () => {
+      const harness = jugglingHarness({ transitions: { [jugglingFile]: { out: 300 } } });
+      const previous = commitJuggling(harness);
+      loadCopy(harness);
+      runFrontCallback(harness);
+      const previousReads = previous.source.reads();
+      const current = commitJuggling(harness, { transforms: nextPose });
+      assert.deepStrictEqual(harness.mediaLayer.children, [previous.media, current.media]);
+      assert.strictEqual(previous.media.style.opacity, "0");
+      const copy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy, nextPose);
+      assert.strictEqual(previous.source.reads(), previousReads);
+    });
+
+    it("PR #1424 follow-up: ignores a pending juggling object while the committed image is visible", () => {
+      const harness = jugglingHarness();
+      harness.api.swapToFile("static.svg", "working", false);
+      harness.api.pendingNext.listeners.get("load")();
+      harness.api.swapToFile(jugglingFile, "working", true);
+      attachPackets(harness.api.pendingNext);
+      harness.api.refreshAccessoryLayout();
+      assert.strictEqual(harness.api.clawdEl.tagName, "IMG");
+      assertUnmounted(harness);
+      assert.deepStrictEqual(harness.ballsDataWrites, []);
+    });
+
+    it("PR #1424 follow-up: waits for the source document after the object commits", () => {
+      const harness = jugglingHarness();
+      const { media } = commitJuggling(harness, { transforms: null });
+      const copy = loadCopy(harness);
+      runFrontCallback(harness);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.deepStrictEqual(copy.writes, []);
+      attachPackets(media);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+    });
+
+    it("PR #1424 follow-up: waits for the copy's load event before revealing all three balls", () => {
+      for (const loadFirst of [false, true]) {
+        const harness = jugglingHarness();
+        const { source } = commitJuggling(harness);
+        assert.strictEqual(harness.balls.style.visibility, "hidden");
+        const earlyCopy = loadFirst ? null : attachPackets(harness.balls);
+        if (loadFirst) harness.balls.onload();
+        runFrontCallback(harness);
+        assert.strictEqual(harness.balls.style.visibility, "hidden");
+        assert.strictEqual(source.reads(), 0);
+        const copy = earlyCopy || attachPackets(harness.balls);
+        assert.deepStrictEqual(copy.writes, []);
+        if (!loadFirst) harness.balls.onload();
+        runFrontCallback(harness);
+        assertFirstPose(harness, copy);
+      }
+    });
+
+    it("PR #1424 follow-up: keeps an incomplete copy hidden until a complete document loads", () => {
+      const harness = jugglingHarness();
+      const { source } = commitJuggling(harness);
+      const partial = attachPackets(harness.balls, pose.slice(0, 2));
+      harness.balls.onload();
+      runFrontCallback(harness);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.strictEqual(source.reads(), 0);
+      assert.deepStrictEqual(partial.writes, []);
+      const copy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+    });
+
+    it("PR #1424 follow-up: hides the old pose when the same media object gets a fresh document", () => {
+      const harness = jugglingHarness();
+      const { media } = commitJuggling(harness);
+      const copy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+      copy.writes.length = 0;
+      attachPackets(media, nextPose);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy, nextPose);
+    });
+
+    function assertFailedBindingIsRetired(harness) {
+      assertUnmounted(harness);
+      const writes = harness.ballsDataWrites.slice();
+      harness.api.refreshAccessoryLayout();
+      assertUnmounted(harness);
+      assert.deepStrictEqual(harness.ballsDataWrites, writes);
+      commitJuggling(harness);
+      assert.strictEqual(harness.ballsDataWrites.length, writes.length + 1);
+      const copy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+    }
+
+    it("PR #1424 follow-up: retires a failed copy load until another object commits", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      harness.balls.onerror();
+      assertFailedBindingIsRetired(harness);
+    });
+
+    it("PR #1424 follow-up: times out a copy that never emits load or error", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      runFrontCallback(harness);
+      harness.advanceTime(959);
+      runFrontCallback(harness);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      harness.advanceTime(1);
+      runFrontCallback(harness);
+      assertFailedBindingIsRetired(harness);
+    });
+
+    it("PR #1424 follow-up: disregards an obsolete copy load callback after rebinding", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      const obsoleteLoad = harness.balls.onload;
+      commitJuggling(harness, { transforms: nextPose });
+      const copy = attachPackets(harness.balls);
+      obsoleteLoad();
+      runFrontCallback(harness);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.deepStrictEqual(copy.writes, []);
+      harness.balls.onload();
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy, nextPose);
+    });
+
+    it("PR #1424 follow-up: moves from RAF to the committed document's sampling clock", () => {
+      const harness = jugglingHarness({ follow: true, sampled: true });
+      const animation = new JugglingAnimation(null);
+      commitJuggling(harness, { animation });
+      const copy = loadCopy(harness);
+      assert.match(animation.timingUpdates[0].easing, /^steps\(/);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+      assert.strictEqual(frontCallbacks(harness)[0].raf, true);
+      animation.startTime = 0;
+      animation.currentTime = stepMs + 7;
+      runFrontCallback(harness);
+      const [timer] = frontCallbacks(harness);
+      assert.ok(!timer.raf);
+      assert.ok(Math.abs(timer.ms - (stepMs - animation.currentTime % stepMs)) < 0.001);
+      runFrontCallback(harness, { raf: false });
+      assert.strictEqual(frontCallbacks(harness)[0].raf, true);
+    });
+
+    it("PR #1424 follow-up: skips repeat transform writes and keeps one callback across layout refreshes", () => {
+      const harness = jugglingHarness({ follow: true, sampled: true });
+      commitJuggling(harness, { animation: new JugglingAnimation() });
+      const copy = loadCopy(harness);
+      const [initialRaf] = frontCallbacks(harness);
+      for (let i = 0; i < 2; i++) harness.api.refreshAccessoryLayout();
+      assert.deepStrictEqual(frontCallbacks(harness), [initialRaf]);
+      runFrontCallback(harness);
+      const [timer] = frontCallbacks(harness);
+      for (let i = 0; i < 2; i++) harness.api.refreshAccessoryLayout();
+      assert.deepStrictEqual(frontCallbacks(harness), [timer]);
+      runFrontCallback(harness, { raf: false });
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+    });
+
+    const pauseEntries = {
+      "pet hidden": (harness, hidden) => harness.electronHandlers.onPetHiddenChange(hidden),
+      "document hidden": (harness, hidden) => {
+        harness.context.document.hidden = hidden;
+        harness.documentListeners.get("visibilitychange")();
+      },
+      "low-power pause": (harness, paused) => {
+        harness.api.setCurrentState("sleeping");
+        harness.api.setLowPowerSvgPaused(paused);
+      },
+    };
+    for (const [reason, setPaused] of Object.entries(pauseEntries)) {
+      it(`PR #1424 follow-up: cancels a pending timer or RAF on ${reason} and resumes once`, () => {
+        for (const pendingRaf of [false, true]) {
+          const harness = jugglingHarness({ sampled: true });
+          const { source } = commitJuggling(harness, { animation: new JugglingAnimation() });
+          const copy = loadCopy(harness);
+          runFrontCallback(harness);
+          if (pendingRaf) runFrontCallback(harness, { raf: false });
+          const [cancelled] = frontCallbacks(harness);
+          assert.strictEqual(!!cancelled.raf, pendingRaf);
+          const reads = source.reads();
+          const dataWrites = harness.ballsDataWrites.slice();
+          setPaused(harness, true);
+          assert.strictEqual(cancelled.cleared, true);
+          assert.deepStrictEqual(frontCallbacks(harness), []);
+          cancelled.callback();
+          assert.deepStrictEqual(frontCallbacks(harness), []);
+          assert.strictEqual(source.reads(), reads);
+
+          setPaused(harness, false);
+          const [resumed] = frontCallbacks(harness);
+          cancelled.callback();
+          assert.deepStrictEqual(frontCallbacks(harness), [resumed]);
+          assert.deepStrictEqual(harness.ballsDataWrites, dataWrites);
+          runFrontCallback(harness);
+          assert.strictEqual(source.reads(), reads + 3);
+          assertFirstPose(harness, copy);
+        }
+      });
+    }
+
+    it("PR #1424 follow-up: keeps the binding on hidden resize and accepts a load while paused", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      const dataWrites = harness.ballsDataWrites.slice();
+      harness.electronHandlers.onPetHiddenChange(true);
+      harness.windowListeners.get("resize")();
+      assert.strictEqual(harness.ballsLayer.style.display, "block");
+      assert.deepStrictEqual(harness.ballsDataWrites, dataWrites);
+      const copy = loadCopy(harness);
+      assert.deepStrictEqual(frontCallbacks(harness), []);
+      assert.deepStrictEqual(copy.writes, []);
+      harness.electronHandlers.onPetHiddenChange(false);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+      assert.deepStrictEqual(harness.ballsDataWrites, dataWrites);
+    });
+
+    it("PR #1424 follow-up: restarts a stopped copy on system wake without an object reload", () => {
+      const harness = jugglingHarness();
+      const { media } = commitJuggling(harness);
+      const copy = loadCopy(harness);
+      harness.context.document.hidden = true;
+      runFrontCallback(harness);
+      harness.context.document.hidden = false;
+      assert.strictEqual(harness.api.lowPowerSvgPaused, false);
+      assert.deepStrictEqual(frontCallbacks(harness), []);
+      harness.electronHandlers.onSystemWake({ id: "wake-with-juggling" });
+      assert.strictEqual(harness.api.clawdEl, media);
+      assert.strictEqual(harness.api.pendingNext, null);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+    });
+
+    const removeHat = {
+      "taking off the hat": (harness) => harness.electronHandlers.onPetAccessoryChange({ id: "none" }),
+      "a theme config push": (harness) => harness.electronHandlers.onThemeConfig(accessoryConfig()),
+      "a follow tick discovering a hidden head slot": (harness) => {
+        const slot = harness.api.accessorySlots.head;
+        slot.attachments.files[jugglingFile] = { visibility: "hidden" };
+        assert.ok(slot.raf);
+        slot.raf.cleared = true;
+        slot.raf.callback();
+      },
+      "a head asset load error": (harness) => harness.accessory.onerror(),
+    };
+    for (const [reason, hideHead] of Object.entries(removeHat)) {
+      it(`PR #1424 follow-up: unloads the copy immediately on ${reason}`, () => {
+        const harness = jugglingHarness({ follow: true });
+        commitJuggling(harness);
+        loadCopy(harness);
+        runFrontCallback(harness);
+        const [queued] = frontCallbacks(harness);
+        hideHead(harness);
+        assert.strictEqual(queued.cleared, true);
+        assertUnmounted(harness);
+      });
+    }
+
+    for (const tag of ["OBJECT", "IMG"]) {
+      it(`PR #1424 follow-up: unloads when a different ${tag} visual commits`, () => {
+        const harness = jugglingHarness();
+        commitJuggling(harness);
+        loadCopy(harness);
+        runFrontCallback(harness);
+        const [queued] = frontCallbacks(harness);
+        harness.api.swapToFile("static.svg", "working", tag === "OBJECT");
+        assert.strictEqual(harness.ballsLayer.style.display, "block");
+        harness.api.pendingNext.listeners.get("load")();
+        assert.strictEqual(harness.api.clawdEl.tagName, tag);
+        assert.strictEqual(queued.cleared, true);
+        assertUnmounted(harness);
+      });
+    }
+
+    it("PR #1424 follow-up: applies and clears the same tint as the pet media", () => {
+      const tint = { id: "mono", filter: "grayscale(1)" };
+      const harness = jugglingHarness({ petTintPayload: tint });
+      const { media } = commitJuggling(harness);
+      assert.strictEqual(harness.balls.style.filter, tint.filter);
+      loadCopy(harness);
+      runFrontCallback(harness);
+      for (const payload of [{ id: "warm", filter: "sepia(1)" }, { id: "none", filter: "" }, tint]) {
+        harness.electronHandlers.onPetTintChange(payload);
+        assert.strictEqual(media.style.filter, payload.filter);
+        assert.strictEqual(harness.balls.style.filter, payload.filter);
+      }
+      harness.electronHandlers.onThemeConfig(accessoryConfig({ petTintSupported: false, petTintPayload: tint }));
+      assert.strictEqual(media.style.filter, "");
+      assert.strictEqual(harness.balls.style.filter, "");
+    });
+
+    it("PR #1424 follow-up: copies local CSS geometry without replacing filter or visibility", () => {
+      const tint = { id: "mono", filter: "grayscale(1)" };
+      const harness = jugglingHarness({ petTintPayload: tint });
+      const { media } = commitJuggling(harness);
+      const layout = {
+        left: "calc(-45.5% + 1.25px)", top: "auto", bottom: "calc(-5% + 2.75px)",
+        width: "189.25%", height: "123.5px",
+      };
+      Object.assign(media.style, layout);
+      media.getBoundingClientRect = () => ({ x: 104.75, y: -9.5, width: 200, height: 145 });
+      Object.defineProperty(harness.balls.style, "cssText", {
+        set() { assert.fail("geometry must not replace the copy's inline styles"); },
+      });
+      harness.electronHandlers.onPetHiddenChange(true);
+      harness.windowListeners.get("resize")();
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.strictEqual(harness.balls.style.filter, tint.filter);
+      for (const [key, value] of Object.entries(layout)) {
+        assert.strictEqual(harness.balls.style[key], value, key);
+      }
+      Object.defineProperty(harness.balls.style, "width", {
+        configurable: true,
+        get: () => layout.width,
+        set() { assert.fail("an unchanged width must not be rewritten"); },
+      });
+      harness.api.refreshAccessoryLayout();
+      Object.defineProperty(harness.balls.style, "width", { value: layout.width, writable: true });
+      harness.electronHandlers.onPetHiddenChange(false);
+      loadCopy(harness);
+      runFrontCallback(harness);
+      harness.electronHandlers.onViewportOffset(11);
+      assert.strictEqual(harness.balls.style.bottom, media.style.bottom);
+      assert.strictEqual(harness.balls.style.visibility, "visible");
+      assert.strictEqual(harness.balls.style.filter, tint.filter);
+    });
+
+    it("PR #1424 follow-up: stays hidden and queues no copy until inline media width is available", () => {
+      const harness = jugglingHarness();
+      harness.api.swapToFile(jugglingFile, "working", true);
+      const media = harness.api.pendingNext;
+      attachPackets(media);
+      media.style.width = "";
+      media.listeners.get("load")();
+      const copy = loadCopy(harness);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.deepStrictEqual(frontCallbacks(harness), []);
+      assert.deepStrictEqual(copy.writes, []);
+      media.style.width = "190%";
+      harness.windowListeners.get("resize")();
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy);
+    });
+
+    it("PR #1424 follow-up: syncs once per layout refresh, including when layout throws", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      const { document } = harness.context;
+      const getElementById = document.getElementById;
+      let syncs = 0;
+      document.getElementById = (id) => {
+        if (id === "pet-balls-layer") syncs++;
+        return getElementById(id);
+      };
+
+      const files = harness.api.accessorySlots.head.attachments.files;
+      const layoutError = new Error("head layout failed");
+      Object.defineProperty(files, jugglingFile, {
+        configurable: true,
+        get() { throw layoutError; },
+      });
+      for (const slot of [null, "head"]) {
+        syncs = 0;
+        assert.throws(() => harness.api.refreshAccessoryLayout(slot), (error) => error === layoutError);
+        assert.strictEqual(syncs, 1);
+      }
+
+      Object.defineProperty(files, jugglingFile, { value: { visibility: "hidden" } });
+      harness.api.refreshAccessoryLayout();
+      assertUnmounted(harness);
+      // After unmount, repeated hidden layouts should only sync in finally.
+      syncs = 0;
+      harness.api.refreshAccessoryLayout("head");
+      assert.strictEqual(syncs, 1);
+    });
+  });
 
   it("settles both independently loaded slots before revealing the first pet visual", () => {
     const harness = createRendererHarness({

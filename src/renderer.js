@@ -362,6 +362,7 @@ function setLowPowerSvgPaused(paused) {
   if (next) {
     _cancelLayerAnimLoop();
     for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);
+    cancelJugglingFrontLoop();
   } else {
     refreshAccessoryLayout();
   }
@@ -785,6 +786,7 @@ function applyPetTintToElement(element) {
 
 function applyPetTintToAllMedia() {
   for (const element of getPetMediaElements()) applyPetTintToElement(element);
+  applyPetTintToJugglingFront();
 }
 
 function setPetTintPayload(payload) {
@@ -841,7 +843,7 @@ function cancelAccessoryFollow(slotName) {
   slot.followKey = null;
 }
 
-function hideAccessory(slotName) {
+function hideAccessory(slotName, { syncFront = true } = {}) {
   const slot = getAccessorySlot(slotName);
   if (!slot) return;
   cancelAccessoryFollow(slotName);
@@ -858,6 +860,8 @@ function hideAccessory(slotName) {
   // Hidden document-backed accessories must not keep advancing their SMIL
   // timeline behind a sprite that declares the slot hidden.
   setAccessorySvgLowPowerPaused(slotName, true);
+  // A layout refresh already syncs after visiting its requested slots.
+  if (slotName === "head" && syncFront) syncJugglingFrontLayer();
 }
 
 function clearAccessoryAssetLoadTimer(slotName) {
@@ -1138,9 +1142,9 @@ function applyAccessoryLayout(context, layout) {
   return true;
 }
 
-function getAccessoryFollowDelayMs(context) {
+function getSampledMediaDelayMs(media) {
   try {
-    const doc = context.media.contentDocument;
+    const doc = media.contentDocument;
     const sampled = doc && discreteSamplingFollowByDocument.get(doc);
     if (!sampled || _useLayeredTracking) return null;
     // Cursor tracking moves the body through a transition between grid points.
@@ -1186,7 +1190,7 @@ function accessoryFollowTick(slotName, expectedKey) {
     return;
   }
   applyAccessoryLayout(context, layout);
-  const delayMs = getAccessoryFollowDelayMs(context);
+  const delayMs = getSampledMediaDelayMs(context.media);
   if (delayMs != null) {
     slot.followTimer = setTimeout(() => {
       slot.followTimer = null;
@@ -1208,15 +1212,25 @@ function startAccessoryFollow(context) {
 }
 
 // ── Juggling front layer ─────────────────────────────────────────────────
-// Mounted only while the media is the juggling animation. The overlay is a
-// packet-only copy of that animation; every frame we read the media document's
-// computed packet transforms and write them onto the copy. Copying computed
-// values (instead of running a second animation) keeps the overlay exactly in
-// phase with the renderer's discrete step sampler.
-const JUGGLING_FRONT_FILE = "clawd-juggling-front.svg";
-let _jugglingFrontActive = false;
-let _jugglingFrontRaf = null;
-let _jugglingFrontFrame = 0;
+// Only the built-in Clawd scene shares its ball geometry with this copy.
+// Clawd uses no media fades here, so one committed document drives the layer.
+const JUGGLING_SOURCE_URL = "../assets/svg/clawd-working-juggling.svg";
+const JUGGLING_FRONT_URL = "../assets/juggling/clawd-juggling-front.svg";
+const JUGGLING_FRONT_WAIT_MS = DISCRETE_SAMPLING_RETRY_MS * DISCRETE_SAMPLING_MAX_RETRIES;
+const jugglingFront = {
+  media: null,
+  sourceDocument: null,
+  targetLoaded: false,
+  target: null,
+  visible: false,
+  failed: null,
+  token: 0,
+  loadToken: null,
+  timer: null,
+  raf: null,
+  waitStartedAt: null,
+  transforms: [],
+};
 
 function getJugglingFrontLayer() {
   return document.getElementById("pet-balls-layer");
@@ -1226,123 +1240,229 @@ function getJugglingFrontObject() {
   return document.getElementById("clawd-balls");
 }
 
-function getLiveMediaObject() {
-  if (typeof document.querySelector !== "function") return null;
-  const el = document.querySelector("#pet-media-layer > object#clawd");
-  return el && el.tagName === "OBJECT" ? el : null;
-}
-
-// The overlay only matters when a head accessory is actually painted: without
-// one the media already shows the balls and the overlay would only make the
-// catch ball paint in front of the hand. Keep the stock look for bare pets.
 function headAccessoryVisibleNow() {
   const slot = getAccessorySlot("head");
   if (!slot || !slot.supported || !slot.element || !slot.assetReady) return false;
   if (!slot.payload || slot.payload.id === "none" || !slot.payload.assetFile) return false;
-  const el = slot.element;
-  if (el.style.visibility === "hidden" || el.style.display === "none") return false;
-  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return true;
-  const style = window.getComputedStyle(el);
-  return style.visibility !== "hidden" && style.display !== "none";
+  // The page hides descendants via CSS. Keep the binding while the hat itself
+  // is still laid out, so resizing a hidden pet doesn't reload the copy.
+  const { visibility, display } = slot.element.style;
+  return visibility !== "hidden" && display !== "none";
+}
+
+function getJugglingFrontMedia() {
+  if (!clawdEl || clawdEl.tagName !== "OBJECT" || !clawdEl.isConnected) return null;
+  if (currentDisplayedAssetUrl !== JUGGLING_SOURCE_URL || jugglingFront.failed === clawdEl) return null;
+  return headAccessoryVisibleNow() ? clawdEl : null;
+}
+
+function shouldPauseJugglingFront() {
+  return petHidden || document.hidden === true || shouldSuppressPassiveTrackingForLowPower();
+}
+
+function applyPetTintToJugglingFront(front = getJugglingFrontObject()) {
+  if (front) front.style.filter = _petTintSupported ? _petTintPayload.filter : "";
 }
 
 function alignJugglingFrontObject(media, front) {
-  if (typeof media.getBoundingClientRect !== "function") return;
-  const box = media.getBoundingClientRect();
-  const stage = document.getElementById("pet-asset-direction-stage");
-  const stageBox = stage && typeof stage.getBoundingClientRect === "function"
-    ? stage.getBoundingClientRect()
-    : { x: 0, y: 0, width: 0, height: 0 };
-  const wanted = "position:absolute;pointer-events:none;"
-    + "width:" + box.width + "px;height:" + box.height + "px;"
-    + "left:" + (box.x - stageBox.x) + "px;top:" + (box.y - stageBox.y) + "px;";
-  if (front.__clawdAlignStyle !== wanted) {
-    front.style.cssText = wanted;
-    front.__clawdAlignStyle = wanted;
+  if (!media.style.width) return false;
+  // The layers share a local origin and size. Copy the CSS values so that
+  // both inherit the same ancestor flips and transforms.
+  for (const property of ["left", "top", "bottom", "width", "height"]) {
+    const value = media.style[property];
+    if (front.style[property] !== value) front.style[property] = value;
   }
+  return true;
 }
 
-function copyJugglingPackets(media, front) {
-  let srcDoc = null;
-  let dstDoc = null;
-  try {
-    srcDoc = media.contentDocument;
-    dstDoc = front.contentDocument;
-  } catch {
-    return;
-  }
-  if (!srcDoc || !dstDoc) return;
-  if (typeof srcDoc.querySelectorAll !== "function" || typeof dstDoc.querySelectorAll !== "function") return;
-  if (typeof getComputedStyle !== "function") return;
-  const src = srcDoc.querySelectorAll(".packet");
-  const dst = dstDoc.querySelectorAll(".packet");
-  for (let i = 0; i < src.length && i < dst.length; i++) {
-    const transform = getComputedStyle(src[i]).transform;
-    dst[i].setAttribute("transform", transform === "none" ? "" : transform);
-  }
+function hideJugglingFrontObject(front) {
+  if (front.style.visibility !== "hidden") front.style.visibility = "hidden";
+  jugglingFront.visible = false;
+}
+
+function cancelJugglingFrontLoop() {
+  jugglingFront.token++;
+  if (jugglingFront.timer != null) clearTimeout(jugglingFront.timer);
+  if (jugglingFront.raf != null) cancelAnimationFrame(jugglingFront.raf);
+  jugglingFront.timer = null;
+  jugglingFront.raf = null;
+  jugglingFront.waitStartedAt = null;
 }
 
 function stopJugglingFrontLayer() {
-  if (!_jugglingFrontActive) return;
-  _jugglingFrontActive = false;
-  if (_jugglingFrontRaf !== null) {
-    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(_jugglingFrontRaf);
-    _jugglingFrontRaf = null;
-  }
+  if (!jugglingFront.media) return;
+  cancelJugglingFrontLoop();
+  jugglingFront.media = null;
+  jugglingFront.sourceDocument = null;
+  jugglingFront.targetLoaded = false;
+  jugglingFront.target = null;
+  jugglingFront.loadToken = null;
+  jugglingFront.transforms = [];
   const layer = getJugglingFrontLayer();
   const front = getJugglingFrontObject();
   if (layer) layer.style.display = "none";
   if (front) {
-    try {
-      front.data = "";
-    } catch {}
+    hideJugglingFrontObject(front);
+    front.onload = null;
+    front.onerror = null;
+    try { front.data = ""; } catch {}
+  }
+}
+
+function failJugglingFrontLayer() {
+  jugglingFront.failed = jugglingFront.media;
+  stopJugglingFrontLayer();
+}
+
+function bindJugglingFrontLayer(media, layer, front) {
+  stopJugglingFrontLayer();
+  jugglingFront.media = media;
+  // The loop may pause while the object loads. Its events stay current until
+  // the binding itself is retired.
+  const loadToken = ++jugglingFront.token;
+  jugglingFront.loadToken = loadToken;
+  hideJugglingFrontObject(front);
+  front.onload = () => {
+    if (jugglingFront.loadToken !== loadToken) return;
+    hideJugglingFrontObject(front);
+    jugglingFront.targetLoaded = true;
+    jugglingFront.target = null;
+    jugglingFront.transforms = [];
+  };
+  front.onerror = () => {
+    if (jugglingFront.loadToken !== loadToken) return;
+    failJugglingFrontLayer();
+  };
+  // Chromium needs a mounted object to create its document. Hide the object
+  // itself until all three positions have been copied.
+  layer.style.display = "block";
+  try { front.data = JUGGLING_FRONT_URL + "?_t=" + loadToken; } catch { failJugglingFrontLayer(); }
+}
+
+function getJugglingDocument(object) {
+  try { return object.contentDocument; } catch { return null; }
+}
+
+function getJugglingFrontPackets(front) {
+  if (!jugglingFront.targetLoaded) return null;
+  const doc = getJugglingDocument(front);
+  if (!doc) return null;
+  const target = jugglingFront.target;
+  if (target) return doc === target.document ? target.packets : null;
+  try {
+    const packets = doc.querySelectorAll(".packet");
+    if (packets.length !== 3) return null;
+    jugglingFront.target = { document: doc, packets };
+    return packets;
+  } catch {
+    return null;
+  }
+}
+
+function copyJugglingPackets(sourceDocument, targetPackets) {
+  try {
+    const packets = sourceDocument.querySelectorAll(".packet");
+    if (packets.length !== 3) return false;
+    const transforms = Array.from(packets, (packet) => {
+      const { transform } = window.getComputedStyle(packet);
+      return transform === "none" ? "" : transform;
+    });
+    transforms.forEach((transform, index) => {
+      if (jugglingFront.transforms[index] !== transform) {
+        targetPackets[index].setAttribute("transform", transform);
+      }
+    });
+    jugglingFront.transforms = transforms;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function jugglingFrontTick(front, token) {
+  if (jugglingFront.token !== token) return;
+  jugglingFront.raf = null;
+  if (shouldPauseJugglingFront()) {
+    cancelJugglingFrontLoop();
+    return;
+  }
+  const media = getJugglingFrontMedia();
+  // A commit can retire the source before a scheduled callback gets to run.
+  if (!media || media !== jugglingFront.media) {
+    syncJugglingFrontLayer();
+    return;
+  }
+  const sourceDocument = getJugglingDocument(media);
+  if (sourceDocument !== jugglingFront.sourceDocument) {
+    hideJugglingFrontObject(front);
+    jugglingFront.sourceDocument = sourceDocument;
+    jugglingFront.transforms = [];
+  }
+
+  const targetPackets = getJugglingFrontPackets(front);
+  const ready = sourceDocument && targetPackets && copyJugglingPackets(sourceDocument, targetPackets);
+  if (!ready) {
+    hideJugglingFrontObject(front);
+    // A committed object may expose its SVG document after the commit, just
+    // as it can for discrete sampling. Give both documents time to arrive.
+    const now = performance.now();
+    jugglingFront.waitStartedAt ??= now;
+    if (now - jugglingFront.waitStartedAt >= JUGGLING_FRONT_WAIT_MS) {
+      failJugglingFrontLayer();
+      return;
+    }
+  } else {
+    jugglingFront.waitStartedAt = null;
+    if (!jugglingFront.visible) {
+      front.style.visibility = "visible";
+      jugglingFront.visible = true;
+    }
+  }
+
+  const tick = () => jugglingFrontTick(front, token);
+  const delayMs = ready ? getSampledMediaDelayMs(media) : null;
+  if (delayMs != null) {
+    jugglingFront.timer = setTimeout(() => {
+      if (jugglingFront.token !== token) return;
+      jugglingFront.timer = null;
+      jugglingFront.raf = requestAnimationFrame(tick);
+    }, delayMs);
+  } else {
+    jugglingFront.raf = requestAnimationFrame(tick);
   }
 }
 
 function syncJugglingFrontLayer() {
+  if (jugglingFront.failed !== clawdEl) jugglingFront.failed = null;
   const layer = getJugglingFrontLayer();
   const front = getJugglingFrontObject();
-  const media = getLiveMediaObject();
+  const media = getJugglingFrontMedia();
   if (!layer || !front || !media) {
     stopJugglingFrontLayer();
     return;
   }
-  const data = media.getAttribute("data") || "";
-  if (!data.includes("clawd-working-juggling.svg") || !headAccessoryVisibleNow()) {
-    stopJugglingFrontLayer();
+  if (jugglingFront.media !== media) bindJugglingFrontLayer(media, layer, front);
+  if (jugglingFront.media !== media) return;
+  applyPetTintToJugglingFront(front);
+  if (!alignJugglingFrontObject(media, front)) {
+    hideJugglingFrontObject(front);
+    cancelJugglingFrontLoop();
     return;
   }
-  alignJugglingFrontObject(media, front);
-  if (_jugglingFrontActive) return;
-  _jugglingFrontActive = true;
-  layer.style.display = "block";
-  front.data = "../assets/juggling/" + JUGGLING_FRONT_FILE + "?_t=" + Date.now();
-  copyJugglingPackets(media, front);
-  if (typeof requestAnimationFrame !== "function") return;
-  const tick = () => {
-    _jugglingFrontRaf = null;
-    if (!_jugglingFrontActive) return;
-    const live = getLiveMediaObject();
-    const el = getJugglingFrontObject();
-    if (live && el) {
-      if (_jugglingFrontFrame++ % 30 === 0) alignJugglingFrontObject(live, el);
-      copyJugglingPackets(live, el);
-    }
-    _jugglingFrontRaf = requestAnimationFrame(tick);
-  };
-  _jugglingFrontRaf = requestAnimationFrame(tick);
+  if (shouldPauseJugglingFront()) {
+    if (jugglingFront.timer != null || jugglingFront.raf != null) cancelJugglingFrontLoop();
+    return;
+  }
+  if (jugglingFront.timer == null && jugglingFront.raf == null) {
+    const { token } = jugglingFront;
+    jugglingFront.raf = requestAnimationFrame(() => jugglingFrontTick(front, token));
+  }
 }
 
 function refreshAccessoryLayout(slotName = null) {
-  if (!slotName) {
-    for (const name of ACCESSORY_SLOT_NAMES) refreshAccessorySlotLayout(name);
-    syncJugglingFrontLayer();
-    return;
-  }
-  // Every per-slot path (visible, hidden, still-loading, follow, static) must
-  // leave the front layer consistent with what was just painted.
   try {
-    refreshAccessorySlotLayout(slotName);
+    if (slotName) refreshAccessorySlotLayout(slotName);
+    else for (const name of ACCESSORY_SLOT_NAMES) refreshAccessorySlotLayout(name);
   } finally {
     syncJugglingFrontLayer();
   }
@@ -1352,14 +1472,14 @@ function refreshAccessorySlotLayout(slotName) {
   cancelAccessoryFollow(slotName);
   const context = getCurrentAccessoryContext(slotName);
   if (!context || context.descriptor.visibility === "hidden") {
-    hideAccessory(slotName);
+    hideAccessory(slotName, { syncFront: false });
     return;
   }
   if (!ensureAccessoryAsset(slotName)) {
     // A pending <object> must remain mounted for Chromium to load its nested
     // document. It is already visibility:hidden, so there is no pre-layout
     // flash. Failed/timed-out assets are settled and stay fully hidden.
-    if (context.slot.assetSettled) hideAccessory(slotName);
+    if (context.slot.assetSettled) hideAccessory(slotName, { syncFront: false });
     return;
   }
 
@@ -1375,7 +1495,7 @@ function refreshAccessorySlotLayout(slotName) {
   }
   const staticLayout = computeStaticAccessoryLayout(context);
   if (!applyAccessoryLayout(context, staticLayout)) {
-    hideAccessory(slotName);
+    hideAccessory(slotName, { syncFront: false });
     noteAccessoryDiagnostic(slotName, context.file, "static-layout-unavailable");
   }
 }
@@ -1422,8 +1542,10 @@ if (document && typeof document.addEventListener === "function") {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden === true) {
       for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);
+      cancelJugglingFrontLoop();
+    } else {
+      refreshAccessoryLayout();
     }
-    else refreshAccessoryLayout();
   });
 }
 
@@ -1544,6 +1666,7 @@ if (window.electronAPI && typeof window.electronAPI.onPetHiddenChange === "funct
     petHidden = next;
     if (next) {
       for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);
+      cancelJugglingFrontLoop();
     } else {
       refreshAccessoryLayout();
     }
@@ -3397,6 +3520,7 @@ function recoverFromSystemWake(payload) {
     attachEyeTracking(clawdEl);
   }
 
+  syncJugglingFrontLayer();
   const status = {
     id,
     result: rootBefore ? "resumed" : "no-svg",
