@@ -11,6 +11,7 @@ const {
 } = require("../src/pet-customization-catalog");
 
 const ASSET_DIR = path.join(__dirname, "..", "assets", "accessories");
+const PET_ASSETS = path.dirname(ASSET_DIR);
 const MAX_SMIL_VALUES = 16;
 const MAX_SMIL_DURATION_S = 10;
 const MAX_TRANSLATE_ABS = 16;
@@ -132,6 +133,34 @@ function auditCigaretteSmil(source) {
 }
 
 describe("accessory asset audit", () => {
+  it("PR #1424 follow-up: matches the juggling copy's canvas and ordered ball circles to the source", () => {
+    function readBallGeometry(file) {
+      const source = fs.readFileSync(path.join(PET_ASSETS, file), "utf8");
+      const [root] = parseStrictXmlElements(source.replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, ""));
+      assert.strictEqual(root.tag, "svg");
+      const { viewBox, width, height } = root.attrs;
+      assert.ok(viewBox && width && height, file);
+      const packets = [];
+      const visit = (node) => {
+        if (node.tag === "g" && (node.attrs.class || "").split(/\s+/).includes("packet")) {
+          assert.ok(node.children.length > 0 && node.children.every((child) => child.tag === "circle"), file);
+          packets.push(node.children.map(({ attrs: { cx, cy, r, fill, opacity } }) => (
+            { cx, cy, r, fill, opacity }
+          )));
+        }
+        node.children.forEach(visit);
+      };
+      visit(root);
+      assert.strictEqual(packets.length, 3, file);
+      return { viewBox, width, height, packets };
+    }
+
+    assert.deepStrictEqual(
+      readBallGeometry("juggling/clawd-juggling-front.svg"),
+      readBallGeometry("svg/clawd-working-juggling.svg")
+    );
+  });
+
   it("ships exactly the head and mouth catalogs' local SVG assets with matching viewBoxes", () => {
     const catalogEntries = [...PET_ACCESSORY_CATALOG, ...PET_MOUTH_ACCESSORY_CATALOG]
       .filter((entry) => entry.id !== "none");
