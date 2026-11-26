@@ -1008,6 +1008,11 @@ function createAgentRuntimeMain(options = {}) {
     return isLocalQoderSession(session) ? session : null;
   }
 
+  function isQoderDesktopSession(session) {
+    return !disposed && isAgentEnabled("qoder") && isLocalQoderSession(session)
+      && qoderDesktopTitleTracker.hasDesktopRow(session.rawSessionId);
+  }
+
   function noteQoderExternalTitle(sessionId, title) {
     const session = localQoderSession(sessionId);
     if (!session || !title) return;
@@ -1575,6 +1580,7 @@ function createAgentRuntimeMain(options = {}) {
     getCopilotTerminalWaitSessionIds: copilotTerminalWait.getPendingSessionIds,
     clearCopilotTerminalWaitSession: copilotTerminalWait.clearSession,
     getKiroDesktopPendingSessionIds: kiroDesktop.getPendingSessionIds,
+    isQoderDesktopSession,
     clearKiroDesktopSession: kiroDesktop.clearSession,
     clearKiroDesktopReminderCards: kiroDesktop.clearCards,
     resyncKiroDesktopReminderCards: kiroDesktop.resyncReminderCards,

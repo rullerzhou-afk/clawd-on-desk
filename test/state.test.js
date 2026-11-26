@@ -1552,6 +1552,33 @@ describe("wake poll behavior", () => {
     assert.strictEqual(api.getCurrentState(), "waking");
   });
 
+  it("wakes when only the visual cursor point moves", () => {
+    let visual = { x: 500, y: 500 };
+    ctx.getVisualCursorPoint = () => (visual ? { ...visual } : null);
+    api.applyState("sleeping");
+    mock.timers.tick(500);
+    mock.timers.tick(1000);
+    assert.strictEqual(api.getCurrentState(), "sleeping");
+    visual = { x: 900, y: 500 };
+    mock.timers.tick(200);
+    assert.strictEqual(api.getCurrentState(), "waking");
+  });
+
+  it("does not wake when the visual point goes away or comes back", () => {
+    let visual = { x: 500, y: 500 };
+    ctx.getVisualCursorPoint = () => (visual ? { ...visual } : null);
+    api.applyState("sleeping");
+    mock.timers.tick(500);
+    visual = null;
+    mock.timers.tick(400);
+    visual = { x: 900, y: 100 };
+    mock.timers.tick(400);
+    assert.strictEqual(api.getCurrentState(), "sleeping");
+    visual = { x: 901, y: 100 };
+    mock.timers.tick(200);
+    assert.strictEqual(api.getCurrentState(), "waking");
+  });
+
   it("direct sleep without waking art returns straight to idle on mouse move", () => {
     const theme = cloneTheme(_defaultTheme);
     theme.sleepSequence = { mode: "direct" };

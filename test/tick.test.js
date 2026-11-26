@@ -1919,3 +1919,125 @@ describe("tick conditional idle easter eggs", () => {
     assert.deepStrictEqual(idleFiles(), ["clawd-outlaw-bender.svg"]);
   });
 });
+
+// #1410: ctx.getVisualCursorPoint (KWin on Plasma Wayland) drives eye follow
+// and pointer payloads; hover keeps the regular cursor query.
+describe("tick visual cursor source", () => {
+  let cursor;
+  let visual;
+  let loader;
+  let tickApi;
+  let ctx;
+  let eyeMoves;
+  let pointers;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    // The regular query is frozen inside the pet's hit rect, as XWayland's
+    // last known position is when the cursor leaves for a Wayland window.
+    cursor = { x: 60, y: 60 };
+    visual = null;
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+    ctx = makeCtx(cloneTheme(_defaultTheme), []);
+    ctx.getVisualCursorPoint = () => (visual ? { ...visual } : null);
+    eyeMoves = [];
+    pointers = [];
+    ctx.getAssetPointerPayload = (_bounds, point) => ({ x: point.x, y: point.y, inside: true });
+    ctx.sendToRenderer = (channel, a, b) => {
+      if (channel === "eye-move") eyeMoves.push([a, b]);
+      if (channel === "cloudling-pointer") pointers.push(a);
+    };
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    if (loader) loader.restore();
+    mock.timers.reset();
+    tickApi = null;
+  });
+
+  function start() {
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(1);
+  }
+
+  // Chained timers only fire on time when the mock clock moves in small steps.
+  function run(ms) {
+    for (let t = 0; t < ms; t += 50) mock.timers.tick(50);
+  }
+
+  it("follows the visual point while the regular query stays still", () => {
+    visual = { x: 60, y: 60 };
+    start();
+    assert.deepStrictEqual(eyeMoves, []);
+
+    visual = { x: -1000, y: 50 };
+    mock.timers.tick(300);
+    assert.strictEqual(eyeMoves.length, 1);
+    assert.ok(eyeMoves[0][0] < 0, `expected a left gaze, got ${eyeMoves[0]}`);
+    assert.deepStrictEqual(pointers[pointers.length - 1], { x: -1000, y: 50, inside: true });
+    // Hover still comes from the regular query.
+    assert.strictEqual(ctx.mouseOverPet, true);
+  });
+
+  it("keeps the fast idle tick while only the visual point moves", () => {
+    visual = { x: 60, y: 60 };
+    start();
+    mock.timers.tick(3000); // past RECENT_MOUSE_MS since idle entry
+    eyeMoves.length = 0;
+    visual = { x: 600, y: 60 };
+    mock.timers.tick(250);
+    const afterFirst = eyeMoves.length;
+    visual = { x: 600, y: 600 };
+    mock.timers.tick(100);
+    assert.ok(eyeMoves.length > afterFirst, "expected an eye update within the 100 ms boost tick");
+  });
+
+  it("stays awake while only the visual point moves, then sleeps once it stops", () => {
+    const states = [];
+    ctx.setState = (state) => { states.push(state); };
+    visual = { x: 60, y: 60 };
+    start();
+    for (let i = 0; i < 70; i++) {
+      visual = { x: 600 + i, y: 600 };
+      run(1000);
+    }
+    assert.deepStrictEqual(states, []);
+    run(62000);
+    assert.ok(states.includes("yawning"), `expected yawning, got ${states}`);
+  });
+
+  it("does not take the visual point appearing or going away for movement", () => {
+    const states = [];
+    ctx.setState = (state) => { states.push(state); };
+    visual = { x: 600, y: 600 };
+    start();
+    run(40000);
+    visual = null;
+    run(5000);
+    visual = { x: 900, y: 100 };
+    run(17000);
+    assert.ok(states.includes("yawning"), `expected yawning, got ${states}`);
+  });
+
+  it("cancels roaming when only the visual point moves", () => {
+    let cancels = 0;
+    ctx.roam = { enabled: true, cancelRoam() { cancels++; }, tick() {} };
+    visual = { x: 600, y: 600 };
+    start();
+    mock.timers.tick(1000);
+    assert.strictEqual(cancels, 0);
+    visual = { x: 700, y: 600 };
+    mock.timers.tick(300);
+    assert.strictEqual(cancels, 1);
+  });
+
+  it("uses the regular query when there is no visual point", () => {
+    start();
+    cursor = { x: -1000, y: 50 };
+    mock.timers.tick(300);
+    assert.strictEqual(eyeMoves.length, 1);
+    assert.ok(eyeMoves[0][0] < 0);
+  });
+});

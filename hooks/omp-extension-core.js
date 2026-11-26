@@ -49,6 +49,29 @@ const DEFAULT_EVENT_BINDINGS = Object.freeze([
   Object.freeze(["session_shutdown", "SessionEnd", "sleeping"]),
 ]);
 
+const T3_CODE_PROCESS_NAME = "t3code";
+
+// Entries list the current process and its ancestors in walk order.
+// In T3 Code, the inner t3code process is a windowless server.
+// The outermost t3code process owns the window.
+function pickSourcePid(entries, platform) {
+  const firstIndex = entries.findIndex((entry) => entry.isTerminal || entry.isEditor);
+  if (firstIndex === -1) return 0;
+
+  const first = entries[firstIndex];
+  if (first.isEditor || platform !== "linux" || first.name !== T3_CODE_PROCESS_NAME) {
+    return first.pid;
+  }
+
+  let sourcePid = first.pid;
+  for (let i = firstIndex + 1; i < entries.length; i++) {
+    const parent = entries[i];
+    if (!parent.isTerminal || parent.name !== T3_CODE_PROCESS_NAME) break;
+    sourcePid = parent.pid;
+  }
+  return sourcePid;
+}
+
 function parseMode(argv = process.argv) {
   const args = Array.isArray(argv) ? argv : [];
   for (let i = 2; i < args.length; i++) {
@@ -381,6 +404,7 @@ const api = {
   buildPayload,
   isInteractiveMode,
   parseMode,
+  pickSourcePid,
   readSessionTitle,
   shouldReport,
 };

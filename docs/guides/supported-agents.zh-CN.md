@@ -5,7 +5,7 @@
 Claude Code 和 Codex CLI 首次启动即接入。其他集成在 **设置 → AI 编程工具** 中安装；保持启用期间，Clawd 会自动同步。
 
 - **Claude Code** — 通过 command hook + HTTP 权限 hook 完整集成
-- **Codex CLI** — official hooks 为主、JSONL 日志轮询（`~/.codex/sessions/`）兜底，默认自动同步并支持真实权限气泡
+- **Codex CLI** — official hooks 为主、JSONL 日志轮询（`$CODEX_HOME/sessions/` 或 `~/.codex/sessions/`）兜底，默认自动同步并支持真实权限气泡
 - **Copilot CLI** — 可选 command hook，写入 `~/.copilot/hooks/hooks.json`（从 Settings → AI 编程工具 安装；手动 JSON 备选见 Copilot 指南）
 - **Gemini CLI** — 可选 command hook，写入 `~/.gemini/settings.json`（从 Settings → AI 编程工具 安装，或执行 `npm run install:gemini-hooks`）
 - **Antigravity CLI (agy)** — 可选 command hook，写入 `~/.gemini/config/hooks.json`（从 Settings → AI 编程工具 安装，或执行 `npm run install:antigravity-hooks`）；**仅状态同步**：Clawd 不会为 agy 弹任何权限气泡，所有 Allow / Deny / Always-allow 都在 agy 自己的终端菜单里完成

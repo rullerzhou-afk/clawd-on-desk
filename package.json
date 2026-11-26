@@ -176,6 +176,7 @@
       "assets/icons/**/*",
       "assets/icons/agents/**/*",
       "assets/svg/**/*",
+      "assets/juggling/**/*",
       "assets/accessories/**/*",
       "assets/sounds/**/*",
       "assets/dock-icon.png",

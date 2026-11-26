@@ -9,6 +9,7 @@ const path = require("path");
 const { execFile, spawn } = require("child_process");
 const { quotePowerShellSingleArg } = require("../hooks/json-utils");
 const { isKdeWaylandSession } = require("./session-focus");
+const { createKwinScripting, parseGdbusInteger, parseGdbusString } = require("./kwin-scripting");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -2439,24 +2440,8 @@ function focusMacAppViaSystemEvents(pidCandidates, onDone) {
 // they cannot find a native Wayland terminal at all. KWin exposes window
 // activation to scripts loaded over D-Bus, which is what kdotool wraps; doing
 // the same here avoids depending on a tool distributions do not package.
-function gdbusCall(dest, objectPath, method, args, callback) {
-  execFile("gdbus", [
-    "call", "--session", "--dest", dest, "--object-path", objectPath, "--method", method, ...args,
-  ], { timeout: KDE_DBUS_TIMEOUT_MS, encoding: "utf8" }, callback);
-}
-
-// gdbus prints a reply as a GVariant tuple, e.g. `(uint32 4633,)` or `(0,)`.
-function parseGdbusInteger(stdout) {
-  const match = String(stdout || "").trim().match(/^\((?:[a-z]+\d*\s+)?(-?\d+),\)$/);
-  return match ? Number(match[1]) : null;
-}
-
-// e.g. `('~ : claude',)`; GVariant switches to double quotes when the string
-// itself holds a single quote.
-function parseGdbusString(stdout) {
-  const match = String(stdout || "").trim().match(/^\((['"])(.*)\1,\)$/s);
-  return match ? match[2].replace(/\\(.)/g, "$1") : null;
-}
+const kwinScripting = createKwinScripting({ execFile, timeoutMs: KDE_DBUS_TIMEOUT_MS });
+const { gdbusCall } = kwinScripting;
 
 function readProcEnviron(pid) {
   try {
@@ -2539,16 +2524,10 @@ function activateKwinWindow(pid, captionPrefix, callback) {
   };
   fs.writeFile(scriptPath, buildKwinActivateScript(pid, captionPrefix), "utf8", (writeErr) => {
     if (writeErr) return finish("kwin-script-write-failed");
-    gdbusCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", [scriptPath, pluginName],
-      (loadErr, loadOut) => {
-        const scriptId = loadErr ? null : parseGdbusInteger(loadOut);
-        if (scriptId === null || scriptId < 0) return finish("kwin-script-load-failed");
-        gdbusCall("org.kde.KWin", `/Scripting/Script${scriptId}`, "org.kde.kwin.Script.run", [], (runErr) => {
-          gdbusCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", [pluginName], () => {
-            finish(runErr ? "kwin-script-run-failed" : "kwin-activate-requested");
-          });
-        });
-      });
+    kwinScripting.loadAndRunScript({ scriptPath, pluginName }, (reason) => {
+      if (reason === "kwin-script-load-failed") return finish(reason);
+      kwinScripting.unloadScript(pluginName, () => finish(reason || "kwin-activate-requested"));
+    });
   });
 }
 

@@ -5,7 +5,7 @@
 Claude Code y Codex CLI se configuran en el primer arranque. Instala cualquier otra integración desde **Ajustes → Herramientas de IA para código**; Clawd la mantiene sincronizada mientras siga activada.
 
 - **Claude Code** — integración completa mediante hooks de comandos y hooks HTTP de permisos
-- **Codex CLI** — hooks oficiales con fallback JSONL (`~/.codex/sessions/`), sincronizados automáticamente de forma predeterminada y con globos de permisos reales
+- **Codex CLI** — hooks oficiales con fallback JSONL (`$CODEX_HOME/sessions/` o `~/.codex/sessions/`), sincronizados automáticamente de forma predeterminada y con globos de permisos reales
 - **Copilot CLI** — hooks de comandos opcionales mediante `~/.copilot/hooks/hooks.json` (instálalos desde Ajustes → Herramientas de IA para código; consulta la guía de Copilot para el fallback JSON manual)
 - **Gemini CLI** — hooks de comandos opcionales mediante `~/.gemini/settings.json` (instálalos desde Ajustes → Herramientas de IA para código o ejecuta `npm run install:gemini-hooks`)
 - **Antigravity CLI (agy)** — hooks de comandos opcionales mediante `~/.gemini/config/hooks.json` (instálalos desde Ajustes → Herramientas de IA para código o ejecuta `npm run install:antigravity-hooks`); **solo estado**: Clawd nunca muestra un globo de permisos para agy. Todas las decisiones Permitir / Denegar / Permitir siempre se toman en el menú de la terminal de agy

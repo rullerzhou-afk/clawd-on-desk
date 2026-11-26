@@ -214,6 +214,7 @@ const TERMINAL_NAMES_LINUX = new Set([
   "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
   "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
   "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+  "t3code",
 ]);
 const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
 const SYSTEM_BOUNDARY_MAC = new Set(["launchd", "init", "systemd"]);

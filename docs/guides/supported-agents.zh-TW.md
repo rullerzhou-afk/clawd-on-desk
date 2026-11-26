@@ -5,7 +5,7 @@
 Claude Code 和 Codex CLI 第一次啟動就會接上。其他整合在 **設定 → AI 程式設計工具** 中安裝；保持啟用期間，Clawd 會自動同步。
 
 - **Claude Code** — 以 command hook + HTTP 權限 hook 完整整合
-- **Codex CLI** — official hooks 為主、JSONL 日誌輪詢（`~/.codex/sessions/`）備援，會自動註冊並支援真實的權限對話框
+- **Codex CLI** — official hooks 為主、JSONL 日誌輪詢（`$CODEX_HOME/sessions/` 或 `~/.codex/sessions/`）備援，會自動註冊並支援真實的權限對話框
 - **Copilot CLI** — 在 `~/.copilot/hooks/hooks.json` 設定 command hook
 - **Gemini CLI** — 在 `~/.gemini/settings.json` 設定 command hook（Clawd 啟動時自動註冊，或執行 `npm run install:gemini-hooks`）
 - **Antigravity CLI (agy)** — 在 `~/.gemini/config/hooks.json` 設定 command hook（已有 Antigravity 設定時 Clawd 啟動會自動註冊，或執行 `npm run install:antigravity-hooks`）；**僅同步狀態**：Clawd 不會為 agy 顯示任何權限對話框，所有 Allow / Deny / Always-allow 都在 agy 自己的終端機選單完成

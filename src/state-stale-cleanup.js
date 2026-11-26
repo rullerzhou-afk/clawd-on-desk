@@ -92,6 +92,26 @@ function isLocalWorkBuddyDesktopIdleSession(session) {
     && session.state === "idle";
 }
 
+function isLocalQoderDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "qoder"
+    && (!session.profileId || session.profileId === "local")
+    && !session.host
+    && !session.wslDistro
+    && String(session.platform || "").trim().toLowerCase() !== "wsl"
+    && !session.headless
+    && session.state === "idle";
+}
+
+function isQoderDesktopSession(session, options) {
+  if (typeof options.isQoderDesktopSession !== "function") return false;
+  try {
+    return options.isQoderDesktopSession(session) === true;
+  } catch {
+    return false;
+  }
+}
+
 function isLocalClaudeDesktopIdleSession(session) {
   return !!session
     && session.agentId === "claude-code"
@@ -293,6 +313,19 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "claude-desktop-idle-timeout" };
   }
 
+  // Qoder Desktop keeps its main process alive after an individual task ends.
+  // A known desktop database row lets the idle cutoff retire that task while
+  // the app is open. qodercli never writes that database, so terminal sessions
+  // follow the usual process-liveness rules.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalQoderDesktopIdleSession(session)
+    && isQoderDesktopSession(session, options)
+  ) {
+    return { action: "delete", reason: "qoder-desktop-idle-timeout" };
+  }
+
   // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
   // The completion notification (e.g. Telegram push) already fires once at the
   // completion instant, so an unacknowledged remote session has already been
@@ -389,5 +422,6 @@ module.exports = {
   isLocalWorkBuddyDesktopIdleSession,
   isLocalClaudeDesktopIdleSession,
   isLocalCodeBuddyIdeSession,
+  isLocalQoderDesktopIdleSession,
   getStaleSessionDecision,
 };

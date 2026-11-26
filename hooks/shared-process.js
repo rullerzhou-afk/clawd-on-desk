@@ -28,6 +28,7 @@ const BASE_TERMINAL_NAMES_LINUX = [
   "gnome-terminal", "kgx", "konsole", "xfce4-terminal", "tilix",
   "alacritty", "wezterm", "wezterm-gui", "kitty", "ghostty",
   "xterm", "lxterminal", "terminator", "tabby", "hyper", "warp",
+  "t3code",
 ];
 
 const SYSTEM_BOUNDARY_WIN = new Set(["explorer.exe", "services.exe", "winlogon.exe", "svchost.exe"]);
