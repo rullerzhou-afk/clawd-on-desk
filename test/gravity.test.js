@@ -169,3 +169,48 @@ test("turning off mid-fall stops it where it is; turning back on with the pet in
   assert.strictEqual(await landed, true);
   assert.strictEqual(lastY(ctx), FLOOR_Y);
 });
+
+test("a new placement takes over a running fall: the pet falls from the new spot", async () => {
+  const ctx = makeCtx(100, 500);
+  const gravity = makeGravity(ctx);
+  const firstEnds = [];
+  gravity.startFall((landed) => firstEnds.push(landed));
+  await wait(100);
+  // Send to Display: the pet is centered on the other display mid-fall.
+  ctx.applyPetWindowBounds({ x: 1200, y: 50, width: PET, height: PET });
+  const placedAt = ctx.applied.length;
+  const landed = new Promise((resolve) => {
+    assert.strictEqual(gravity.startFall((value) => resolve(value)), true);
+  });
+  assert.deepStrictEqual(firstEnds, [false], "the old fall ends at once");
+  assert.strictEqual(await landed, true);
+  const after = ctx.applied.slice(placedAt);
+  assert.ok(after.length > 0);
+  assert.ok(after.every((b) => b.x === 1200), "never pulled back to the old path");
+  assert.strictEqual(lastY(ctx), FLOOR_Y);
+});
+
+test("a click on a falling pet: caught at the press, it falls again when the press ends", async () => {
+  const ctx = makeCtx(100);
+  const gravity = makeGravity(ctx);
+  gravity.startFall();
+  await wait(100);
+  gravity.beginDrag();
+  assert.strictEqual(gravity.isFalling(), false, "caught at the press");
+  const caughtAt = lastY(ctx);
+  assert.ok(caughtAt < FLOOR_Y);
+  // No drag-end follows a click; the end of the press lets it fall.
+  const landed = new Promise((resolve) => gravity.setFallEndHandler((value) => resolve(value)));
+  assert.strictEqual(gravity.endPress(), true);
+  assert.strictEqual(await landed, true);
+  assert.strictEqual(lastY(ctx), FLOOR_Y);
+});
+
+test("a press on a pet that was not falling leaves it where it is", () => {
+  const ctx = makeCtx(100);
+  const gravity = makeGravity(ctx);
+  gravity.beginDrag();
+  assert.strictEqual(gravity.endPress(), false);
+  assert.strictEqual(gravity.isFalling(), false);
+  assert.strictEqual(ctx.applied.length, 0);
+});

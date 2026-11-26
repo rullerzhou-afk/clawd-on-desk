@@ -82,6 +82,7 @@ function registerPetInteractionIpc(options = {}) {
   // Gravity: a drag released in mid-air falls to the floor.
   const startGravityFall = options.startGravityFall || (() => false);
   const beginGravityDrag = options.beginGravityDrag || (() => {});
+  const endGravityPress = options.endGravityPress || (() => false);
   const isGravityFalling = options.isGravityFalling || (() => false);
   const setGravityFallEndHandler = options.setGravityFallEndHandler || (() => {});
   const statPath = requiredDependency(options.statPath, "statPath");
@@ -152,6 +153,8 @@ function registerPetInteractionIpc(options = {}) {
       syncHitWin();
       syncDisplayedVisualGeometry();
       syncImeEditingPetDodge();
+      // A click on a falling pet sends no drag-end: let it fall again.
+      endGravityPress();
     }
   });
 

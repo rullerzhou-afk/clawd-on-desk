@@ -49,6 +49,8 @@ module.exports = function initGravity(ctx, options = {}) {
   let fallTimer = null;
   let onFallEnd = null;
   let defaultFallEnd = null;
+  // The current press (drag-lock) caught the pet while it was falling.
+  let caughtMidAir = false;
 
   function isWindowAlive() {
     return !!(ctx.win && !ctx.win.isDestroyed());
@@ -100,7 +102,11 @@ module.exports = function initGravity(ctx, options = {}) {
   // setFallEndHandler one); landed is false (landing null) when the pet was
   // caught mid-air or the fall was interrupted, otherwise landing = { intensity }.
   function startFall(onEnd) {
-    if (!enabled || falling || !isWindowAlive() || isMiniBusy()) return false;
+    if (!enabled || !isWindowAlive() || isMiniBusy()) return false;
+    // A new placement (Send to Display, Bring to Primary, a drag-end) takes
+    // over a running fall: the old one ends here, so its next frame cannot
+    // put the pet back on the old path.
+    if (falling) finish(false);
     const start = ctx.getPetWindowBounds();
     if (!start) return false;
     const area = resolveArea(start);
@@ -166,7 +172,17 @@ module.exports = function initGravity(ctx, options = {}) {
   // A new drag catches a falling pet at once, so the held end of the old drag
   // reaction goes out before the new drag starts its own.
   function beginDrag() {
+    caughtMidAir = falling;
     cancel();
+  }
+
+  // The press is over (drag-lock released). A pet caught mid-air by a click
+  // gets no drag-end, so it falls again from where it is; after a real drag
+  // the drag-end fall takes over this one.
+  function endPress() {
+    if (!caughtMidAir) return false;
+    caughtMidAir = false;
+    return startFall();
   }
 
   // End of a drag: the pet drops onto the floor below it.
@@ -203,6 +219,7 @@ module.exports = function initGravity(ctx, options = {}) {
     startFall,
     release,
     beginDrag,
+    endPress,
     cancel,
     isFalling,
     setEnabled,

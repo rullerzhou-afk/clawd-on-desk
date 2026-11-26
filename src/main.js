@@ -5787,6 +5787,7 @@ function createWindow() {
     cancelRoam: () => _roam.cancelRoam(),
     startGravityFall: (onEnd) => _gravity.release(onEnd),
     beginGravityDrag: () => _gravity.beginDrag(),
+    endGravityPress: () => _gravity.endPress(),
     isGravityFalling: () => _gravity.isFalling(),
     setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),
     beginDragSnapshot: () => beginDragSnapshot(),
