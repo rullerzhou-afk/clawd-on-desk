@@ -4043,6 +4043,9 @@ function cleanStaleSessions() {
       hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
         ? (session) => ctx.hasReplyableCompletionMapping(id, session)
         : null,
+      isQoderDesktopSession: typeof ctx.isQoderDesktopSession === "function"
+        ? (session) => ctx.isQoderDesktopSession(session)
+        : null,
     });
 
     if (decision.snapshotRefreshNeeded) snapshotRefreshNeeded = true;
@@ -4051,6 +4054,8 @@ function cleanStaleSessions() {
       // Child activity can vouch for an aging card when no PID can establish
       // that the parent exited. Keep the parent's own state and timestamp.
       if (s.agentId === "qoder" && (decision.reason === "unreachable" || decision.reason === "no-source")
+        && qoderSubagentPresentation.has(id)) continue;
+      if (s.agentId === "qoder" && decision.reason === "qoder-desktop-idle-timeout"
         && qoderSubagentPresentation.has(id)) continue;
       const badgeSuffix = decision.reason === "detached-ended" ? ` badge=${decision.badge}` : "";
       debugSession(`stale-delete ${decision.reason} ${describeSession(id, s)}${badgeSuffix}`);

@@ -289,6 +289,85 @@ describe("readQoderDesktopSession", () => {
 });
 
 describe("createQoderDesktopTitleTracker", () => {
+  it("PR #1419: remembers a desktop row by normalized raw id until the tracker is cleared", (t) => {
+    const h = createHarness({ readSession: () => meta({ title: null }) });
+    t.after(() => h.tracker.clear());
+    h.addLive("s1");
+    h.tracker.track({ sessionId: "s1", rawSessionId: " qoder:raw-1 " });
+    assert.deepEqual(h.reads, ["raw-1"]);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+    assert.equal(h.tracker.hasDesktopRow(" qoder:raw-1 "), true);
+
+    h.tracker.clear("s1");
+    assert.equal(h.tracker.size(), 0);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+    h.tracker.clear();
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), false);
+  });
+
+  it("PR #1419: recognizes a previously missing desktop row when a later read finds it", () => {
+    let row = null;
+    const h = createHarness({ readSession: () => row });
+    assert.equal(h.readMeta("raw-1"), null);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), false);
+
+    // Archived rows still identify a desktop session even without a live HUD row.
+    row = meta({ archived: true });
+    h.advance(2000);
+    assert.equal(h.readMeta("raw-1"), row);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+  });
+
+  it("PR #1419: keeps desktop row evidence through failed reads inside and outside the cache window", () => {
+    const row = meta();
+    let readSession = () => row;
+    const h = createHarness({ readSession: () => readSession() });
+    assert.equal(h.readMeta("raw-1"), row);
+
+    readSession = () => null;
+    h.advance(1000);
+    assert.equal(h.tracker.readEventMeta("raw-1", "Notification", false).reading.meta, row);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+
+    h.advance(1000);
+    assert.equal(h.readMeta("raw-1"), null);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+
+    readSession = () => { throw new Error("database unavailable"); };
+    h.advance(2000);
+    assert.equal(h.readMeta("raw-1"), null);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+    assert.deepEqual(h.reads, Array(4).fill("raw-1"));
+  });
+
+  it("PR #1419: remembers desktop evidence from a row found only in the second database", { skip: !DatabaseSync }, async () => {
+    await fixture(async (home) => {
+      const globalDir = path.join(home, "com.qoder.app.stable");
+      const cnDir = path.join(home, "com.qodercn.app.stable");
+      createDatabase(globalDir, []);
+      createDatabase(cnDir, [{ session_id: "s-cn", title: "CN title" }]);
+
+      const tracker = createQoderDesktopTitleTracker({ readerOptions: { dataDirs: [globalDir, cnDir] } });
+      tracker.readEventMeta("s-cn", "SessionStart", false);
+      assert.equal(tracker.hasDesktopRow("s-cn"), true);
+    });
+  });
+
+  it("PR #1419: evicts the oldest desktop evidence when the tracker exceeds capacity", () => {
+    const h = createHarness({ readSession: () => meta() });
+    const maxSessions = 256; // Matches MAX_SESSIONS in qoder-desktop-sessions.js.
+    for (let index = 0; index < maxSessions; index++) {
+      h.readMeta(`raw-${index}`);
+    }
+    assert.equal(h.tracker.hasDesktopRow("raw-0"), true);
+
+    const newest = `raw-${maxSessions}`;
+    h.readMeta(newest);
+    assert.equal(h.tracker.hasDesktopRow("raw-0"), false);
+    assert.equal(h.tracker.hasDesktopRow("raw-1"), true);
+    assert.equal(h.tracker.hasDesktopRow(newest), true);
+  });
+
   it("applies the database title on the first track without touching jsonl", async () => {
     const jsonlCalls = [];
     const harness = createHarness({

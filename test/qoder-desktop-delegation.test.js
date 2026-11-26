@@ -45,6 +45,7 @@ function createIntegration(t, options = {}) {
   const sounds = [];
   const publications = [];
   const reads = [];
+  let runtime;
   const state = initState({
     lang: "en",
     theme: integrationTheme,
@@ -68,8 +69,9 @@ function createIntegration(t, options = {}) {
     getStaleConfig: () => ({ sessionStaleMs: options.sessionStaleMs ?? 0, workingStaleMs: 0 }),
     broadcastSessionSnapshot: (snapshot) => publications.push(snapshot),
     onSessionDeleted: options.onSessionDeleted,
+    isQoderDesktopSession: (session) => runtime?.isQoderDesktopSession?.(session) === true,
   });
-  const runtime = createAgentRuntimeMain({
+  runtime = createAgentRuntimeMain({
     codexSubagentClassifier: {},
     updateSession: state.updateSession,
     getStateRuntime: () => state,
@@ -458,6 +460,84 @@ describe("Qoder desktop delegation gate", () => {
     });
   }
 
+  for (const childEnd of ["stops", "expires"]) {
+    it(`PR #1419: keeps an idle desktop parent with live PIDs until its delegated child ${childEnd}`, (t) => {
+      const h = createIntegration(t, { sessionStaleMs: 1000 });
+      const processMetadata = { agentPid: LIVE_PARENT_PID, sourcePid: LIVE_PARENT_PID };
+      h.post(PARENT, "SessionStart", "idle", processMetadata);
+      h.post(CHILD, "PreToolUse", "working");
+      h.post(PARENT, "Stop", "attention", processMetadata);
+      h.advance(1001);
+
+      const parent = h.state.sessions.get(PARENT_ID);
+      assert.equal(parent.state, "idle");
+      assert.equal(parent.pidReachable, true);
+      assert.equal(h.state.hasActiveQoderSubagents(), true);
+      h.state.cleanStaleSessions();
+      assert.equal(h.state.sessions.get(PARENT_ID), parent);
+
+      if (childEnd === "stops") h.post(CHILD, "Stop", "attention");
+      else h.advance(CHILD_TTL_MS);
+      h.state.cleanStaleSessions();
+      assert.equal(h.state.sessions.has(PARENT_ID), false);
+    });
+  }
+
+  it("PR #1419: times out only the idle Qoder session found in SQLite when both PIDs are live", (t) => {
+    const deleted = [];
+    const h = createIntegration(t, {
+      sessionStaleMs: 1000,
+      onSessionDeleted: (id, reason) => deleted.push({ id, reason }),
+    });
+    const cli = "terminal-session";
+    const processMetadata = { agentPid: LIVE_PARENT_PID, sourcePid: LIVE_PARENT_PID };
+    for (const raw of [PARENT, cli]) {
+      h.post(raw, "SessionStart", "idle", processMetadata);
+      h.post(raw, "Stop", "attention", processMetadata);
+      const session = h.state.sessions.get(sessionKey(raw));
+      assert.equal(session.state, "idle");
+      assert.equal(session.pidReachable, true);
+    }
+
+    h.advance(1001);
+    h.state.cleanStaleSessions();
+    assert.deepEqual(deleted, [{ id: PARENT_ID, reason: "stale-delete-qoder-desktop-idle-timeout" }]);
+    assert.deepEqual([...h.state.sessions.keys()], [sessionKey(cli)]);
+  });
+
+  it("PR #1419: still times out a desktop session rebuilt by an ordinary hook inside the cache window", async (t) => {
+    const deleted = [];
+    const h = createIntegration(t, {
+      sessionStaleMs: 1000,
+      onSessionDeleted: (id, reason) => deleted.push({ id, reason }),
+    });
+    const processMetadata = { agentPid: LIVE_PARENT_PID, sourcePid: LIVE_PARENT_PID };
+    h.post(PARENT, "SessionStart", "idle", processMetadata);
+    h.post(PARENT, "Stop", "attention", processMetadata);
+    h.advance(1001);
+    h.state.cleanStaleSessions();
+    assert.equal(h.state.sessions.has(PARENT_ID), false);
+
+    // The tracker reaps the old entry, and a fresh read cannot rediscover the row.
+    await h.tracker.poll();
+    assert.equal(h.tracker.size(), 0);
+    h.deleteRow(PARENT);
+    const readsBefore = h.reads.length;
+    h.post(PARENT, "PreToolUse", "working", processMetadata);
+    assert.equal(h.state.sessions.get(PARENT_ID)?.state, "working");
+    assert.equal(h.reads.length, readsBefore);
+    h.post(PARENT, "Stop", "attention", processMetadata);
+    assert.equal(h.state.sessions.get(PARENT_ID)?.state, "idle");
+
+    h.advance(1001);
+    h.state.cleanStaleSessions();
+    assert.equal(h.state.sessions.has(PARENT_ID), false);
+    assert.deepEqual(deleted, [
+      { id: PARENT_ID, reason: "stale-delete-qoder-desktop-idle-timeout" },
+      { id: PARENT_ID, reason: "stale-delete-qoder-desktop-idle-timeout" },
+    ]);
+  });
+
   it("still retires a parent whose process exited while its child is active", (t) => {
     const h = createIntegration(t);
     startDelegatedWork(h);
@@ -497,6 +577,34 @@ describe("Qoder desktop delegation gate", () => {
     assert.equal(h.state.sessions.has(CHILD_ID), false);
     assert.equal(h.parent().sessionTitle, "父任务");
     assert.equal(h.parent().activeSubagentCount, 1);
+  });
+
+  it("PR #1419: startup sweep enables the idle timeout only for restored Qoder rows found in SQLite", (t) => {
+    const deleted = [];
+    const h = createIntegration(t, {
+      sessionStaleMs: 1000,
+      onSessionDeleted: (id, reason) => deleted.push({ id, reason }),
+    });
+    const cli = "terminal-session";
+    for (const raw of [PARENT, cli]) {
+      const id = sessionKey(raw);
+      h.state.updateSession(id, "idle", null, {
+        agentId: "qoder",
+        rawSessionId: `qoder:${raw}`,
+        agentPid: LIVE_PARENT_PID,
+        sourcePid: LIVE_PARENT_PID,
+      });
+      assert.equal(h.state.sessions.get(id)?.state, "idle");
+      assert.equal(h.state.sessions.get(id)?.pidReachable, true);
+    }
+    assert.equal(h.tracker.size(), 0);
+    assert.deepEqual(h.reads, []);
+
+    h.runtime.sweepQoderDesktopSessions();
+    h.advance(1001);
+    h.state.cleanStaleSessions();
+    assert.deepEqual(deleted, [{ id: PARENT_ID, reason: "stale-delete-qoder-desktop-idle-timeout" }]);
+    assert.deepEqual([...h.state.sessions.keys()], [sessionKey(cli)]);
   });
 
   it("accepts an external title first and later applies the DB title and usage", async (t) => {
