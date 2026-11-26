@@ -7,6 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const RENDERER = path.join(__dirname, "..", "src", "renderer.js");
+const RENDERER_BASE_URL = "file:///clawd/src/index.html";
 const ACCESSORY_LAYOUT = path.join(__dirname, "..", "src", "pet-accessory-layout.js");
 const ACCESSORY_MIRROR = path.join(__dirname, "..", "src", "pet-accessory-mirror.js");
 const ACCESSORY_DESCRIPTOR = path.join(__dirname, "..", "src", "pet-accessory-descriptor.js");
@@ -318,6 +319,7 @@ function createRendererHarness(options = {}) {
   const documentListeners = new Map();
 
   const document = {
+    baseURI: RENDERER_BASE_URL,
     hidden: false,
     documentElement: new FakeElement("html"),
     getElementById(id) {
@@ -356,6 +358,7 @@ function createRendererHarness(options = {}) {
   const context = {
     document,
     getComputedStyle,
+    URL,
     window: {
       themeConfig: {
         assetsPath: "../assets/svg",
@@ -431,6 +434,11 @@ ${readNormalized(RENDERER)}
 globalThis.__rendererTest = {
   initWithConfig,
   swapToFile,
+  withoutAccessoryLayoutRefresh(callback) {
+    const refresh = refreshAccessoryLayout;
+    refreshAccessoryLayout = () => {};
+    try { return callback(); } finally { refreshAccessoryLayout = refresh; }
+  },
   startDragReaction,
   endDragReaction,
   cancelReaction,
@@ -484,6 +492,7 @@ globalThis.__rendererTest = {
   get accessoryAssetLoadTimer() { return _accessorySlots.head.assetLoadTimer; },
   get accessoryAssetSettled() { return _accessorySlots.head.assetSettled; },
   get accessorySlots() { return _accessorySlots; },
+  get jugglingFrontCallbacks() { return [jugglingFront.timer, jugglingFront.raf]; },
   get lastAccessoryGeneration() { return _lastAccessoryGeneration; },
   get lowPowerSvgPaused() { return lowPowerSvgPaused; },
   get eyeTarget() { return eyeTarget; },
@@ -3628,9 +3637,11 @@ describe("renderer pet accessory wardrobe", () => {
 
   describe("juggling balls in front of the hat", () => {
     const jugglingFile = "clawd-working-juggling.svg";
+    const miniFile = "clawd-mini.svg";
     const pose = ["matrix(1, 0, 0, 1, 4, 8)", "none", "matrix(1, 0, 0, 1, 7, 3)"];
     const nextPose = ["matrix(1, 0, 0, 1, 9, 2)", pose[1], "matrix(1, 0, 0, 1, 3, 6)"];
     const stepMs = 1000 / 24;
+    const loadTimeoutMs = 3000;
 
     class JugglingAnimation {
       constructor(startTime = 0) {
@@ -3653,8 +3664,11 @@ describe("renderer pet accessory wardrobe", () => {
       }
       const themeConfig = accessoryConfig({
         idleFollowSvg: "current.svg",
-        accessoryAttachments: { default: descriptor, files: { [jugglingFile]: descriptor } },
-        rendering: { discreteSampling: sampled ? { [jugglingFile]: 24 } : {} },
+        accessoryAttachments: { default: descriptor, files: { [jugglingFile]: descriptor, [miniFile]: descriptor } },
+        rendering: {
+          objectChannelFiles: [jugglingFile],
+          discreteSampling: sampled ? { [jugglingFile]: 24 } : {},
+        },
         ...overrides,
       });
       const harness = createRendererHarness({ themeConfig });
@@ -3666,6 +3680,7 @@ describe("renderer pet accessory wardrobe", () => {
       const { svgDoc, elements, root } = attachFakeSvgDocument(object, {
         animations: animation ? [animation] : null,
       });
+      svgDoc.URL = new URL(object.data, RENDERER_BASE_URL).href;
       if (animation) object.contentWindow.CSSAnimation = JugglingAnimation;
       root.setAttribute("viewBox", "-15 -25 45 45");
       elements.set("anchor", { getCTM: () => ({ a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 }) });
@@ -3704,11 +3719,8 @@ describe("renderer pet accessory wardrobe", () => {
     }
 
     function frontCallbacks(harness) {
-      // The hat can schedule the same delay. Exclude its callback by identity.
-      const { raf, followTimer } = harness.api.accessorySlots.head;
-      return harness.activeTimers().filter((timer) => (
-        (timer.raf || timer.ms <= stepMs) && timer !== raf && timer !== followTimer
-      ));
+      const handles = harness.api.jugglingFrontCallbacks;
+      return harness.activeTimers().filter((timer) => handles.includes(timer));
     }
 
     function runFrontCallback(harness, { raf = true } = {}) {
@@ -3777,6 +3789,93 @@ describe("renderer pet accessory wardrobe", () => {
       assert.deepStrictEqual(harness.ballsDataWrites, []);
     });
 
+    it("PR #1424 follow-up: does not mount when the juggling object falls back to an image", () => {
+      const harness = jugglingHarness();
+      harness.electronHandlers.onStateChange("juggling", jugglingFile);
+      const object = harness.api.pendingNext;
+      assert.strictEqual(object.tagName, "OBJECT");
+      object.listeners.get("error")();
+      const image = harness.api.pendingNext;
+      assert.strictEqual(image.tagName, "IMG");
+      image.listeners.get("load")();
+
+      assert.strictEqual(harness.api.clawdEl, image);
+      assert.strictEqual(harness.api.currentDisplayedAssetUrl, `../assets/svg/${jugglingFile}`);
+      assert.strictEqual(harness.accessory.style.visibility, "visible");
+      assertUnmounted(harness);
+      assert.deepStrictEqual(harness.ballsDataWrites, []);
+    });
+
+    it("PR #1424 follow-up: rebinds on the next tick when a new object commits without a layout refresh", () => {
+      const harness = jugglingHarness();
+      const previous = commitJuggling(harness);
+      const previousCopy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, previousCopy);
+      const previousReads = previous.source.reads();
+      const previousData = harness.balls.data;
+      const [queued] = frontCallbacks(harness);
+
+      const current = harness.api.withoutAccessoryLayoutRefresh(() => (
+        commitJuggling(harness, { transforms: nextPose })
+      ));
+      assert.deepStrictEqual(frontCallbacks(harness), [queued]);
+      assert.strictEqual(harness.balls.data, previousData);
+
+      runFrontCallback(harness);
+      assert.notStrictEqual(harness.balls.data, previousData);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.strictEqual(previous.source.reads(), previousReads);
+      assert.strictEqual(current.source.reads(), 0);
+      assert.strictEqual(previousCopy.writes.length, 3);
+
+      const copy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy, nextPose);
+    });
+
+    it("PR #1424 follow-up: unmounts on mini entry and remounts when juggling returns", () => {
+      for (const detachBeforeMiniCommit of [false, true]) {
+        const harness = jugglingHarness({ eyeTrackingStates: ["mini-idle"] });
+        const { media, source } = commitJuggling(harness);
+        loadCopy(harness);
+        runFrontCallback(harness);
+        const [queued] = frontCallbacks(harness);
+
+        harness.electronHandlers.onMiniModeChange(true, "left");
+        harness.electronHandlers.onStateChange("mini-idle", miniFile);
+        const mini = harness.api.pendingNext;
+        assert.strictEqual(mini.tagName, "OBJECT");
+        // A detached source can still be the last commit while mini loads.
+        if (detachBeforeMiniCommit) {
+          media.remove();
+          const reads = source.reads();
+          assert.strictEqual(harness.api.clawdEl, media);
+          runFrontCallback(harness);
+          assert.strictEqual(source.reads(), reads);
+          assertUnmounted(harness);
+        }
+        const beforeMiniCommit = new Set(harness.activeTimers());
+        mini.listeners.get("load")();
+        assert.strictEqual(harness.api.clawdEl, mini);
+        assert.strictEqual(queued.cleared, true);
+        assert.ok(harness.activeTimers().some((timer) => (
+          !beforeMiniCommit.has(timer) && !timer.raf && timer.ms === 16
+        )), "the mini eye-attachment retry is still queued");
+        assertUnmounted(harness);
+
+        harness.electronHandlers.onMiniModeChange(false);
+        harness.electronHandlers.onStateChange("juggling", jugglingFile);
+        const next = harness.api.pendingNext;
+        attachPackets(next, nextPose);
+        next.listeners.get("load")();
+        assert.strictEqual(harness.api.clawdEl, next);
+        const copy = loadCopy(harness);
+        runFrontCallback(harness);
+        assertFirstPose(harness, copy, nextPose);
+      }
+    });
+
     it("PR #1424 follow-up: waits for the source document after the object commits", () => {
       const harness = jugglingHarness();
       const { media } = commitJuggling(harness, { transforms: null });
@@ -3821,6 +3920,29 @@ describe("renderer pet accessory wardrobe", () => {
       assertFirstPose(harness, copy);
     });
 
+    it("PR #1424 follow-up: waits for the current copy document after a rebind load event", () => {
+      const harness = jugglingHarness();
+      commitJuggling(harness);
+      const previousCopy = loadCopy(harness);
+      runFrontCallback(harness);
+      assertFirstPose(harness, previousCopy);
+      const previousDocument = harness.balls.contentDocument;
+      const previousData = harness.balls.data;
+
+      const { source } = commitJuggling(harness, { transforms: nextPose });
+      assert.notStrictEqual(harness.balls.data, previousData);
+      assert.strictEqual(harness.balls.contentDocument, previousDocument);
+      harness.balls.onload();
+      runFrontCallback(harness);
+      assert.strictEqual(harness.balls.style.visibility, "hidden");
+      assert.strictEqual(previousCopy.writes.length, 3);
+      assert.strictEqual(source.reads(), 0);
+
+      const copy = attachPackets(harness.balls);
+      runFrontCallback(harness);
+      assertFirstPose(harness, copy, nextPose);
+    });
+
     it("PR #1424 follow-up: hides the old pose when the same media object gets a fresh document", () => {
       const harness = jugglingHarness();
       const { media } = commitJuggling(harness);
@@ -3857,12 +3979,58 @@ describe("renderer pet accessory wardrobe", () => {
       const harness = jugglingHarness();
       commitJuggling(harness);
       runFrontCallback(harness);
-      harness.advanceTime(959);
+      harness.advanceTime(loadTimeoutMs - 1);
       runFrontCallback(harness);
+      assert.strictEqual(harness.ballsLayer.style.display, "block");
       assert.strictEqual(harness.balls.style.visibility, "hidden");
       harness.advanceTime(1);
       runFrontCallback(harness);
       assertFailedBindingIsRetired(harness);
+    });
+
+    it("PR #1424 follow-up: keeps the load deadline through a pause and tries copying on resume", () => {
+      for (const loadWhilePaused of [false, true]) {
+        const harness = jugglingHarness();
+        commitJuggling(harness);
+        runFrontCallback(harness);
+        harness.advanceTime(loadTimeoutMs - 1);
+        harness.electronHandlers.onPetHiddenChange(true);
+        assert.deepStrictEqual(frontCallbacks(harness), []);
+        harness.advanceTime(16);
+        const copy = loadWhilePaused ? loadCopy(harness) : null;
+
+        harness.electronHandlers.onPetHiddenChange(false);
+        runFrontCallback(harness);
+        if (copy) assertFirstPose(harness, copy);
+        else assertFailedBindingIsRetired(harness);
+      }
+    });
+
+    it("PR #1424 follow-up: renews the load budget only when the source document is replaced", () => {
+      for (const replaceSource of [false, true]) {
+        const harness = jugglingHarness();
+        const { media } = commitJuggling(harness);
+        const firstDocument = media.contentDocument;
+        runFrontCallback(harness);
+        harness.advanceTime(loadTimeoutMs - 1);
+        media.contentDocument = null;
+        runFrontCallback(harness);
+        harness.advanceTime(1);
+
+        if (replaceSource) {
+          attachPackets(media, nextPose);
+          runFrontCallback(harness);
+          assert.strictEqual(harness.ballsLayer.style.display, "block");
+          assert.strictEqual(harness.balls.style.visibility, "hidden");
+          const copy = loadCopy(harness);
+          runFrontCallback(harness);
+          assertFirstPose(harness, copy, nextPose);
+        } else {
+          media.contentDocument = firstDocument;
+          runFrontCallback(harness);
+          assertFailedBindingIsRetired(harness);
+        }
+      }
     });
 
     it("PR #1424 follow-up: disregards an obsolete copy load callback after rebinding", () => {

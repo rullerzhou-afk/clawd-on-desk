@@ -1216,7 +1216,9 @@ function startAccessoryFollow(context) {
 // Clawd uses no media fades here, so one committed document drives the layer.
 const JUGGLING_SOURCE_URL = "../assets/svg/clawd-working-juggling.svg";
 const JUGGLING_FRONT_URL = "../assets/juggling/clawd-juggling-front.svg";
-const JUGGLING_FRONT_WAIT_MS = DISCRETE_SAMPLING_RETRY_MS * DISCRETE_SAMPLING_MAX_RETRIES;
+// Allow a slow cold load. On timeout, the original balls keep playing behind
+// the hat until a new media commit can try the copy again.
+const JUGGLING_FRONT_LOAD_TIMEOUT_MS = 3000;
 const jugglingFront = {
   media: null,
   sourceDocument: null,
@@ -1286,7 +1288,6 @@ function cancelJugglingFrontLoop() {
   if (jugglingFront.raf != null) cancelAnimationFrame(jugglingFront.raf);
   jugglingFront.timer = null;
   jugglingFront.raf = null;
-  jugglingFront.waitStartedAt = null;
 }
 
 function stopJugglingFrontLayer() {
@@ -1317,6 +1318,7 @@ function failJugglingFrontLayer() {
 function bindJugglingFrontLayer(media, layer, front) {
   stopJugglingFrontLayer();
   jugglingFront.media = media;
+  jugglingFront.waitStartedAt = null;
   // The loop may pause while the object loads. Its events stay current until
   // the binding itself is retired.
   const loadToken = ++jugglingFront.token;
@@ -1350,6 +1352,9 @@ function getJugglingFrontPackets(front) {
   const target = jugglingFront.target;
   if (target) return doc === target.document ? target.packets : null;
   try {
+    // The current load handler can run before contentDocument stops returning
+    // the previous binding's SVG. Only cache the document for this URL.
+    if (doc.URL !== new URL(front.data, document.baseURI).href) return null;
     const packets = doc.querySelectorAll(".packet");
     if (packets.length !== 3) return null;
     jugglingFront.target = { document: doc, packets };
@@ -1393,21 +1398,23 @@ function jugglingFrontTick(front, token) {
     return;
   }
   const sourceDocument = getJugglingDocument(media);
-  if (sourceDocument !== jugglingFront.sourceDocument) {
+  if (sourceDocument && sourceDocument !== jugglingFront.sourceDocument) {
     hideJugglingFrontObject(front);
+    // A missing document can be transient. Only a replacement starts a new wait.
+    if (jugglingFront.sourceDocument) jugglingFront.waitStartedAt = null;
     jugglingFront.sourceDocument = sourceDocument;
     jugglingFront.transforms = [];
   }
 
   const targetPackets = getJugglingFrontPackets(front);
-  const ready = sourceDocument && targetPackets && copyJugglingPackets(sourceDocument, targetPackets);
-  if (!ready) {
+  const copied = sourceDocument && targetPackets && copyJugglingPackets(sourceDocument, targetPackets);
+  if (!copied) {
     hideJugglingFrontObject(front);
     // A committed object may expose its SVG document after the commit, just
     // as it can for discrete sampling. Give both documents time to arrive.
     const now = performance.now();
     jugglingFront.waitStartedAt ??= now;
-    if (now - jugglingFront.waitStartedAt >= JUGGLING_FRONT_WAIT_MS) {
+    if (now - jugglingFront.waitStartedAt >= JUGGLING_FRONT_LOAD_TIMEOUT_MS) {
       failJugglingFrontLayer();
       return;
     }
@@ -1420,7 +1427,7 @@ function jugglingFrontTick(front, token) {
   }
 
   const tick = () => jugglingFrontTick(front, token);
-  const delayMs = ready ? getSampledMediaDelayMs(media) : null;
+  const delayMs = copied ? getSampledMediaDelayMs(media) : null;
   if (delayMs != null) {
     jugglingFront.timer = setTimeout(() => {
       if (jugglingFront.token !== token) return;
@@ -3520,6 +3527,8 @@ function recoverFromSystemWake(payload) {
     attachEyeTracking(clawdEl);
   }
 
+  // This idempotent sync also covers wakes when the page was already unpaused
+  // and the low-power resume path does not refresh layout.
   syncJugglingFrontLayer();
   const status = {
     id,
