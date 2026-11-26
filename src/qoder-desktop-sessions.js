@@ -183,6 +183,9 @@ function createQoderDesktopTitleTracker(options = {}) {
   const entries = new Map();
   const metaCache = new Map();
   const delegationParents = new Map();
+  // Keep evidence across failed reads and row removal until a full clear().
+  // Evicting the oldest evidence can only cause missed desktop timeouts.
+  const desktopSessionIds = new Map();
   let timer = null;
 
   function remember(map, key, value) {
@@ -196,6 +199,7 @@ function createQoderDesktopTitleTracker(options = {}) {
     try {
       meta = readSession({ rawSessionId: raw }, { ...readerOptions, handles, debugLog });
     } catch { meta = null; }
+    if (meta) remember(desktopSessionIds, raw, true);
     const readAt = now();
     const cached = metaCache.get(raw);
     // Keep the original timestamp so failed rechecks cannot extend the window.
@@ -244,11 +248,16 @@ function createQoderDesktopTitleTracker(options = {}) {
     timer.unref?.();
   }
 
+  function hasDesktopRow(rawSessionId) {
+    return desktopSessionIds.has(normalizeQoderSessionId(rawSessionId));
+  }
+
   function clear(sessionId = null) {
     if (sessionId === null) {
       entries.clear();
       metaCache.clear();
       delegationParents.clear();
+      desktopSessionIds.clear();
     } else {
       entries.delete(sessionId);
     }
@@ -357,6 +366,7 @@ function createQoderDesktopTitleTracker(options = {}) {
     poll,
     clear,
     readEventMeta,
+    hasDesktopRow,
     size: () => entries.size,
   };
 }

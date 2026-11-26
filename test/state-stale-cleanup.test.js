@@ -123,6 +123,7 @@ function decision(target, overrides = {}) {
     staleConfig: overrides.staleConfig,
     hasPendingClaudeInteraction: overrides.hasPendingClaudeInteraction,
     hasReplyableCompletionMapping: overrides.hasReplyableCompletionMapping,
+    isQoderDesktopSession: overrides.isQoderDesktopSession,
   });
   return { result, calls };
 }
@@ -786,44 +787,69 @@ describe("state stale cleanup decisions", () => {
     }).result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
   });
 
-  it("deletes an idle local Qoder conversation after timeout while the desktop app stays alive", () => {
+  for (const [label, isQoderDesktopSession] of [
+    ["the desktop check is absent", undefined],
+    ["the desktop check returns false", () => false],
+    ["the desktop check throws", () => { throw new Error("desktop evidence unavailable"); }],
+  ]) {
+    it(`PR #1419: keeps an idle Qoder session with live PIDs when ${label}`, () => {
+      const target = qoderDesktopSession({ updatedAt: 1000000 - 60_001 });
+      const { result } = decision(target, {
+        alivePids: new Set([60, 61]),
+        staleConfig: { sessionStaleMs: 60_000 },
+        isQoderDesktopSession,
+      });
+      assert.deepStrictEqual(result, { action: null });
+    });
+  }
+
+  it("PR #1419: deletes a confirmed idle Qoder Desktop session after timeout with live PIDs", () => {
     const target = qoderDesktopSession({ updatedAt: 1000000 - 60_001 });
     const result = decision(target, {
       alivePids: new Set([60, 61]),
       staleConfig: { sessionStaleMs: 60_000 },
+      isQoderDesktopSession: () => true,
     }).result;
 
     assert.strictEqual(isLocalQoderDesktopIdleSession(qoderDesktopSession()), true);
     assert.deepStrictEqual(result, { action: "delete", reason: "qoder-desktop-idle-timeout" });
   });
 
-  it("keeps Qoder conversations before the cutoff or when the cutoff is disabled", () => {
+  it("PR #1419: keeps confirmed Qoder Desktop sessions before the cutoff or with it disabled", () => {
     const alivePids = new Set([60, 61]);
+    const isQoderDesktopSession = () => true;
     assert.deepStrictEqual(decision(qoderDesktopSession({
       updatedAt: 1000000 - 59_999,
     }), {
       alivePids,
       staleConfig: { sessionStaleMs: 60_000 },
+      isQoderDesktopSession,
     }).result, { action: null });
     assert.deepStrictEqual(decision(qoderDesktopSession({
       updatedAt: 1000000 - 24 * 60 * 60 * 1000,
     }), {
       alivePids,
       staleConfig: { sessionStaleMs: 0 },
+      isQoderDesktopSession,
     }).result, { action: null });
   });
 
-  it("does not apply the Qoder idle timeout to remote, headless, or working sessions", () => {
+  it("PR #1419: excludes remote, WSL, headless, and working sessions from the Qoder Desktop idle timeout", () => {
     const updatedAt = 1000000 - 60_001;
     const alivePids = new Set([60, 61]);
     const staleConfig = { sessionStaleMs: 60_000 };
-    for (const target of [
-      qoderDesktopSession({ host: "remote-box", updatedAt }),
-      qoderDesktopSession({ headless: true, updatedAt }),
-      qoderDesktopSession({ state: "working", updatedAt }),
+    for (const overrides of [
+      { host: "remote-box" },
+      { headless: true },
+      { state: "working" },
+      { wslDistro: "Ubuntu" },
+      { platform: "wsl" },
+      { platform: " WSL " },
+      { profileId: "remote-profile" },
     ]) {
-      const result = decision(target, { alivePids, staleConfig }).result;
-      assert.notStrictEqual(result.reason, "qoder-desktop-idle-timeout");
+      const target = qoderDesktopSession({ ...overrides, updatedAt });
+      const { result } = decision(target, { alivePids, staleConfig, isQoderDesktopSession: () => true });
+      assert.notStrictEqual(result.reason, "qoder-desktop-idle-timeout", JSON.stringify(overrides));
     }
   });
 

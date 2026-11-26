@@ -95,9 +95,21 @@ function isLocalWorkBuddyDesktopIdleSession(session) {
 function isLocalQoderDesktopIdleSession(session) {
   return !!session
     && session.agentId === "qoder"
+    && (!session.profileId || session.profileId === "local")
     && !session.host
+    && !session.wslDistro
+    && String(session.platform || "").trim().toLowerCase() !== "wsl"
     && !session.headless
     && session.state === "idle";
+}
+
+function isQoderDesktopSession(session, options) {
+  if (typeof options.isQoderDesktopSession !== "function") return false;
+  try {
+    return options.isQoderDesktopSession(session) === true;
+  } catch {
+    return false;
+  }
 }
 
 function isLocalClaudeDesktopIdleSession(session) {
@@ -301,14 +313,15 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "claude-desktop-idle-timeout" };
   }
 
-  // Qoder Desktop keeps its main process alive after an individual task ends
-  // and does not emit SessionEnd for every finished conversation. Apply the
-  // configured idle cutoff to each local Qoder row so finished HUD entries do
-  // not survive indefinitely while the desktop app remains open.
+  // Qoder Desktop keeps its main process alive after an individual task ends.
+  // A known desktop database row lets the idle cutoff retire that task while
+  // the app is open. qodercli never writes that database, so terminal sessions
+  // follow the usual process-liveness rules.
   if (
     sessionStaleMs > 0
     && age > sessionStaleMs
     && isLocalQoderDesktopIdleSession(session)
+    && isQoderDesktopSession(session, options)
   ) {
     return { action: "delete", reason: "qoder-desktop-idle-timeout" };
   }

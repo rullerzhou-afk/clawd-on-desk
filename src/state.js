@@ -4029,6 +4029,9 @@ function cleanStaleSessions() {
       hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
         ? (session) => ctx.hasReplyableCompletionMapping(id, session)
         : null,
+      isQoderDesktopSession: typeof ctx.isQoderDesktopSession === "function"
+        ? (session) => ctx.isQoderDesktopSession(session)
+        : null,
     });
 
     if (decision.snapshotRefreshNeeded) snapshotRefreshNeeded = true;

@@ -438,6 +438,7 @@ Qoder 会话标题（本机、state-only）：
   不覆盖显式标题，之后观察到的新原生标题记录才可替代它（两个来源没有可比较的原生时间戳）。
   对 JSONL tracker，同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
   新版桌面端通过 `qoder-desktop-sessions` 只读查询两版 `main.sqlite` 中的标题、用量、委派与归档/删除状态。本机首个事件和 SessionStart 查库，未确认委派时在 Stop / Notification 前复查，轮询仅为到期条目开库。确认的委派子行会隐藏并把活动投到父行，父行的完成提示照常。
+  本次运行中在桌面库查到且仍有记录的本机会话（禁用 Qoder 会清空记录，超限会淘汰最旧记录），闲置超过会话超时后撤行（`qoder-desktop-idle-timeout`），有活跃委派子任务时保留父行，终端 qodercli 仍按通用进程规则清理，因为它不写桌面库。
   SQLite 在 hook 或轮询中确认委派、归档或删除并撤行时，会作废该会话未完成的 JSONL 标题扫描。
   JSONL 按会话串行读取；完成时还需核对存活会话、
   本机身份、当前路径及标题，防止旧异步结果污染重开的会话。读取中断时逐 chunk 保持 offset 与 partial
