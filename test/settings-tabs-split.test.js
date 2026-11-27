@@ -761,7 +761,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "窗口置顶", "眼睛跟随", "反应"]);
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
-      ["空闲时", "移动方式", "活动范围", "出现频率", "重力", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["空闲时", "移动方式", "活动范围", "出现频率", "重力", "允许贴靠屏幕边缘", "拖到侧边时自动收起", "全屏时自动隐藏"],
       ["桌宠保持在最前"],
       ["跟随鼠标光标"],
       ["测试结果动画"],
@@ -900,6 +900,13 @@ describe("settings tab split", () => {
     assert.strictEqual(activeValue(idleBehavior.modeControl.element), "roam");
     pet.apply("allowEdgePinning", false);
     assert.strictEqual(pet.getSwitch("allowEdgePinning").classList.contains("on"), false);
+    const disableMiniSwitch = pet.getSwitch("disableMiniMode");
+    assert.strictEqual(disableMiniSwitch.classList.contains("on"), true);
+    pet.apply("disableMiniMode", true);
+    assert.strictEqual(pet.getSwitch("disableMiniMode"), disableMiniSwitch);
+    assert.strictEqual(disableMiniSwitch.classList.contains("on"), false);
+    pet.apply("disableMiniMode", false);
+    assert.strictEqual(disableMiniSwitch.classList.contains("on"), true);
     assert.strictEqual(pet.renderCount(), before);
 
     const notifications = createHarness({ tab: "notifications", snapshot: makeSnapshot() });
@@ -1916,5 +1923,43 @@ describe("#1275: pet visibility settings", () => {
     h.apply("petAlwaysOnTop", true);
     await h.settle();
     assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+  });
+
+  it("#1421: displays the side-collapse switch positively while storing negated disableMiniMode", async () => {
+    const updates = [];
+    let failNext = false;
+    const h = createHarness({
+      tab: "pet",
+      snapshot: makeSnapshot({ disableMiniMode: false }),
+      settingsAPI: {
+        update: (key, value) => {
+          updates.push({ key, value });
+          if (failNext) return Promise.resolve({ status: "error", message: "save failed" });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    const sw = h.getSwitch("disableMiniMode");
+    assert.strictEqual(sw.classList.contains("on"), true, "enabled by default when disableMiniMode=false");
+
+    sw.click();
+    assert.strictEqual(sw.classList.contains("on"), false, "optimistically flips off immediately");
+    assert.strictEqual(sw.classList.contains("pending"), true);
+    await h.settle();
+    assert.deepStrictEqual(updates, [{ key: "disableMiniMode", value: true }]);
+    h.apply("disableMiniMode", true);
+    assert.strictEqual(sw.classList.contains("on"), false);
+
+    failNext = true;
+    sw.click();
+    assert.strictEqual(sw.classList.contains("on"), true, "optimistically flips on immediately");
+    await h.settle();
+    assert.deepStrictEqual(updates, [
+      { key: "disableMiniMode", value: true },
+      { key: "disableMiniMode", value: false },
+    ]);
+    assert.strictEqual(sw.classList.contains("on"), false, "failed update rolls back to committed off state");
+    assert.strictEqual(sw.classList.contains("pending"), false);
+    assert.strictEqual(h.core.state.transientUiState.generalSwitches.has("disableMiniMode"), false);
   });
 });

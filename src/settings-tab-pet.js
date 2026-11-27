@@ -644,6 +644,7 @@
         key: "disableMiniMode",
         labelKey: "rowDisableMiniMode",
         descKey: "rowDisableMiniModeDesc",
+        invert: true,
       }),
       ...(i18n && (i18n.IS_WIN || i18n.IS_MAC) ? [helpers.buildSwitchRow({
         key: "fullscreenAutoHide",
