@@ -4926,6 +4926,7 @@ const _menuCtx = {
   get petAlwaysOnTop() { return getPetAlwaysOnTopEffective(); },
   get sessions() { return sessions; },
   cancelRoam: () => _roam.cancelRoam(),
+  cancelGravityFall: () => _gravity.cancel(),
   resetKeepSizeFrozen: () => resetKeepSizeFrozen(),
   // Recovery actions must defeat a stranded drag lock (syncHitWin defers while
   // it is held); see pet-window-runtime releaseStrandedDragLock.
@@ -5964,6 +5965,7 @@ function createWindow() {
       displayMetricsGeometryTimer = null;
       petWindowRuntime.handleDisplayMetricsChanged();
       settingsWindowRuntime.notifySizeContextChanged();
+      _gravity.resumeSuspended();
     }, 400);
   };
   // PR #751 second-review C-6 (Codex non-blocking): §4.3.14's
@@ -5983,6 +5985,8 @@ function createWindow() {
     petWindowRuntime.invalidateDisplaysCache();
     reapplyDisplayGeometryAfterMetricsChange();
   });
+  // Pause gravity while the display geometry settles.
+  screen.on("display-metrics-changed", () => _gravity.suspend());
   // PR #751 second-review C-4 (Codex B4): display-removed/added now also
   // clear the inset table (handleDisplayRemoved()/handleDisplayAdded()
   // themselves do this now, as their own first lines alongside their
@@ -5990,12 +5994,16 @@ function createWindow() {
   // metrics-changed did, leaving a stale inset alive across a monitor
   // unplug/replug or a genuine topology addition.
   screen.on("display-removed", () => {
+    _gravity.suspend();
     petWindowRuntime.handleDisplayRemoved();
     settingsWindowRuntime.notifySizeContextChanged();
+    _gravity.resumeSuspended();
   });
   screen.on("display-added", () => {
+    _gravity.suspend();
     petWindowRuntime.handleDisplayAdded();
     settingsWindowRuntime.notifySizeContextChanged();
+    _gravity.resumeSuspended();
   });
 
   // textScale is per-display: when the topology changes, window→display

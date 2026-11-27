@@ -73,8 +73,11 @@ function createHarness(overrides = {}) {
     setAccessoryMirror: overrides.setAccessoryMirror
       || ((value) => calls.push(["setAccessoryMirror", value])),
     syncImeEditingPetDodge: () => calls.push(["syncImeEditingPetDodge"]),
+    startGravityFall: overrides.startGravityFall,
     beginGravityDrag: overrides.beginGravityDrag,
     endGravityPress: overrides.endGravityPress,
+    isGravityFalling: overrides.isGravityFalling,
+    setGravityFallEndHandler: overrides.setGravityFallEndHandler,
     isMiniMode: () => state.miniMode,
     checkMiniModeSnap: overrides.checkMiniModeSnap
       ? () => overrides.checkMiniModeSnap({ calls, state })
@@ -304,6 +307,55 @@ test("gravity: the press catches a falling pet and its release lets a clicked pe
   // The release runs after the lock is down, so the new fall is not caught at once.
   const unlock = calls.findIndex((c) => c[0] === "setDragLocked" && c[1] === false);
   assert.ok(unlock >= 0 && names.indexOf("endGravityPress") > unlock);
+});
+
+for (const landed of [true, false]) {
+  test(`gravity: forwards the held end-drag-reaction once when the fall ${landed ? "lands" : "is interrupted"}`, () => {
+    let falling = true;
+    let finishGravityFall;
+    const { ipcMain, calls } = createHarness({
+      isGravityFalling: () => falling,
+      setGravityFallEndHandler: (handler) => { finishGravityFall = handler; },
+    });
+    const forwarded = () => calls.filter(([name]) => name === "sendToRenderer");
+    const endReaction = ["sendToRenderer", "end-drag-reaction"];
+
+    ipcMain.send("end-drag-reaction");
+    ipcMain.send("end-drag-reaction");
+    assert.deepStrictEqual(forwarded(), []);
+
+    falling = false;
+    finishGravityFall(landed, landed ? { intensity: 0 } : null);
+    assert.deepStrictEqual(forwarded(), [endReaction]);
+    finishGravityFall(false, null);
+    assert.deepStrictEqual(forwarded(), [endReaction]);
+
+    ipcMain.send("end-drag-reaction");
+    assert.deepStrictEqual(forwarded(), [endReaction, endReaction]);
+  });
+}
+
+test("gravity: drag-end starts one fall with the registered end handler after refreshing the idle visual", () => {
+  let finishGravityFall;
+  const harness = createHarness({
+    refreshIdleVisualAfterDrag: () => harness.calls.push(["refreshIdleVisualAfterDrag"]),
+    startGravityFall: (handler) => harness.calls.push(["startGravityFall", handler]),
+    setGravityFallEndHandler: (handler) => { finishGravityFall = handler; },
+  });
+  const { ipcMain, calls, state } = harness;
+  const startedFalls = () => calls.filter(([name]) => name === "startGravityFall");
+
+  ipcMain.send("drag-end");
+
+  assert.strictEqual(typeof finishGravityFall, "function");
+  assert.deepStrictEqual(startedFalls(), [["startGravityFall", finishGravityFall]]);
+  const refresh = calls.findIndex(([name]) => name === "refreshIdleVisualAfterDrag");
+  const start = calls.findIndex(([name]) => name === "startGravityFall");
+  assert.ok(refresh >= 0 && refresh < start);
+
+  state.miniMode = true;
+  ipcMain.send("drag-end");
+  assert.deepStrictEqual(startedFalls(), [["startGravityFall", finishGravityFall]]);
 });
 
 test("pet interaction IPC requires the roam cancel dependency", () => {

@@ -1,6 +1,6 @@
 "use strict";
 
-// Exercises src/gravity.js against a fake context (real time, a few seconds).
+// Exercises src/gravity.js against a fake window context.
 const test = require("node:test");
 const assert = require("node:assert");
 const initGravity = require("../src/gravity");
@@ -62,6 +62,10 @@ function fallFrom(y) {
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const lastY = (ctx) => ctx.applied[ctx.applied.length - 1].y;
 
+function advanceFrames(t, count) {
+  for (let frame = 0; frame < count; frame++) t.mock.timers.tick(16);
+}
+
 test("falls with acceleration to the floor and reports the landing once", async () => {
   const ctx = makeCtx(100);
   const gravity = makeGravity(ctx);
@@ -103,6 +107,21 @@ test("uses the work area of the display where it was dropped and the user's edge
   assert.ok(!("allowEdgePinning" in ctx.clampOptions), "the floor follows the edge pinning setting");
 });
 
+test("edge pinning can land below the work area bottom", async () => {
+  const workAreaBottom = WORK_AREA.y + WORK_AREA.height;
+  const physicalFloorY = workAreaBottom + 30;
+  const ctx = makeCtx(workAreaBottom - 30);
+  ctx.clampToScreenVisual = (x, y) => ({ x, y: Math.min(y, physicalFloorY) });
+  const gravity = makeGravity(ctx);
+
+  const landed = await new Promise((resolve) => {
+    assert.strictEqual(gravity.startFall(resolve), true);
+  });
+
+  assert.strictEqual(landed, true);
+  assert.strictEqual(lastY(ctx), physicalFloorY);
+});
+
 test("already on the floor: does not fall", () => {
   const ctx = makeCtx(FLOOR_Y - 1);
   const gravity = makeGravity(ctx);
@@ -124,6 +143,117 @@ test("caught mid-air: stops where it is and reports no landing", async () => {
   assert.ok(lastY(ctx) < FLOOR_Y, "stayed in the air");
   await wait(60);
   assert.strictEqual(ctx.applied.length, moves, "does not move after being caught");
+});
+
+test("size preview stops a fall before it can write the frozen size again", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  let previewActive = false;
+  ctx.isSizePreviewActive = () => previewActive;
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+  const ends = [];
+  assert.strictEqual(gravity.startFall((landed, info) => ends.push([landed, info])), true);
+  t.mock.timers.tick(16);
+  assert.strictEqual(ctx.applied.length, 1);
+
+  previewActive = true;
+  t.mock.timers.tick(16);
+  assert.deepStrictEqual(ends, [[false, null]]);
+  assert.strictEqual(gravity.isFalling(), false);
+  assert.strictEqual(ctx.applied.length, 1);
+  t.mock.timers.tick(64);
+  assert.strictEqual(ctx.applied.length, 1);
+});
+
+test("suspend stops writing and resumeSuspended falls from the paused position", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+  const ends = [];
+  gravity.setFallEndHandler((landed) => ends.push(landed));
+  assert.strictEqual(gravity.startFall(), true);
+  advanceFrames(t, 8);
+  const moves = ctx.applied.length;
+  const pausedY = lastY(ctx);
+  assert.ok(pausedY > 100 && pausedY < FLOOR_Y);
+
+  gravity.suspend();
+  gravity.suspend();
+  assert.strictEqual(gravity.isFalling(), false);
+  assert.deepStrictEqual(ends, [false]);
+  t.mock.timers.tick(400);
+  assert.strictEqual(ctx.applied.length, moves);
+
+  assert.strictEqual(gravity.resumeSuspended(), true);
+  t.mock.timers.tick(16);
+  assert.strictEqual(ctx.applied.length, moves + 1);
+  assert.strictEqual(lastY(ctx), pausedY);
+  advanceFrames(t, 60);
+  assert.strictEqual(lastY(ctx), FLOOR_Y);
+  assert.deepStrictEqual(ends, [false, true]);
+});
+
+test("a new fall clears a suspended fall without interrupting the new one", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+  const newEnds = [];
+  assert.strictEqual(gravity.startFall(), true);
+  gravity.suspend();
+  assert.strictEqual(gravity.startFall((landed) => newEnds.push(landed)), true);
+
+  assert.strictEqual(gravity.resumeSuspended(), false);
+  assert.deepStrictEqual(newEnds, []);
+  advanceFrames(t, 60);
+  assert.strictEqual(lastY(ctx), FLOOR_Y);
+  assert.deepStrictEqual(newEnds, [true]);
+});
+
+test("a press catches a suspended fall and releasing it starts a new fall", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+  assert.strictEqual(gravity.startFall(), true);
+  gravity.suspend();
+
+  ctx.dragLocked = true;
+  gravity.beginDrag();
+  assert.strictEqual(gravity.resumeSuspended(), false);
+  t.mock.timers.tick(400);
+  assert.strictEqual(ctx.applied.length, 0);
+
+  ctx.dragLocked = false;
+  assert.strictEqual(gravity.endPress(), true);
+  assert.strictEqual(gravity.isFalling(), true);
+  assert.strictEqual(gravity.resumeSuspended(), false);
+  advanceFrames(t, 60);
+  assert.strictEqual(lastY(ctx), FLOOR_Y);
+});
+
+test("cancel clears a suspended fall and leaves the pet in place", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+  assert.strictEqual(gravity.startFall(), true);
+  t.mock.timers.tick(16);
+  const moves = ctx.applied.length;
+  gravity.suspend();
+
+  gravity.cancel();
+  assert.strictEqual(gravity.resumeSuspended(), false);
+  t.mock.timers.tick(400);
+  assert.strictEqual(ctx.applied.length, moves);
+});
+
+test("suspend does not schedule a resume when the pet is not falling", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+
+  gravity.suspend();
+  assert.strictEqual(gravity.resumeSuspended(), false);
+  t.mock.timers.tick(400);
+  assert.strictEqual(ctx.applied.length, 0);
 });
 
 test("mini mode: does not fall", () => {

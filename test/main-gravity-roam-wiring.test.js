@@ -15,3 +15,10 @@ it("gravity: wires roam to the falling and on/off predicates", () => {
   assert.ok(roam.includes("isGravityFalling: () => _gravity.isFalling(),"));
   assert.ok(roam.includes("isGravityEnabled: () => _gravity.isEnabled(),"));
 });
+
+it("gravity: protects a fall from window bounds reconciliation like a roam", () => {
+  const start = source.indexOf("const petWindowRuntime = createPetWindowRuntime({");
+  assert.ok(start >= 0, "missing pet window runtime context");
+  const options = source.slice(start, source.indexOf("\n});", start));
+  assert.ok(options.includes("isRoamAnimating: () => _roam.isRoamAnimating() || _gravity.isFalling(),"));
+});

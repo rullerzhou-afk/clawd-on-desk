@@ -110,7 +110,7 @@ function registerPetInteractionIpc(options = {}) {
     dragReactionEndHeld = false;
     sendToRenderer("end-drag-reaction");
   }
-  // Falls started outside a drag (floor reset from the menu) end here too.
+  // All fall entry points share this end handler.
   setGravityFallEndHandler(finishGravityFall);
 
   function on(channel, listener) {
