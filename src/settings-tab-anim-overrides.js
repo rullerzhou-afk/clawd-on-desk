@@ -1605,6 +1605,14 @@
 
     const badges = document.createElement("div");
     badges.className = "anim-override-summary-badges";
+    if (card.cpuIntensive) {
+      const badge = document.createElement("span");
+      badge.className = "anim-override-badge";
+      badge.textContent = "\u26A1";
+      badge.title = t("animOverridesCpuIntensiveHint");
+      badge.setAttribute("aria-label", t("animOverridesCpuIntensiveHint"));
+      badges.appendChild(badge);
+    }
     if (card.displayHintWarning) {
       const warn = document.createElement("span");
       warn.className = "anim-override-badge anim-override-badge-warn";
@@ -1833,6 +1841,12 @@
     binding.className = "anim-override-binding";
     binding.textContent = card.bindingLabel;
     info.appendChild(binding);
+    if (card.cpuIntensive) {
+      const hint = document.createElement("div");
+      hint.className = "anim-override-binding";
+      hint.textContent = t("animOverridesCpuIntensiveHint");
+      info.appendChild(hint);
+    }
     info.appendChild(buildAnimTimingHint(
       t("animOverridesAssetCycle"),
       card.assetCycleMs,

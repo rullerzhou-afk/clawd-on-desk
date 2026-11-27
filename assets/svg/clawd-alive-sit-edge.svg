@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 2-Second Loop — Sit Edge: sitting on the bottom edge of the screen,
+         body lowered onto the ledge, hands resting on it, little legs
+         dangling over the edge and swinging alternately (left pair, then
+         right pair). The body rocks gently with each swing, eyes follow the
+         swinging feet, and a slow content blink. Stays seated the whole loop. */
+      .action-body {
+        transform-origin: 7.5px 15px;
+        animation: sit-rock 2s infinite ease-in-out;
+      }
+
+      .breathe-anim {
+        transform-origin: 7.5px 15px;
+        animation: sit-breathe 2s infinite ease-in-out;
+      }
+
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: sit-shadow 2s infinite ease-in-out;
+      }
+
+      .leg-a1 {
+        transform-origin: 3.5px 15px;
+        animation: sit-swing-a 2s infinite ease-in-out;
+      }
+
+      .leg-a2 {
+        transform-origin: 5.5px 15px;
+        animation: sit-swing-a 2s infinite ease-in-out;
+      }
+
+      .leg-b1 {
+        transform-origin: 9.5px 15px;
+        animation: sit-swing-b 2s infinite ease-in-out;
+      }
+
+      .leg-b2 {
+        transform-origin: 11.5px 15px;
+        animation: sit-swing-b 2s infinite ease-in-out;
+      }
+
+      .arm-l {
+        animation: sit-arm-l 2s infinite ease-in-out;
+      }
+
+      .arm-r {
+        animation: sit-arm-r 2s infinite ease-in-out;
+      }
+
+      .eyes-look {
+        animation: sit-look 2s infinite ease-in-out;
+      }
+
+      .eyes-lid {
+        transform-origin: 7.5px 12px;
+        animation: sit-lid 2s infinite ease-in-out;
+      }
+
+      /* --- Keyframes --- */
+
+      /* Left legs kick forward (foreshortened, feet swinging outwards),
+         swing back past rest, then hang while the right legs go */
+      @keyframes sit-swing-a {
+        0% { transform: skewX(0deg) scale(1, 1); }
+        10% { transform: skewX(-10deg) scale(1, 0.7); }
+        18% { transform: skewX(-14deg) scale(1, 0.5); }
+        28% { transform: skewX(-4deg) scale(1, 0.85); }
+        36% { transform: skewX(6deg) scale(1, 1.08); }
+        44% { transform: skewX(2deg) scale(1, 1); }
+        50%, 100% { transform: skewX(0deg) scale(1, 1); }
+      }
+
+      @keyframes sit-swing-b {
+        0%, 50% { transform: skewX(0deg) scale(1, 1); }
+        60% { transform: skewX(10deg) scale(1, 0.7); }
+        68% { transform: skewX(14deg) scale(1, 0.5); }
+        78% { transform: skewX(4deg) scale(1, 0.85); }
+        86% { transform: skewX(-6deg) scale(1, 1.08); }
+        94% { transform: skewX(-2deg) scale(1, 1); }
+        100% { transform: skewX(0deg) scale(1, 1); }
+      }
+
+      /* Body rocks a touch against each kick */
+      @keyframes sit-rock {
+        0%, 100% { transform: translate(0, 0) rotate(0deg); }
+        18% { transform: translate(0, -0.3px) rotate(1.5deg); }
+        34% { transform: translate(0, 0) rotate(-0.5deg); }
+        50% { transform: translate(0, 0) rotate(0deg); }
+        68% { transform: translate(0, -0.3px) rotate(-1.5deg); }
+        84% { transform: translate(0, 0) rotate(0.5deg); }
+      }
+
+      @keyframes sit-breathe {
+        0%, 50%, 100% { transform: scale(1, 1); }
+        25%, 75% { transform: scale(1.02, 0.98); }
+      }
+
+      @keyframes sit-shadow {
+        0%, 100% { transform: scaleX(1); opacity: 0; }
+      }
+
+      /* Hands stay on the ledge, pressing a little as he rocks */
+      @keyframes sit-arm-l {
+        0%, 50%, 100% { transform: translate(0, 0); }
+        18% { transform: translate(0, 0.3px); }
+        68% { transform: translate(0, -0.2px); }
+      }
+
+      @keyframes sit-arm-r {
+        0%, 50%, 100% { transform: translate(0, 0); }
+        18% { transform: translate(0, -0.2px); }
+        68% { transform: translate(0, 0.3px); }
+      }
+
+      /* Eyes follow the swinging feet */
+      @keyframes sit-look {
+        0%, 100% { transform: translate(0, 0.3px); }
+        18% { transform: translate(-0.6px, 0.6px); }
+        40% { transform: translate(0, 0.3px); }
+        68% { transform: translate(0.6px, 0.6px); }
+        90% { transform: translate(0, 0.3px); }
+      }
+
+      /* One slow, content blink (lids sink, hold shut, reopen) */
+      @keyframes sit-lid {
+        0%, 52%, 92%, 100% { transform: scaleY(1); }
+        62% { transform: scaleY(0.5); }
+        70%, 78% { transform: scaleY(0.1); }
+        86% { transform: scaleY(0.5); }
+      }
+    </style>
+  </defs>
+
+  <!-- Legs dangling over the edge -->
+  <g id="legs" fill="#DE886D">
+    <g class="leg-a1"><rect x="3" y="14" width="1" height="4"/></g>
+    <g class="leg-a2"><rect x="5" y="14" width="1" height="4"/></g>
+    <g class="leg-b1"><rect x="9" y="14" width="1" height="4"/></g>
+    <g class="leg-b2"><rect x="11" y="14" width="1" height="4"/></g>
+  </g>
+
+  <!-- Animated Upper Body (seated: lowered onto the ledge) -->
+  <g class="action-body">
+    <g class="breathe-anim">
+      <!-- Torso -->
+      <rect id="torso" x="2" y="8" width="11" height="7" fill="#DE886D"/>
+      <!-- Left Arm (hand on the ledge) -->
+      <g class="arm-l">
+        <rect x="0" y="13" width="2" height="2" fill="#DE886D"/>
+      </g>
+      <!-- Right Arm (hand on the ledge) -->
+      <g class="arm-r">
+        <rect x="13" y="13" width="2" height="2" fill="#DE886D"/>
+      </g>
+      <!-- Eyes (lids close from the top) -->
+      <g class="eyes-look">
+        <g class="eyes-lid" fill="#000000">
+          <rect x="4" y="10" width="1" height="2"/>
+          <rect x="10" y="10" width="1" height="2"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

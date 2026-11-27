@@ -37,6 +37,7 @@ function setup(t, originator) {
 
 describe("Codex verified-child visual priority", () => {
   it("keeps an older same-PID parent in the 2→1→0 animation without changing its canonical metadata or focus", t => {
+    t.mock.method(Math, "random", () => 0);
     const { state, child, row, svg } = setup(t);
     assert.equal(state.resolveDisplayState(), "thinking", "plain PID dedupe still chooses the newer thread");
     assert.equal(row().hiddenFromHud, true);
@@ -60,6 +61,7 @@ describe("Codex verified-child visual priority", () => {
   });
 
   it("retains the ordinary known-Desktop multi-thread behavior after child activity ends", t => {
+    t.mock.method(Math, "random", () => 0);
     const { state, child, svg } = setup(t, "codex_work_desktop");
     assert.equal(state.resolveDisplayState(), "working");
     child(3); child(4);

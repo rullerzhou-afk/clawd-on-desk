@@ -1,0 +1,379 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* Work, coffee (1 session, Clawd Alive): 5 s loop. Types like clawd-working-typing, two bursts with a quick look up at the screen, then grabs the steaming mug beside the keyboard, holds it by the handle and sips with happily closed eyes (two gulps) while the left claw keeps pecking keys, puts it back with a content little squash and dives back in. 0.3 s intro eases out of the clawd-idle-follow rest pose while screen, keyboard and mug pop in with tiny poofs. Generated: rects + transform/opacity keyframes only. */
+      .shadow { transform-origin: 7.5px 15.5px; animation: shadow-in 0.3s ease-out both, shadow 5s ease-in-out 0.3s infinite; }
+      @keyframes shadow-in {
+0%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.5}
+100%{transform:translate(0px,0px) rotate(0deg) scale(1.02,1);opacity:0.5}
+}
+      @keyframes shadow {
+0%,48%,64%,84%,89%,100%{transform:translate(0px,0px) rotate(0deg) scale(1.02,1);opacity:0.5}
+53%,58%{transform:translate(0.3px,0px) rotate(0deg) scale(1.02,1);opacity:0.5}
+86%{transform:translate(0px,0px) rotate(0deg) scale(1.07,1);opacity:0.5}
+}
+      .body { transform-origin: 7.5px 15px; animation: body-in 0.3s ease-out both, body 5s ease-in-out 0.3s infinite; }
+      @keyframes body-in {
+0%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+45%{transform:translate(0px,0.3px) rotate(0deg) scale(1.03,0.97)}
+}
+      @keyframes body {
+0%,5.5%,11%,16.5%,22%,28%,33%,38%,43%,48%,91%,92%,96%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+2.75%,8.25%,13.75%,19.25%,30.5%,35.5%,40.5%,45.5%,94%,98%{transform:translate(0px,0.35px) rotate(0deg) scale(1,1)}
+53%{transform:translate(0.35px,0.014px) rotate(1.2deg) scale(1,1)}
+58%{transform:translate(0.35px,0.051px) rotate(1.2deg) scale(1,1)}
+63%{transform:translate(0.026px,0.103px) rotate(0.089deg) scale(1,1)}
+64%{transform:translate(0px,0.115px) rotate(0deg) scale(0.995,1.008)}
+66%{transform:translate(0px,0.138px) rotate(0deg) scale(0.98,1.03)}
+69%{transform:translate(0px,0.174px) rotate(0deg) scale(0.97,1.04)}
+71%{transform:translate(0px,0.197px) rotate(0deg) scale(0.99,1.01)}
+73.6%{transform:translate(0px,0.225px) rotate(0deg) scale(0.97,1.04)}
+76.4%{transform:translate(0px,0.252px) rotate(0deg) scale(0.99,1.01)}
+79%{transform:translate(0px,0.273px) rotate(0deg) scale(1,1)}
+84%{transform:translate(0px,0.298px) rotate(0deg) scale(1,1)}
+86%{transform:translate(0px,0.3px) rotate(0deg) scale(1.05,0.94)}
+88.4%{transform:translate(0px,-0.1px) rotate(0deg) scale(0.99,1.01)}
+}
+      .eyes { transform-origin: 7.5px 9px; animation: eyes-in 0.3s ease-out both, eyes 5s ease-in-out 0.3s infinite; }
+      @keyframes eyes-in {
+0%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+100%{transform:translate(0px,1px) rotate(0deg) scale(1,0.6)}
+}
+      @keyframes eyes {
+0%,11%,13%,22%,29.2%,39%,41%,48%,91.6%,100%{transform:translate(0px,1px) rotate(0deg) scale(1,0.6)}
+12%,40%{transform:translate(0px,1px) rotate(0deg) scale(1,0.1)}
+23.6%,25.2%{transform:translate(-1px,-0.5px) rotate(0deg) scale(1,1)}
+26.4%,27.6%{transform:translate(1.2px,-0.5px) rotate(0deg) scale(1,1)}
+50%,57%{transform:translate(1.6px,0.7px) rotate(0deg) scale(1,1)}
+61%{transform:translate(0.2px,0.2px) rotate(0deg) scale(1,1)}
+63.2%,78.4%,86.8%,88.4%{transform:translate(0px,0px) rotate(0deg) scale(1,0.1)}
+80.4%,86%,87.6%,89.2%{transform:translate(0px,0px) rotate(0deg) scale(1,0.5)}
+}
+      .arm-l { transform-origin: 2px 10px; animation: arm-l-in 0.3s ease-out both, arm-l 5s ease-in-out 0.3s infinite; }
+      @keyframes arm-l-in {
+0%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+100%{transform:translate(0px,0px) rotate(-5deg) scale(1,1)}
+}
+      @keyframes arm-l {
+0%,22%,28%,48%,92%,100%{transform:translate(0px,0px) rotate(-5deg) scale(1,1)}
+1.6%{transform:translate(0px,0px) rotate(-36.891deg) scale(1,1)}
+3.2%{transform:translate(0px,0px) rotate(-8.356deg) scale(1,1)}
+4.8%{transform:translate(0px,0px) rotate(-31.699deg) scale(1,1)}
+6.4%{transform:translate(0px,0px) rotate(-6.01deg) scale(1,1)}
+8%{transform:translate(0px,0px) rotate(-33.913deg) scale(1,1)}
+9.6%{transform:translate(0px,0px) rotate(-6.78deg) scale(1,1)}
+11.2%{transform:translate(0px,0px) rotate(-32.624deg) scale(1,1)}
+12.8%{transform:translate(0px,0px) rotate(-8.123deg) scale(1,1)}
+14.4%{transform:translate(0px,0px) rotate(-37.226deg) scale(1,1)}
+16%{transform:translate(0px,0px) rotate(-5.112deg) scale(1,1)}
+17.6%{transform:translate(0px,0px) rotate(-31.105deg) scale(1,1)}
+19.2%{transform:translate(0px,0px) rotate(-6.714deg) scale(1,1)}
+20.8%{transform:translate(0px,0px) rotate(-31.711deg) scale(1,1)}
+25%{transform:translate(0px,0px) rotate(2deg) scale(1,1)}
+29.6%{transform:translate(0px,0px) rotate(-30.113deg) scale(1,1)}
+31.2%{transform:translate(0px,0px) rotate(-8.753deg) scale(1,1)}
+32.8%{transform:translate(0px,0px) rotate(-37.533deg) scale(1,1)}
+34.4%{transform:translate(0px,0px) rotate(-5.336deg) scale(1,1)}
+36%{transform:translate(0px,0px) rotate(-31.107deg) scale(1,1)}
+37.6%{transform:translate(0px,0px) rotate(-7.914deg) scale(1,1)}
+39.2%{transform:translate(0px,0px) rotate(-32.475deg) scale(1,1)}
+40.8%{transform:translate(0px,0px) rotate(-6.22deg) scale(1,1)}
+42.4%{transform:translate(0px,0px) rotate(-33.001deg) scale(1,1)}
+44%{transform:translate(0px,0px) rotate(-7.403deg) scale(1,1)}
+45.6%{transform:translate(0px,0px) rotate(-33.205deg) scale(1,1)}
+47.2%{transform:translate(0px,0px) rotate(-5.627deg) scale(1,1)}
+50.75%{transform:translate(0px,0px) rotate(-31.036deg) scale(1,1)}
+53.5%{transform:translate(0px,0px) rotate(-6.763deg) scale(1,1)}
+56.25%{transform:translate(0px,0px) rotate(-30.502deg) scale(1,1)}
+59%{transform:translate(0px,0px) rotate(-6.957deg) scale(1,1)}
+61.75%{transform:translate(0px,0px) rotate(-29.466deg) scale(1,1)}
+64.5%{transform:translate(0px,0px) rotate(-5.212deg) scale(1,1)}
+67.25%{transform:translate(0px,0px) rotate(-31.947deg) scale(1,1)}
+70%{transform:translate(0px,0px) rotate(-7.713deg) scale(1,1)}
+72.75%{transform:translate(0px,0px) rotate(-30.95deg) scale(1,1)}
+75.5%{transform:translate(0px,0px) rotate(-5.759deg) scale(1,1)}
+78.25%{transform:translate(0px,0px) rotate(-27.968deg) scale(1,1)}
+81%{transform:translate(0px,0px) rotate(-6.524deg) scale(1,1)}
+83.75%{transform:translate(0px,0px) rotate(-28.612deg) scale(1,1)}
+86.5%{transform:translate(0px,0px) rotate(-6.543deg) scale(1,1)}
+89.25%{transform:translate(0px,0px) rotate(-29.412deg) scale(1,1)}
+93.6%{transform:translate(0px,0px) rotate(-36.053deg) scale(1,1)}
+95.2%{transform:translate(0px,0px) rotate(-5.409deg) scale(1,1)}
+96.8%{transform:translate(0px,0px) rotate(-34.733deg) scale(1,1)}
+98.4%{transform:translate(0px,0px) rotate(-5.614deg) scale(1,1)}
+}
+      .arm-r { transform-origin: 13px 10px; animation: arm-r-in 0.3s ease-out both, arm-r 5s ease-in-out 0.3s infinite; }
+      @keyframes arm-r-in {
+0%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+100%{transform:translate(0px,0px) rotate(5deg) scale(1,1)}
+}
+      @keyframes arm-r {
+0%,22%,28%,48%,92%,100%{transform:translate(0px,0px) rotate(5deg) scale(1,1)}
+1.3%{transform:translate(0px,0px) rotate(32.861deg) scale(1,1)}
+2.6%{transform:translate(0px,0px) rotate(7.937deg) scale(1,1)}
+3.9%{transform:translate(0px,0px) rotate(31.44deg) scale(1,1)}
+5.2%{transform:translate(0px,0px) rotate(8.732deg) scale(1,1)}
+6.5%{transform:translate(0px,0px) rotate(31.896deg) scale(1,1)}
+7.8%{transform:translate(0px,0px) rotate(8.652deg) scale(1,1)}
+9.1%{transform:translate(0px,0px) rotate(37.761deg) scale(1,1)}
+10.4%{transform:translate(0px,0px) rotate(6.844deg) scale(1,1)}
+11.7%{transform:translate(0px,0px) rotate(30.217deg) scale(1,1)}
+13%{transform:translate(0px,0px) rotate(7.57deg) scale(1,1)}
+14.3%{transform:translate(0px,0px) rotate(30.568deg) scale(1,1)}
+15.6%{transform:translate(0px,0px) rotate(5.448deg) scale(1,1)}
+16.9%{transform:translate(0px,0px) rotate(34.13deg) scale(1,1)}
+18.2%{transform:translate(0px,0px) rotate(5.976deg) scale(1,1)}
+19.5%{transform:translate(0px,0px) rotate(33.514deg) scale(1,1)}
+20.8%{transform:translate(0px,0px) rotate(7.273deg) scale(1,1)}
+25%{transform:translate(0px,0px) rotate(-3deg) scale(1,1)}
+29.3%{transform:translate(0px,0px) rotate(31.455deg) scale(1,1)}
+30.6%{transform:translate(0px,0px) rotate(8.255deg) scale(1,1)}
+31.9%{transform:translate(0px,0px) rotate(33.998deg) scale(1,1)}
+33.2%{transform:translate(0px,0px) rotate(6.036deg) scale(1,1)}
+34.5%{transform:translate(0px,0px) rotate(37.996deg) scale(1,1)}
+35.8%{transform:translate(0px,0px) rotate(7.625deg) scale(1,1)}
+37.1%{transform:translate(0px,0px) rotate(34.12deg) scale(1,1)}
+38.4%{transform:translate(0px,0px) rotate(8.009deg) scale(1,1)}
+39.7%{transform:translate(0px,0px) rotate(34.921deg) scale(1,1)}
+41%{transform:translate(0px,0px) rotate(8.05deg) scale(1,1)}
+42.3%{transform:translate(0px,0px) rotate(35.75deg) scale(1,1)}
+43.6%{transform:translate(0px,0px) rotate(8.176deg) scale(1,1)}
+44.9%{transform:translate(0px,0px) rotate(31.979deg) scale(1,1)}
+46.2%{transform:translate(0px,0px) rotate(6.639deg) scale(1,1)}
+47.5%{transform:translate(0px,0px) rotate(33.559deg) scale(1,1)}
+51%{transform:translate(1.181px,-0.6px) rotate(-12deg) scale(1,1)}
+52%{transform:translate(1.4px,0.041px) rotate(-10.125deg) scale(1,1)}
+53.5%,87.6%{transform:translate(5.4px,0.5px) rotate(0deg) scale(1,1)}
+55%,57%,84%,86.4%{transform:translate(5.4px,3.5px) rotate(0deg) scale(1,1)}
+60%{transform:translate(0.4px,1.3px) rotate(0deg) scale(1,1)}
+64%,78%{transform:translate(-5.1px,-0.3px) rotate(0deg) scale(1,1)}
+81%{transform:translate(0.4px,1.3px) rotate(0deg) scale(1,1)}
+89%{transform:translate(1.384px,-0.3px) rotate(-10deg) scale(1,1)}
+93.3%{transform:translate(0px,0px) rotate(35.328deg) scale(1,1)}
+94.6%{transform:translate(0px,0px) rotate(5.597deg) scale(1,1)}
+95.9%{transform:translate(0px,0px) rotate(32.63deg) scale(1,1)}
+97.2%{transform:translate(0px,0px) rotate(5.287deg) scale(1,1)}
+98.5%{transform:translate(0px,0px) rotate(33.579deg) scale(1,1)}
+99.8%{transform:translate(0px,0px) rotate(6.448deg) scale(1,1)}
+}
+      .mug-mv { animation: mug-mv 5s ease-in-out 0.3s infinite backwards; }
+      @keyframes mug-mv {
+0%,55%,57%,84%,86.8%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+56%,85.4%{transform:translate(0px,0.15px) rotate(0deg) scale(1,1)}
+60%{transform:translate(-5px,-2.2px) rotate(0deg) scale(1,1)}
+64%,78%{transform:translate(-10px,-3.8px) rotate(0deg) scale(1,1)}
+81%{transform:translate(-5px,-2.2px) rotate(0deg) scale(1,1)}
+}
+      .mug-tilt { transform-origin: 19.4px 13.5px; animation: mug-tilt 5s ease-in-out 0.3s infinite backwards; }
+      @keyframes mug-tilt {
+0%,63%,79%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1)}
+66%,76.4%{transform:translate(0px,0px) rotate(-26deg) scale(1,1)}
+69%{transform:translate(0px,0px) rotate(-33deg) scale(1,1)}
+71%{transform:translate(0px,0px) rotate(-25deg) scale(1,1)}
+73.6%{transform:translate(0px,0px) rotate(-34deg) scale(1,1)}
+}
+      .st0 { animation: st0 1.25s ease-out 0.3s infinite backwards; }
+      @keyframes st0 {
+0%{transform:translate(0px,0.6px) rotate(0deg) scale(1,1);opacity:0}
+16%{transform:translate(0.15px,0px) rotate(0deg) scale(1,1);opacity:0.75}
+44%{transform:translate(0.5px,-1.058px) rotate(0deg) scale(1,1);opacity:0.445}
+80%{transform:translate(-0.2px,-2.6px) rotate(0deg) scale(1,1);opacity:0}
+100%{transform:translate(0px,-2.6px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .st1 { animation: st1 1.25s ease-out 0.72s infinite backwards; }
+      @keyframes st1 {
+0%{transform:translate(0px,0.6px) rotate(0deg) scale(1,1);opacity:0}
+16%{transform:translate(-0.12px,0px) rotate(0deg) scale(1,1);opacity:0.75}
+44%{transform:translate(-0.4px,-1.058px) rotate(0deg) scale(1,1);opacity:0.445}
+80%{transform:translate(0.16px,-2.6px) rotate(0deg) scale(1,1);opacity:0}
+100%{transform:translate(0px,-2.6px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .st2 { animation: st2 1.25s ease-out 1.13s infinite backwards; }
+      @keyframes st2 {
+0%{transform:translate(0px,0.6px) rotate(0deg) scale(1,1);opacity:0}
+16%{transform:translate(0.09px,0px) rotate(0deg) scale(1,1);opacity:0.75}
+44%{transform:translate(0.3px,-1.058px) rotate(0deg) scale(1,1);opacity:0.445}
+80%{transform:translate(-0.12px,-2.6px) rotate(0deg) scale(1,1);opacity:0}
+100%{transform:translate(0px,-2.6px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .cl0 { transform-box: fill-box; transform-origin: left center; animation: cl0 5s linear 0.3s infinite backwards; }
+      @keyframes cl0 {
+0%,0.98%,97.02%,100%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0}
+1%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0.85}
+10%,92.4%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+97%{transform:translate(0px,-2.5px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .cl1 { transform-box: fill-box; transform-origin: left center; animation: cl1 5s linear 0.3s infinite backwards; }
+      @keyframes cl1 {
+0%,9.98%,97.02%,100%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0}
+10%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0.85}
+21.6%,92.4%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+97%{transform:translate(0px,-2.5px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .cl2 { transform-box: fill-box; transform-origin: left center; animation: cl2 5s linear 0.3s infinite backwards; }
+      @keyframes cl2 {
+0%,28.98%,97.02%,100%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0}
+29%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0.8}
+37%,92.4%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.8}
+97%{transform:translate(0px,-2.5px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .cl3 { transform-box: fill-box; transform-origin: left center; animation: cl3 5s linear 0.3s infinite backwards; }
+      @keyframes cl3 {
+0%,36.98%,97.02%,100%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0}
+37%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0.7}
+47.6%,92.4%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.7}
+97%{transform:translate(0px,-2.5px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .cl4 { transform-box: fill-box; transform-origin: left center; animation: cl4 5s linear 0.3s infinite backwards; }
+      @keyframes cl4 {
+0%,54.98%,97.02%,100%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0}
+55%{transform:translate(0px,0px) rotate(0deg) scale(0,1);opacity:0.75}
+87%,92.4%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.75}
+97%{transform:translate(0px,-2.5px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .db0 { animation: db0 1.25s linear 0.3s infinite backwards; }
+      @keyframes db0 {
+0%{transform:translate(0px,0px) rotate(0deg) scale(0.5,0.5);opacity:0}
+9.6%{transform:translate(0px,-0.44px) rotate(0deg) scale(0.513,0.513);opacity:0.8}
+100%{transform:translate(0px,-17px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .db1 { animation: db1 1.25s linear 0.61s infinite backwards; }
+      @keyframes db1 {
+0%{transform:translate(0px,0px) rotate(0deg) scale(0.5,0.5);opacity:0}
+9.6%{transform:translate(0px,-0.44px) rotate(0deg) scale(0.513,0.513);opacity:0.8}
+100%{transform:translate(0px,-17px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .db2 { animation: db2 1.25s linear 0.92s infinite backwards; }
+      @keyframes db2 {
+0%{transform:translate(0px,0px) rotate(0deg) scale(0.5,0.5);opacity:0}
+9.6%{transform:translate(0px,-0.44px) rotate(0deg) scale(0.513,0.513);opacity:0.8}
+100%{transform:translate(0px,-17px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .db3 { animation: db3 1.25s linear 1.24s infinite backwards; }
+      @keyframes db3 {
+0%{transform:translate(0px,0px) rotate(0deg) scale(0.5,0.5);opacity:0}
+9.6%{transform:translate(0px,-0.44px) rotate(0deg) scale(0.513,0.513);opacity:0.8}
+100%{transform:translate(0px,-17px) rotate(0deg) scale(1,1);opacity:0}
+}
+      .kl0 { animation: kl0 5s linear 0.3s infinite backwards; }
+      @keyframes kl0 {
+0%,1.52%,3.4%,29.52%,31.4%,56.17%,58.05%,93.52%,95.4%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+1.84%,29.84%,56.49%,93.84%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kl1 { animation: kl1 5s linear 0.3s infinite backwards; }
+      @keyframes kl1 {
+0%,4.72%,6.6%,32.72%,34.6%,61.67%,63.55%,96.72%,98.6%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+5.04%,33.04%,61.99%,97.04%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kl2 { animation: kl2 5s linear 0.3s infinite backwards; }
+      @keyframes kl2 {
+0%,7.92%,9.8%,35.92%,37.8%,67.17%,69.05%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+8.24%,36.24%,67.49%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kl3 { animation: kl3 5s linear 0.3s infinite backwards; }
+      @keyframes kl3 {
+0%,11.12%,13%,39.12%,41%,72.67%,74.55%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+11.44%,39.44%,72.99%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kl4 { animation: kl4 5s linear 0.3s infinite backwards; }
+      @keyframes kl4 {
+0%,14.32%,16.2%,42.32%,44.2%,78.17%,80.05%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+14.64%,42.64%,78.49%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kl5 { animation: kl5 5s linear 0.3s infinite backwards; }
+      @keyframes kl5 {
+0%,17.52%,19.4%,45.52%,47.4%,83.67%,85.55%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+17.84%,45.84%,83.99%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kl6 { animation: kl6 5s linear 0.3s infinite backwards; }
+      @keyframes kl6 {
+0%,20.72%,22.6%,50.67%,52.55%,89.17%,91.05%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+21.04%,50.99%,89.49%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr0 { animation: kr0 5s linear 0.3s infinite backwards; }
+      @keyframes kr0 {
+0%,1.22%,3.1%,19.42%,21.3%,44.82%,46.7%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+1.54%,19.74%,45.14%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr1 { animation: kr1 5s linear 0.3s infinite backwards; }
+      @keyframes kr1 {
+0%,3.82%,5.7%,29.22%,31.1%,47.42%,49.3%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+4.14%,29.54%,47.74%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr2 { animation: kr2 5s linear 0.3s infinite backwards; }
+      @keyframes kr2 {
+0%,6.42%,8.3%,31.82%,33.7%,93.22%,95.1%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+6.74%,32.14%,93.54%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr3 { animation: kr3 5s linear 0.3s infinite backwards; }
+      @keyframes kr3 {
+0%,9.02%,10.9%,34.42%,36.3%,95.82%,97.7%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+9.34%,34.74%,96.14%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr4 { animation: kr4 5s linear 0.3s infinite backwards; }
+      @keyframes kr4 {
+0%,11.62%,13.5%,37.02%,38.9%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+11.94%,37.34%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr5 { animation: kr5 5s linear 0.3s infinite backwards; }
+      @keyframes kr5 {
+0%,14.22%,16.1%,39.62%,41.5%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+14.54%,39.94%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .kr6 { animation: kr6 5s linear 0.3s infinite backwards; }
+      @keyframes kr6 {
+0%,16.82%,18.7%,42.22%,44.1%,100%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0}
+17.14%,42.54%{transform:translate(0px,0px) rotate(0deg) scale(1,1);opacity:0.85}
+}
+      .pop-scr { transform-origin: 7.5px -0.75px; animation: pop 0.3s ease-out 0s both; }
+      .pop-kb { transform-origin: 7.5px 13.4px; animation: pop 0.26s ease-out 0.04s both; }
+      .pop-mug { transform-origin: 17.8px 15px; animation: pop 0.22s ease-out 0.08s both; }
+      .pf1 { transform-origin: 7.5px -0.75px; animation: poof 0.3s ease-out 0s both; }
+      .pf2 { transform-origin: 7.5px 13.4px; animation: poof 0.26s ease-out 0.04s both; }
+      .pf3 { transform-origin: 17.9px 13.2px; animation: poof 0.22s ease-out 0.08s both; }
+      @keyframes pop {
+0%{transform:scale(0);opacity:0}
+5%{transform:scale(0.2);opacity:1}
+55%{transform:scale(1.18);opacity:1}
+80%{transform:scale(0.95);opacity:1}
+100%{transform:scale(1);opacity:1}
+}
+      @keyframes poof {
+0%{transform:scale(0.5);opacity:0}
+12%{transform:scale(0.8);opacity:0.9}
+100%{transform:scale(1.9);opacity:0}
+}
+    </style>
+  </defs>
+  <g class="pop-scr">
+  <g fill="#40C4FF"><g class="db0"><rect x="3" y="4" width="1.5" height="1.5"/></g><g class="db1"><rect x="7" y="5" width="1.5" height="1.5"/></g><g class="db2"><rect x="11" y="4" width="1.5" height="1.5"/></g><g class="db3"><rect x="5" y="5" width="1.5" height="1.5"/></g></g>
+  <rect x="0.75" y="-6" width="13.5" height="10.5" fill="#1E1E2E"/>
+<rect x="0.75" y="-6" width="13.5" height="1.2" fill="#2D2D3D"/>
+<rect x="1.55" y="-5.6" width="0.5" height="0.4" fill="#40C4FF"/>
+<rect x="2.45" y="-5.6" width="0.5" height="0.4" fill="#FFBD2E"/>
+<rect x="3.35" y="-5.6" width="0.5" height="0.4" fill="#27C93F"/>
+<rect x="0.75" y="4.2" width="13.5" height="0.3" fill="#2D2D3D"/>
+  <rect class="cl0" x="1.75" y="-3.7" width="5" height="0.7" fill="#4CAF50"/><rect class="cl1" x="3.25" y="-2.2" width="7.5" height="0.7" fill="#4CAF50"/><rect class="cl2" x="3.25" y="-0.7" width="4.5" height="0.7" fill="#40C4FF"/><rect class="cl3" x="4.75" y="0.8" width="6" height="0.7" fill="#ECEFF1"/><rect class="cl4" x="3.25" y="2.3" width="3.5" height="0.7" fill="#FFC107"/>
+  </g>
+  <rect class="shadow" x="3" y="15" width="9" height="1" fill="#000000" id="ground-shadow" opacity="0.5"/>
+  <g id="legs" fill="#DE886D"><rect x="3" y="12" width="1" height="3"/><rect x="5" y="12" width="1" height="3"/><rect x="9" y="12" width="1" height="3"/><rect x="11" y="12" width="1" height="3"/></g>
+  <g class="body">
+  <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+  <g class="eyes" fill="#000000"><rect x="4" y="8" width="1" height="2"/><rect x="10" y="8" width="1" height="2"/></g>
+  </g>
+  <g class="pop-kb"><g transform="translate(-0.5, 11.8)"><rect x="0" y="0" width="16" height="3.2" fill="#455A64"/>
+<g fill="#78909C">
+<rect x="0.5" y="0.4" width="1" height="0.7"/><rect x="1.8" y="0.4" width="1" height="0.7"/><rect x="3.5" y="0.4" width="6" height="0.7"/><rect x="10.2" y="0.4" width="1" height="0.7"/><rect x="11.5" y="0.4" width="1" height="0.7"/><rect x="12.8" y="0.4" width="1" height="0.7"/><rect x="14.1" y="0.4" width="1.3" height="0.7"/>
+<rect x="0.8" y="1.3" width="0.9" height="0.7"/><rect x="2" y="1.3" width="0.9" height="0.7"/><rect x="3.2" y="1.3" width="0.9" height="0.7"/><rect x="4.4" y="1.3" width="0.9" height="0.7"/><rect x="5.6" y="1.3" width="0.9" height="0.7"/><rect x="6.8" y="1.3" width="0.9" height="0.7"/><rect x="8" y="1.3" width="0.9" height="0.7"/><rect x="9.2" y="1.3" width="0.9" height="0.7"/><rect x="10.4" y="1.3" width="0.9" height="0.7"/><rect x="11.6" y="1.3" width="0.9" height="0.7"/><rect x="12.8" y="1.3" width="0.9" height="0.7"/><rect x="14" y="1.3" width="0.9" height="0.7"/>
+<rect x="0.5" y="2.2" width="0.9" height="0.7"/><rect x="1.7" y="2.2" width="0.9" height="0.7"/><rect x="2.9" y="2.2" width="0.9" height="0.7"/><rect x="4.1" y="2.2" width="0.9" height="0.7"/><rect x="5.3" y="2.2" width="0.9" height="0.7"/><rect x="6.5" y="2.2" width="0.9" height="0.7"/><rect x="7.7" y="2.2" width="0.9" height="0.7"/><rect x="8.9" y="2.2" width="0.9" height="0.7"/><rect x="10.1" y="2.2" width="0.9" height="0.7"/><rect x="11.3" y="2.2" width="0.9" height="0.7"/><rect x="12.5" y="2.2" width="0.9" height="0.7"/><rect x="13.7" y="2.2" width="0.9" height="0.7"/><rect x="14.9" y="2.2" width="0.6" height="0.7"/>
+</g><g fill="#B0BEC5"><rect class="kl0" x="0.8" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kl1" x="4.4" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kl2" x="2.9" y="2.2" width="0.9" height="0.7" opacity="0"/><rect class="kl3" x="2" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kl4" x="5.3" y="2.2" width="0.9" height="0.7" opacity="0"/><rect class="kl5" x="1.8" y="0.4" width="1" height="0.7" opacity="0"/><rect class="kl6" x="6.8" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kr0" x="9.2" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kr1" x="11.6" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kr2" x="8.9" y="2.2" width="0.9" height="0.7" opacity="0"/><rect class="kr3" x="12.5" y="2.2" width="0.9" height="0.7" opacity="0"/><rect class="kr4" x="10.2" y="0.4" width="1" height="0.7" opacity="0"/><rect class="kr5" x="14" y="1.3" width="0.9" height="0.7" opacity="0"/><rect class="kr6" x="10.1" y="2.2" width="0.9" height="0.7" opacity="0"/></g></g></g>
+  <g class="pop-mug"><rect x="16" y="15" width="4.2" height="0.5" fill="#37474F"/></g>
+  <g class="mug-mv"><g class="pop-mug">
+  <g fill="#D7D7DC"><g class="st0"><rect x="17.1" y="10.6" width="0.5" height="1"/></g><g class="st1"><rect x="17.9" y="10.2" width="0.5" height="1"/></g><g class="st2"><rect x="18.6" y="10.7" width="0.5" height="1"/></g></g>
+  <g class="mug-tilt"><rect x="16.5" y="12" width="2.5" height="3" fill="#F4EEE4"/><rect x="16.5" y="12" width="2.5" height="0.5" fill="#6F4A34"/><rect x="18.5" y="12.5" width="0.5" height="2.5" fill="#D9CDBE"/><rect x="16.5" y="14.5" width="2.5" height="0.5" fill="#D9CDBE"/><rect x="19" y="12.6" width="0.9" height="0.5" fill="#D9CDBE"/><rect x="19.4" y="13" width="0.5" height="1.2" fill="#D9CDBE"/><rect x="19" y="14" width="0.9" height="0.5" fill="#D9CDBE"/><rect x="17.1" y="13.2" width="1" height="0.8" fill="#40C4FF"/></g>
+  </g></g>
+  <g class="body"><g fill="#DE886D"><g class="arm-l"><rect x="0" y="9" width="2" height="2"/></g><g class="arm-r"><rect x="13" y="9" width="2" height="2"/></g></g></g>
+  <g class="pf1" fill="#D7D7DC" opacity="0"><rect x="-0.1" y="-6.35" width="0.5" height="0.5"/><rect x="14.6" y="-6.65" width="0.5" height="0.5"/><rect x="-0.4" y="4.35" width="0.5" height="0.5"/><rect x="15.1" y="4.65" width="0.5" height="0.5"/></g>
+  <g class="pf2" fill="#D7D7DC" opacity="0"><rect x="-1.1" y="11.5" width="0.5" height="0.5"/><rect x="15.6" y="11.2" width="0.5" height="0.5"/><rect x="-1.4" y="14.8" width="0.5" height="0.5"/><rect x="16.1" y="15.1" width="0.5" height="0.5"/></g>
+  <g class="pf3" fill="#D7D7DC" opacity="0"><rect x="15.7" y="11" width="0.5" height="0.5"/><rect x="19.6" y="10.7" width="0.5" height="0.5"/><rect x="15.4" y="14.9" width="0.5" height="0.5"/><rect x="20.1" y="15.2" width="0.5" height="0.5"/></g>
+</svg>
