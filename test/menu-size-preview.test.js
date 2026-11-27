@@ -139,16 +139,20 @@ describe("menu resizeWindow preview mode", () => {
     assert.strictEqual(harness.flushCalls, 1);
   });
 
-  it("cancels roaming before window bounds are written in preview and commit modes", () => {
+  it("cancels roaming and falling before window bounds are written in preview and commit modes", () => {
     const harness = buildCtx();
     const calls = [];
-    harness.ctx.cancelRoam = () => calls.push("cancel");
+    harness.ctx.cancelRoam = () => calls.push("cancelRoam");
+    harness.ctx.cancelGravityFall = () => calls.push("cancelGravityFall");
     harness.ctx.applyPetWindowBounds = () => calls.push("bounds");
 
     harness.menu.resizeWindow("P:12", { mode: "preview" });
     harness.menu.resizeWindow("P:12");
 
-    assert.deepStrictEqual(calls, ["cancel", "bounds", "cancel", "bounds"]);
+    assert.deepStrictEqual(calls, [
+      "cancelRoam", "cancelGravityFall", "bounds",
+      "cancelRoam", "cancelGravityFall", "bounds",
+    ]);
   });
 
   it("resets the frozen size before flushing even when the committed key is unchanged", () => {

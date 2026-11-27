@@ -699,8 +699,9 @@ module.exports = function initMenu(ctx) {
 
   function resizeWindow(sizeKey, options = {}) {
     // Some size commits have no preview protection (for example the displayed
-    // percentage reset), so stop any walk before it can restore its old size.
+    // percentage reset), so stop any walk or fall before it restores the old size.
     if (typeof ctx.cancelRoam === "function") ctx.cancelRoam();
+    if (typeof ctx.cancelGravityFall === "function") ctx.cancelGravityFall();
     const mode = options.mode || (options.persist === false ? "preview" : "commit");
     const persist = mode !== "preview";
     // Setter routes through controller.applyUpdate("size", ...) — subscriber

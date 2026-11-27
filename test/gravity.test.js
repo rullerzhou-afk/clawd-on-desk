@@ -103,6 +103,21 @@ test("uses the work area of the display where it was dropped and the user's edge
   assert.ok(!("allowEdgePinning" in ctx.clampOptions), "the floor follows the edge pinning setting");
 });
 
+test("edge pinning can land below the work area bottom", async () => {
+  const workAreaBottom = WORK_AREA.y + WORK_AREA.height;
+  const physicalFloorY = workAreaBottom + 30;
+  const ctx = makeCtx(workAreaBottom - 30);
+  ctx.clampToScreenVisual = (x, y) => ({ x, y: Math.min(y, physicalFloorY) });
+  const gravity = makeGravity(ctx);
+
+  const landed = await new Promise((resolve) => {
+    assert.strictEqual(gravity.startFall(resolve), true);
+  });
+
+  assert.strictEqual(landed, true);
+  assert.strictEqual(lastY(ctx), physicalFloorY);
+});
+
 test("already on the floor: does not fall", () => {
   const ctx = makeCtx(FLOOR_Y - 1);
   const gravity = makeGravity(ctx);
@@ -124,6 +139,26 @@ test("caught mid-air: stops where it is and reports no landing", async () => {
   assert.ok(lastY(ctx) < FLOOR_Y, "stayed in the air");
   await wait(60);
   assert.strictEqual(ctx.applied.length, moves, "does not move after being caught");
+});
+
+test("size preview stops a fall before it can write the frozen size again", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ctx = makeCtx(100);
+  let previewActive = false;
+  ctx.isSizePreviewActive = () => previewActive;
+  const gravity = initGravity(ctx, { enabled: true, now: Date.now });
+  const ends = [];
+  assert.strictEqual(gravity.startFall((landed, info) => ends.push([landed, info])), true);
+  t.mock.timers.tick(16);
+  assert.strictEqual(ctx.applied.length, 1);
+
+  previewActive = true;
+  t.mock.timers.tick(16);
+  assert.deepStrictEqual(ends, [[false, null]]);
+  assert.strictEqual(gravity.isFalling(), false);
+  assert.strictEqual(ctx.applied.length, 1);
+  t.mock.timers.tick(64);
+  assert.strictEqual(ctx.applied.length, 1);
 });
 
 test("mini mode: does not fall", () => {

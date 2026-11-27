@@ -110,7 +110,8 @@ function registerPetInteractionIpc(options = {}) {
     dragReactionEndHeld = false;
     sendToRenderer("end-drag-reaction");
   }
-  // Falls started outside a drag (floor reset from the menu) end here too.
+  // Send to Display, Bring to Primary, enabling gravity, and resuming after
+  // a click also use this handler.
   setGravityFallEndHandler(finishGravityFall);
 
   function on(channel, listener) {

@@ -78,7 +78,9 @@ module.exports = function initGravity(ctx, options = {}) {
     const cy = bounds.y + height / 2;
     const wa = ctx.getNearestWorkArea(cx, cy);
     if (!wa) return null;
-    const lowest = ctx.clampToScreenVisual(bounds.x, wa.y + wa.height, width, height, { workArea: wa });
+    // Edge pinning can put the floor below the work area bottom.
+    const probeY = wa.y + wa.height * 2 + height;
+    const lowest = ctx.clampToScreenVisual(bounds.x, probeY, width, height, { workArea: wa });
     if (!lowest || !Number.isFinite(lowest.y)) return null;
     return { width, height, floorY: Math.round(lowest.y) };
   }
@@ -138,8 +140,11 @@ module.exports = function initGravity(ctx, options = {}) {
     function step() {
       fallTimer = null;
       if (!falling) return;
-      // Caught mid-air (the new drag owns the window), mini mode or shutdown.
-      if (!isWindowAlive() || ctx.dragLocked || isMiniBusy()) {
+      // A new drag or size preview takes over the window.
+      if (
+        !isWindowAlive() || ctx.dragLocked || isMiniBusy()
+        || (typeof ctx.isSizePreviewActive === "function" && ctx.isSizePreviewActive())
+      ) {
         finish(false);
         return;
       }
@@ -164,7 +169,7 @@ module.exports = function initGravity(ctx, options = {}) {
       fallTimer = setTimeout(step, FRAME_MS);
     }
 
-    // Deferred first frame: drag-end may still hold the drag lock until its finally block.
+    // The first step uses the regular frame interval too.
     fallTimer = setTimeout(step, FRAME_MS);
     return true;
   }
