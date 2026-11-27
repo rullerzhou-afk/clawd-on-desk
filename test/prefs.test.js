@@ -111,6 +111,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.idleActivities, false);
     assert.strictEqual(d.idleActivityFrequency, "medium");
     assert.strictEqual(d.sessionHudEnabled, true);
+    assert.strictEqual(d.sessionStatusBadgeEnabled, false);
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, false);
     assert.strictEqual(d.sessionHudShowContextUsage, true);
@@ -334,6 +335,7 @@ describe("prefs.validate", () => {
       x: NaN,                // not finite
       bubbleFollowPet: true, // ok
       sessionHudEnabled: "yes",
+      sessionStatusBadgeEnabled: "yes",
       sessionHudShowStateLabels: "yes",
       sessionHudShowElapsed: "yes",
       sessionHudShowContextUsage: "yes",
@@ -365,6 +367,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.x, 0);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.sessionHudEnabled, true);
+    assert.strictEqual(v.sessionStatusBadgeEnabled, false);
     assert.strictEqual(v.sessionHudShowStateLabels, true);
     assert.strictEqual(v.sessionHudShowElapsed, false);
     assert.strictEqual(v.sessionHudShowContextUsage, true);
@@ -513,6 +516,7 @@ describe("prefs.validate", () => {
       lowPowerIdleMode: true,
       bubbleFollowPet: true,
       sessionHudEnabled: false,
+      sessionStatusBadgeEnabled: true,
       sessionHudShowStateLabels: false,
       sessionHudShowElapsed: false,
       sessionHudShowContextUsage: false,
@@ -543,6 +547,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.lowPowerIdleMode, true);
     assert.strictEqual(v.bubbleFollowPet, true);
     assert.strictEqual(v.sessionHudEnabled, false);
+    assert.strictEqual(v.sessionStatusBadgeEnabled, true);
     assert.strictEqual(v.sessionHudShowStateLabels, false);
     assert.strictEqual(v.sessionHudShowElapsed, false);
     assert.strictEqual(v.sessionHudShowContextUsage, false);

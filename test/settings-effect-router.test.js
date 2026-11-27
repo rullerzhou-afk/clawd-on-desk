@@ -307,6 +307,14 @@ describe("settings-effect-router", () => {
     ]);
 
     calls.length = 0;
+    emit({ sessionStatusBadgeEnabled: true });
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { sessionStatusBadgeEnabled: true }],
+      ["syncSessionHudVisibility"],
+      ["repositionFloatingBubbles"],
+    ]);
+
+    calls.length = 0;
     emit({ sessionHudShowContextUsage: false });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { sessionHudShowContextUsage: false }],

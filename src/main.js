@@ -1440,6 +1440,7 @@ let bubbleFollowPet = _settingsController.get("bubbleFollowPet");
 let bubbleFollowPreference = _settingsController.get("bubbleFollowPreference");
 let bubbleFixedCorner = _settingsController.get("bubbleFixedCorner");
 let sessionHudEnabled = _settingsController.get("sessionHudEnabled");
+let sessionStatusBadgeEnabled = _settingsController.get("sessionStatusBadgeEnabled");
 let sessionHudShowStateLabels = _settingsController.get("sessionHudShowStateLabels");
 let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
@@ -2077,31 +2078,30 @@ let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
 let getQuotaRingWindow = () => null;
+let getSessionStatusBadgeWindow = () => null;
+let toggleSessionStatusBadgeCollapsed = () => ({ collapsed: false });
 
 function getVisibleSessionHudBounds() {
   try {
-    const hudWindow = getSessionHudWindow();
-    if (
-      !hudWindow
-      || (typeof hudWindow.isDestroyed === "function" && hudWindow.isDestroyed())
-      || (typeof hudWindow.isVisible === "function" && !hudWindow.isVisible())
-      || typeof hudWindow.getBounds !== "function"
-    ) {
-      return [];
-    }
-    const bounds = hudWindow.getBounds();
-    if (
-      !bounds
-      || !Number.isFinite(bounds.x)
-      || !Number.isFinite(bounds.y)
-      || !Number.isFinite(bounds.width)
-      || bounds.width <= 0
-      || !Number.isFinite(bounds.height)
-      || bounds.height <= 0
-    ) {
-      return [];
-    }
-    return [{ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }];
+    return [getSessionHudWindow(), getSessionStatusBadgeWindow()]
+      .filter((window) => window
+        && (typeof window.isDestroyed !== "function" || !window.isDestroyed())
+        && (typeof window.isVisible !== "function" || window.isVisible())
+        && typeof window.getBounds === "function")
+      .map((window) => window.getBounds())
+      .filter((bounds) => bounds
+        && Number.isFinite(bounds.x)
+        && Number.isFinite(bounds.y)
+        && Number.isFinite(bounds.width)
+        && bounds.width > 0
+        && Number.isFinite(bounds.height)
+        && bounds.height > 0)
+      .map((bounds) => ({
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      }));
   } catch {
     return [];
   }
@@ -3287,6 +3287,7 @@ const _sessionHud = require("./session-hud")({
   get win() { return win; },
   get petHidden() { return petWindowRuntime.isPetEffectivelyHidden(); },
   get sessionHudEnabled() { return sessionHudEnabled; },
+  get sessionStatusBadgeEnabled() { return sessionStatusBadgeEnabled; },
   get sessionHudShowStateLabels() { return sessionHudShowStateLabels; },
   get sessionHudShowElapsed() { return sessionHudShowElapsed; },
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
@@ -3319,6 +3320,8 @@ sendSessionHudI18n = _sessionHud.sendI18n;
 getSessionHudReservedOffset = _sessionHud.getHudReservedOffset;
 getSessionHudWindow = _sessionHud.getWindow;
 getQuotaRingWindow = _sessionHud.getQuotaRingWindow;
+getSessionStatusBadgeWindow = _sessionHud.getStatusBadgeWindow;
+toggleSessionStatusBadgeCollapsed = _sessionHud.toggleStatusBadgeCollapsed;
 
 agentRuntime = createAgentRuntimeMain({
   // Local rollout files survive a host reboot; their old unfinished turns do
@@ -5133,6 +5136,7 @@ const SETTINGS_MIRROR_SETTERS = {
   bubbleFollowPreference: (v) => { bubbleFollowPreference = v; },
   bubbleFixedCorner: (v) => { bubbleFixedCorner = v; },
   sessionHudEnabled: (v) => { sessionHudEnabled = v; },
+  sessionStatusBadgeEnabled: (v) => { sessionStatusBadgeEnabled = v; },
   sessionHudShowStateLabels: (v) => { sessionHudShowStateLabels = v; },
   sessionHudShowElapsed: (v) => { sessionHudShowElapsed = v; },
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
@@ -5668,6 +5672,11 @@ registerSessionIpc({
       console.warn("Clawd: failed to pin Session HUD:", result.message);
     }
   },
+  getSessionStatusBadgeWebContents: () => {
+    const badgeWindow = getSessionStatusBadgeWindow();
+    return badgeWindow && !badgeWindow.isDestroyed() ? badgeWindow.webContents : null;
+  },
+  toggleSessionStatusBadgeCollapsed: () => toggleSessionStatusBadgeCollapsed(),
   getLanWsServer: () => _lanWss,
 });
 

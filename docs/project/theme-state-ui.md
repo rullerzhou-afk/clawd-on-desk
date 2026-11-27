@@ -19,6 +19,16 @@ AppImage 的 FUSE wrapper 被提前终止时，Electron 仍可能在退出清理
 
 输入事件流：`hitWin renderer → IPC → main → renderWin renderer`
 
+桌宠右下角另有可选的常驻 Session 状态徽标，由默认关闭的
+`sessionStatusBadgeEnabled` 控制。它和点击桌宠后展开的旧 Session HUD 列表是两个独立窗口：
+
+- 徽标始终显示当前 HUD 可见会话的 `working / done / 需要输入` 数量，不显示 idle、标题或机器名
+- 默认展开三项；点击徽标折叠为只显示 `working` 数，再次点击恢复三项
+- 点击桌宠仍按旧行为展开/收起会话列表，徽标不替代列表
+- 徽标锚定在主题稳定轮廓的右下角；右侧空间不足时翻到左下并钳制在工作区内
+- petHidden、Mini、全屏隐藏或该独立开关关闭时隐藏；旧 Session HUD master 不影响它
+- 权限/更新气泡与 Orbit 都避让徽标的真实窗口；展开列表的 auto-hide hot zone 也包含徽标
+
 Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除该扩展样式，全屏时重新设置以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable；首次显示前安装的 `WM_MOUSEACTIVATE` hook 通过一次性 `Chrome.IgnoreMouseActivate` 属性让 Chromium 对该消息返回 `MA_NOACTIVATE`（不因这条消息激活窗口，也不丢弃鼠标输入），避免 `MA_NOACTIVATEANDEAT` 吞掉点击。该消息的返回值不保证普通桌面点击始终保持 OS 前台归属，相关限制见 Known Limits。输入窗口仍和渲染窗口分离，并永久接收 mouse events。
 
 桌宠本体的置顶由主开关 `petAlwaysOnTop`（默认开；Settings → 桌宠 →「窗口置顶」，#1275）统一治理。Windows / Linux 切换立即生效；macOS 取启动值，运行中修改后设置行显示「尚未生效」与重启按钮，切回启动值则消失。Mac 窗口进入 SkyLight 私有 Space 后无法在运行中退回全部普通 Space，因此关闭状态必须从启动时就不委托到私有 Space：render + hit 保持普通层级和全部 Space 可见性，cross-space 写入使用 `skipTransformProcessType` 避免调出 Dock 图标；#640 IME 重叠避让停用，防止 restore 重新委托。Mac 关闭状态遇到前台原生全屏时，1 秒轮询隐藏桌宠、HUD、额度环和更新气泡，审批气泡照常显示。关闭状态的桌宠隐藏使用渲染窗口透明度 0、输入窗口鼠标穿透，恢复时只还原透明度；实测调用 `hide()` 会让退出全屏后的窗口只留在一个 Space，无法继续跟随全部桌面。Windows 的 `reassertWinTopmost` / topmost guard / 拖拽 nudge / HWND 恢复 / watchdog 在关闭状态幂等降级（先 render 后 hit，`isAlwaysOnTop()` 去重），菜单关闭也不重新置顶。Windows 关闭状态下按下桌宠和菜单关闭时，按渲染、输入顺序将两个窗口一起提到普通层最前，避免输入窗口单独盖在别的窗口上。Linux 无维护循环，pref 变更时直接对两个窗口写 `setAlwaysOnTop`。浮层保留各自的 topmost 行为；显式全屏自动隐藏独立控制浮层可见性。
@@ -196,7 +206,7 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - `bubbleFollowPet` 只选择跟随桌宠或固定在主屏，不影响 permission、notification、update 的显示 gate。
 - 跟随模式读取 `bubbleFollowPreference=auto|left|right`。`auto` 保持下方优先；左右值是安全偏好，空间不足时按候选顺序回退，绝不强制放到工作区外。
 - 固定模式读取 `bubbleFixedCorner=top-left|top-right|bottom-left|bottom-right`，锚定 primary display 的 `workArea`。主屏查询不可用时回退桌宠所在显示器，再失败才使用 synthetic work area。
-- permission stack 先定位并避让可见 Session HUD；update bubble 随后读取真实可见 permission/HUD 外窗矩形再定位；Orbit 最后读取更新后的几何。
+- permission stack 先定位并避让可见 Session HUD 与常驻状态徽标；update bubble 随后读取真实可见 permission/HUD/徽标外窗矩形再定位；Orbit 最后读取更新后的几何。
 - 跟随模式使用桌宠所在显示器的 text scale；固定模式使用主屏 text scale。窗口 bounds、CSS px → DIP 与 renderer zoom 必须基于同一个目标显示器。
 - 权限气泡默认是约 340 CSS px 的三行摘要卡；普通工具在摘要态保留原有 Allow/Deny、Always/suggestion 和会话授权快捷操作，长正文经「查看详情」进入约 500 CSS px 的详情卡。Plan 摘要同时保留「查看计划」和快速批准，反馈/回终端等次级操作在展开后出现；Ask 摘要只可「回答」。详情正文滚动，标题和全部决定区固定，不提供自由拖拽改尺寸。
 - 桌面同时最多一个权限详情卡，切换时其他气泡恢复摘要，但各自 BrowserWindow/DOM 不销毁，因此 Ask 选择、Other 文本、Plan 修改草稿、步骤和滚动位置保留；IME composition 未结束时拒绝切换详情。petHidden 只隐藏窗口，不清空详情 owner 或草稿。

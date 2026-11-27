@@ -4,6 +4,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const DASHBOARD_PAGE_URL = pathToFileURL(path.join(__dirname, "dashboard.html")).toString();
+const STATUS_BADGE_PAGE_URL = pathToFileURL(path.join(__dirname, "session-status-badge.html")).toString();
 
 function requiredDependency(value, name) {
   if (!value) throw new Error(`registerSessionIpc requires ${name}`);
@@ -20,6 +21,14 @@ function registerSessionIpc(options = {}) {
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const setSessionHudPinned = requiredDependency(options.setSessionHudPinned, "setSessionHudPinned");
   const ackSessionCompletion = requiredDependency(options.ackSessionCompletion, "ackSessionCompletion");
+  const getSessionStatusBadgeWebContents = requiredDependency(
+    options.getSessionStatusBadgeWebContents,
+    "getSessionStatusBadgeWebContents"
+  );
+  const toggleSessionStatusBadgeCollapsed = requiredDependency(
+    options.toggleSessionStatusBadgeCollapsed,
+    "toggleSessionStatusBadgeCollapsed"
+  );
   const openSessionFolder = requiredDependency(options.openSessionFolder, "openSessionFolder");
   const setSessionAutomationOverride = requiredDependency(
     options.setSessionAutomationOverride,
@@ -72,6 +81,17 @@ function registerSessionIpc(options = {}) {
     return isTrustedDashboardEvent(event)
       ? null
       : { status: "error", reason: "untrusted-dashboard-sender" };
+  }
+
+  function isTrustedStatusBadgeEvent(event) {
+    const contents = getSessionStatusBadgeWebContents();
+    if (!contents) return false;
+    if (typeof contents.isDestroyed === "function" && contents.isDestroyed()) return false;
+    const frame = event && event.senderFrame;
+    return event.sender === contents
+      && !!frame
+      && frame === contents.mainFrame
+      && frame.url === STATUS_BADGE_PAGE_URL;
   }
 
   handle("dashboard:get-snapshot", () => getSessionSnapshot());
@@ -223,6 +243,12 @@ function registerSessionIpc(options = {}) {
   );
   on("session-hud:open-dashboard", () => showDashboard({ source: "hud" }));
   on("session-hud:set-pinned", (_event, value) => setSessionHudPinned(!!value));
+  handle("session-status-badge:toggle-collapsed", (event) => {
+    if (!isTrustedStatusBadgeEvent(event)) {
+      return { status: "error", reason: "untrusted-status-badge-sender" };
+    }
+    return toggleSessionStatusBadgeCollapsed();
+  });
 
   on("settings:open-dashboard", () => showDashboard({ source: "settings" }));
   on("show-dashboard", () => showDashboard());

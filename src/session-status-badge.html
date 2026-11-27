@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';">
+<title>Session Status</title>
+<style>
+* { box-sizing: border-box; }
+
+:root {
+  --badge-bg: rgba(255, 255, 255, 0.93);
+  --badge-border: rgba(0, 0, 0, 0.14);
+  --text: #242427;
+  --text-muted: #6b6b70;
+  --shadow: rgba(0, 0, 0, 0.2);
+  --working: #16a34a;
+  --done: #2563eb;
+  --attention: #d97706;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --badge-bg: rgba(32, 32, 36, 0.95);
+    --badge-border: rgba(255, 255, 255, 0.15);
+    --text: #f4f4f5;
+    --text-muted: #a1a1aa;
+    --shadow: rgba(0, 0, 0, 0.48);
+    --done: #60a5fa;
+  }
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+body { padding: 3px 4px 8px; }
+
+.badge-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.status-badge {
+  height: 26px;
+  min-width: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 1px solid var(--badge-border);
+  border-radius: 999px;
+  background: var(--badge-bg);
+  box-shadow:
+    0 7px 16px -10px var(--shadow),
+    0 2px 4px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  transition: border-color 100ms ease, transform 100ms ease;
+}
+
+.status-badge:hover {
+  border-color: color-mix(in srgb, var(--text-muted) 42%, transparent);
+  transform: translateY(-1px);
+}
+
+.status-badge:active { transform: translateY(0); }
+
+.metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-muted);
+}
+
+.metric-symbol {
+  width: 9px;
+  display: inline-flex;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.metric-working { color: var(--working); }
+.metric-working .metric-symbol::before { content: "\25CF"; animation: working-pulse 1.6s ease-in-out infinite; }
+.metric-done { color: var(--done); }
+.metric-done .metric-symbol::before { content: "\2713"; }
+.metric-attention { color: var(--attention); }
+.metric-attention .metric-symbol::before { content: "!"; }
+
+.status-badge.is-collapsed .metric:not(.metric-working) {
+  display: none;
+}
+
+@keyframes working-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.58; transform: scale(0.78); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metric-working .metric-symbol::before { animation: none; }
+  .status-badge { transition: none; }
+}
+</style>
+</head>
+<body>
+  <div id="badgeShell" class="badge-shell" aria-live="polite"></div>
+  <script src="./session-status-summary.js"></script>
+  <script src="./session-status-badge-renderer.js"></script>
+</body>
+</html>

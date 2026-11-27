@@ -196,6 +196,9 @@ const SCHEMA = {
     enum: ["top-left", "top-right", "bottom-left", "bottom-right"],
   },
   sessionHudEnabled: { type: "boolean", default: true },
+  // Independent opt-in floating overlay. Keep this separate from the
+  // click-revealed Session HUD so either surface can be used alone.
+  sessionStatusBadgeEnabled: { type: "boolean", default: false },
   sessionHudShowStateLabels: { type: "boolean", default: true },
   sessionHudShowElapsed: { type: "boolean", default: false },
   sessionHudShowContextUsage: { type: "boolean", default: true },

@@ -62,6 +62,13 @@ function createHarness(overrides = {}) {
     mainFrame: dashboardMainFrame,
     isDestroyed: () => false,
   };
+  const statusBadgeMainFrame = {
+    url: pathToFileURL(path.join(__dirname, "..", "src", "session-status-badge.html")).toString(),
+  };
+  const statusBadgeWebContents = {
+    mainFrame: statusBadgeMainFrame,
+    isDestroyed: () => false,
+  };
   // A supported-platform quick mode by default, so the shared channel set
   // reflects a darwin/win32 install.
   const quickMode = {
@@ -95,6 +102,12 @@ function createHarness(overrides = {}) {
     }),
     setSessionHudPinned: overrides.setSessionHudPinned || ((value) => {
       calls.push(["setSessionHudPinned", value]);
+    }),
+    getSessionStatusBadgeWebContents: overrides.getSessionStatusBadgeWebContents
+      || (() => statusBadgeWebContents),
+    toggleSessionStatusBadgeCollapsed: overrides.toggleSessionStatusBadgeCollapsed || (() => {
+      calls.push(["toggleSessionStatusBadgeCollapsed"]);
+      return { collapsed: true };
     }),
     ackSessionCompletion: overrides.ackSessionCompletion || ((sessionId) => {
       calls.push(["ackSessionCompletion", sessionId]);
@@ -146,6 +159,10 @@ function createHarness(overrides = {}) {
       sender: dashboardWebContents,
       senderFrame: dashboardMainFrame,
     },
+    trustedStatusBadgeEvent: {
+      sender: statusBadgeWebContents,
+      senderFrame: statusBadgeMainFrame,
+    },
   };
 }
 
@@ -171,6 +188,7 @@ test("session IPC registers owned channels and disposes them", () => {
     "dashboard:set-session-automation",
     "session-hud:get-i18n",
     "session-hud:open-session-folder",
+    "session-status-badge:toggle-collapsed",
     "session:ack-completion",
   ]);
   assert.deepStrictEqual([...ipcMain.listeners.keys()].sort(), [
@@ -301,6 +319,31 @@ test("session IPC delegates dashboard and HUD behavior", async () => {
     ["openSessionFolder", "folder-session"],
     ["openSessionFolder", "hud-folder-session"],
   ]);
+});
+
+test("status badge collapse IPC accepts only the real badge main frame", async () => {
+  const { ipcMain, calls, trustedStatusBadgeEvent } = createHarness();
+  assert.deepStrictEqual(
+    await ipcMain.invokeFrom(
+      trustedStatusBadgeEvent,
+      "session-status-badge:toggle-collapsed"
+    ),
+    { collapsed: true }
+  );
+  for (const event of [
+    { sender: {}, senderFrame: trustedStatusBadgeEvent.senderFrame },
+    { sender: trustedStatusBadgeEvent.sender },
+    {
+      sender: trustedStatusBadgeEvent.sender,
+      senderFrame: { ...trustedStatusBadgeEvent.senderFrame },
+    },
+  ]) {
+    assert.deepStrictEqual(
+      await ipcMain.invokeFrom(event, "session-status-badge:toggle-collapsed"),
+      { status: "error", reason: "untrusted-status-badge-sender" }
+    );
+  }
+  assert.deepStrictEqual(calls, [["toggleSessionStatusBadgeCollapsed"]]);
 });
 
 test("dashboard and HUD open-folder IPC accept only a sessionId string", async () => {

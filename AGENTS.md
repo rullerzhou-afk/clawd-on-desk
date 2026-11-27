@@ -131,7 +131,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/dashboard.js` + `src/dashboard-renderer.js` | Sessions Dashboard 唯一 owner：会话列表、别名编辑、终端跳转、几何持久化，以及同一页面的临时键盘模式 |
 | `src/dashboard-host.js` | Dashboard 普通宿主的平台封装：darwin/win32 用 `BaseWindow + WebContentsView`（无 `ready-to-show`），Linux 保留 `BrowserWindow` |
 | `src/dashboard-quick-mode.js` | 完整 Dashboard 的 1–9 键盘模式（**macOS/Windows only**）：quick 宿主、opacity/input parking、轮次栅栏与冻结数字映射；Windows 显式取消与页面失效的来源恢复在 `src/quick-select-origin-focus.js`，quick 宿主的退出清理挂在 `before-quit` |
-| `src/session-hud.js` + `src/session-hud-renderer.js` | 桌宠旁轻量会话 HUD、折叠行、点击跳转 |
+| `src/session-hud.js` + `src/session-hud-renderer.js` | 点击桌宠后展开的旧会话列表、折叠行、点击跳转 |
+| `src/session-status-summary.js` + `src/session-status-badge-geometry.js` + `src/session-status-badge-renderer.js` | 常驻桌宠右下角的 working / done / 需要输入统计徽标及折叠交互 |
 | `src/session-alias.js` | session alias key 规范化、TTL pruning、Kiro cwd scope |
 | `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner；`waitForThemeReloadSettled` 完成信号 |
 | `src/official-theme-catalog.js` / `-download.js` / `-installer.js` / `-main.js` | 官方可下载主题：严格 catalog/cache、Electron `net.request` 流式下载、受限流式 ZIP 解压与 marker-before-rename、main owner/IPC/共享 `theme` lock |
@@ -277,6 +278,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 隐藏桌宠（petHidden）≠ 免打扰：隐藏只收起宠物/HUD/update bubble/当时 pending 的权限气泡，**隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修**；要静默权限气泡走 DND（见上条）。详见 `docs/project/theme-state-ui.md` State Machine 节
 - 会议模式（#1382，`src/meeting-mode.js`）不是新的隐藏层：它按时长（30/60/120 分钟）同时打开手动 petHidden 和 DND，记住进入前两者的状态，结束时只撤销自己打开的那一半。用户手动显示桌宠（快捷键 / 菜单 / Dock 点击 / 再次启动 / 移到主显示器）或唤醒会先结束会议模式；会议中退出迷你模式保留 DND，到点恢复不清全屏自动隐藏；计时器睡眠期间可能不走，`powerMonitor` resume / unlock-screen 时重查结束时间；不持久化。不要改用 `setContentProtection`：macOS 15 起 ScreenCaptureKit 截屏忽略它（electron/electron#48258）
 - Session HUD 默认显示所有非 headless、非 sleeping 的 live session，包括 badge=Done 的 idle session；不要按 `state !== "idle"` 过滤。两个独立、默认关闭的显示偏好为 `sessionHudHideCompletedCodexEphemeral` 与 `sessionHudHideActiveCodexEphemeral`：用 snapshot 字段 `hudHiddenByPreference` 分别收起明确的本机 Codex 临时完成行，或 thinking/working 行，均可能包含普通侧边聊天。活动偏好还通过只读投影排除该活动对宠物状态/SVG 的驱动；保留已识别子代理、pending 权限/原生问题、错误和完成确认提示。完成偏好不屏蔽完成动画；仅开活动偏好时，完成行会重新显示。两者都不是后台来源识别，不删除 canonical 会话、不结束任务、不改变 Dashboard、系统 keep-awake、审批或小结；见运行时架构。
+- 常驻状态徽标与点击桌宠展开的旧 HUD 是两个独立窗口，由独立、默认关闭的 `sessionStatusBadgeEnabled` 控制；`sessionHudEnabled=false` 不得连带关闭徽标。徽标只聚合 working / done / needs-input，不显示 idle 或任务标题；默认展开三项，点击后只保留 working 数。它不承担 Dashboard 跳转，点击桌宠仍打开旧列表。徽标启用后常驻桌宠右下角，petHidden、Mini、全屏隐藏等既有浮层 gate 仍适用；权限/更新气泡和额度环必须避让它的真实窗口。
 - update bubble 跟随桌宠时要同时避让 Session HUD 和 permission stack；permission bubble 增删、测高、deny-and-focus 后都要触发 update bubble 重排
 - `mini-working` 是可选主题能力，缺失时必须优雅降级
 - `contextMenuOwner` 必须保留 `parent: win`；配合 `closable:false` 才不会把退出流程卡死

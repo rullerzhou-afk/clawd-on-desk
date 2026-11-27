@@ -41,6 +41,7 @@ const FROZEN_KEYS = [
   "showTray",
   "showDock",
   "sessionHudEnabled",
+  "sessionStatusBadgeEnabled",
   "sessionHudShowStateLabels",
   "sessionHudShowElapsed",
   "sessionHudShowContextUsage",
@@ -128,6 +129,7 @@ const EXPECTED_KEYS = {
   ],
   sessions: [
     "sessionHudEnabled",
+    "sessionStatusBadgeEnabled",
     "sessionHudShowStateLabels",
     "sessionHudShowElapsed",
     "sessionHudShowContextUsage",
@@ -466,6 +468,7 @@ function makeSnapshot(overrides = {}) {
     bubbleFollowPreference: "auto",
     bubbleFixedCorner: "bottom-right",
     sessionHudEnabled: true,
+    sessionStatusBadgeEnabled: false,
     sessionHudShowStateLabels: true,
     sessionHudShowElapsed: true,
     sessionHudShowContextUsage: true,
@@ -783,7 +786,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(sessions), ["会话 HUD", "额度环与提醒", "高级"]);
     assert.deepStrictEqual(sectionRowLabels(sessions), [
       ["会话面板"],
-      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话", "收起已完成的 Codex 临时会话", "收起活动中的 Codex 临时会话"],
+      ["启用", "显示常驻状态计数", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话", "收起已完成的 Codex 临时会话", "收起活动中的 Codex 临时会话"],
       ["显示额度环", "额度显示方式", "在桌宠旁显示", "合并多机额度", "额度快用完时提醒", "提醒时机", "额度恢复时也提醒", "测试通知"],
       ["超时清理", "会话超时（空闲）", "工作超时", "Codex 活跃任务超时", "终端关闭后清理延迟"],
     ]);
@@ -1055,7 +1058,11 @@ describe("settings tab split", () => {
   it("keeps the flattened linkage rules alive", async () => {
     const sessions = createHarness({
       tab: "sessions",
-      snapshot: makeSnapshot({ sessionHudEnabled: false, quotaAlertsEnabled: false }),
+      snapshot: makeSnapshot({
+        sessionHudEnabled: false,
+        sessionStatusBadgeEnabled: true,
+        quotaAlertsEnabled: false,
+      }),
       settingsAPI: { getQuotaSourceCount: () => Promise.resolve(2) },
     });
     await sessions.settle();
@@ -1069,6 +1076,11 @@ describe("settings tab split", () => {
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), true, key);
     }
+    assert.strictEqual(
+      sessions.getSwitch("sessionStatusBadgeEnabled").classList.contains("disabled"),
+      false,
+      "the independent status badge remains configurable when the legacy HUD is off"
+    );
     const thresholdsRow = sessions.core.state.mountedControls.quotaAlertThresholds.row;
     const recoveryRow = sessions.getSwitch("quotaRecoveryAlertsEnabled").parentNode.parentNode;
     const testRow = sessions.content.querySelector(".quota-notification-test-row");

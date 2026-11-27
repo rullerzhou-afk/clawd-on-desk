@@ -17,6 +17,7 @@ const {
   pointInExpandedRect,
   computeAutoHideHotZone,
   pointInHotZone,
+  evaluateStatusBadgeEligible,
   constants,
   layoutHasTaggedFallback,
 } = sessionHud.__test;
@@ -682,6 +683,25 @@ describe("session HUD auto-hide helpers", () => {
     assert.strictEqual(pointInHotZone({ x: 40, y: 90 }, zone), true); // gap covered by pad expansion
     assert.strictEqual(pointInHotZone({ x: 500, y: 500 }, zone), false);
   });
+
+  it("keeps persistent badge eligibility independent from the legacy HUD", () => {
+    const snapshot = { sessions: [mkSession("visible", { badge: "running" })] };
+    const base = {
+      snapshot,
+      enabled: true,
+      petHidden: false,
+      miniMode: false,
+      miniTransitioning: false,
+    };
+    assert.strictEqual(evaluateStatusBadgeEligible(base), true);
+    assert.strictEqual(evaluateStatusBadgeEligible({ ...base, enabled: false }), false);
+    assert.strictEqual(evaluateStatusBadgeEligible({ ...base, petHidden: true }), false);
+    assert.strictEqual(evaluateStatusBadgeEligible({ ...base, miniMode: true }), false);
+    assert.strictEqual(
+      evaluateStatusBadgeEligible({ ...base, snapshot: { sessions: [] } }),
+      false
+    );
+  });
 });
 
 describe("session HUD v5 three-state runtime contracts (source-level)", () => {
@@ -786,7 +806,7 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
     );
   });
 
-  it("destroys hidden HUD and quota-ring windows independently in low power idle mode", () => {
+  it("destroys hidden HUD, quota-ring, and badge windows independently in low power idle mode", () => {
     assert.ok(
       /const\s+HIDDEN_WINDOW_DESTROY_MS\s*=\s*30000/.test(src),
       "session-hud should define a hidden-window destroy delay"
@@ -796,8 +816,8 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
       "hidden-window destroy must be gated behind low power idle mode"
     );
     assert.ok(
-      /const hiddenDestroyTimers = \{ hud: null, ring: null \}/.test(src),
-      "HUD and ring must not cancel each other's hidden cleanup"
+      /const hiddenDestroyTimers = \{ hud: null, ring: null, badge: null \}/.test(src),
+      "HUD, ring, and status badge must not cancel each other's hidden cleanup"
     );
     assert.ok(
       /function scheduleHiddenDestroy\(kind\)\s*\{[\s\S]*?current\.destroy\(\)/.test(src),
@@ -810,6 +830,10 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
     assert.ok(
       /function hideQuotaRing\(\)\s*\{[\s\S]*?scheduleHiddenDestroy\("ring"\)/.test(src),
       "hiding a ring-only UI should schedule its own renderer cleanup"
+    );
+    assert.ok(
+      /function hideStatusBadge\(\)\s*\{[\s\S]*?scheduleHiddenDestroy\("badge"\)/.test(src),
+      "hiding the persistent badge should schedule its own renderer cleanup"
     );
     assert.ok(
       /function showSessionHud\(win\)\s*\{[\s\S]*?cancelHiddenDestroy\("hud"\)/.test(src),
