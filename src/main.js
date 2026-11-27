@@ -5959,17 +5959,14 @@ function createWindow() {
   // display-removed/added immediate: those rescue the pet off a vanished
   // display and must not be delayed.)
   let displayMetricsGeometryTimer = null;
-  let resumeGravityAfterMetricsChange = false;
   const reapplyDisplayGeometryAfterMetricsChange = () => {
     if (displayMetricsGeometryTimer) clearTimeout(displayMetricsGeometryTimer);
     displayMetricsGeometryTimer = setTimeout(() => {
       displayMetricsGeometryTimer = null;
+      _gravity.suspend();
       petWindowRuntime.handleDisplayMetricsChanged();
       settingsWindowRuntime.notifySizeContextChanged();
-      if (resumeGravityAfterMetricsChange) {
-        _gravity.startFall();
-        resumeGravityAfterMetricsChange = false;
-      }
+      _gravity.resumeSuspended();
     }, 400);
   };
   // PR #751 second-review C-6 (Codex non-blocking): §4.3.14's
@@ -5985,13 +5982,12 @@ function createWindow() {
   // Electron doesn't cheaply say WHICH display changed from this event
   // alone.
   screen.on("display-metrics-changed", () => {
-    // Keep the pending fall across the whole burst of metrics changes.
-    if (_gravity.isFalling()) resumeGravityAfterMetricsChange = true;
-    _gravity.cancel();
     petWindowRuntime.clearObservedClampInsets();
     petWindowRuntime.invalidateDisplaysCache();
     reapplyDisplayGeometryAfterMetricsChange();
   });
+  // Pause gravity while the display geometry settles.
+  screen.on("display-metrics-changed", () => _gravity.suspend());
   // PR #751 second-review C-4 (Codex B4): display-removed/added now also
   // clear the inset table (handleDisplayRemoved()/handleDisplayAdded()
   // themselves do this now, as their own first lines alongside their
@@ -5999,18 +5995,16 @@ function createWindow() {
   // metrics-changed did, leaving a stale inset alive across a monitor
   // unplug/replug or a genuine topology addition.
   screen.on("display-removed", () => {
-    const wasFalling = _gravity.isFalling();
-    _gravity.cancel();
+    _gravity.suspend();
     petWindowRuntime.handleDisplayRemoved();
     settingsWindowRuntime.notifySizeContextChanged();
-    if (wasFalling) _gravity.startFall();
+    _gravity.resumeSuspended();
   });
   screen.on("display-added", () => {
-    const wasFalling = _gravity.isFalling();
-    _gravity.cancel();
+    _gravity.suspend();
     petWindowRuntime.handleDisplayAdded();
     settingsWindowRuntime.notifySizeContextChanged();
-    if (wasFalling) _gravity.startFall();
+    _gravity.resumeSuspended();
   });
 
   // textScale is per-display: when the topology changes, window→display

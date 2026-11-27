@@ -46,10 +46,11 @@ module.exports = function initGravity(ctx, options = {}) {
   // Starts from the `gravity` pref; main.js passes later changes to setEnabled.
   let enabled = options.enabled === true;
   let falling = false;
+  let suspended = false;
   let fallTimer = null;
   let onFallEnd = null;
   let defaultFallEnd = null;
-  // The current press (drag-lock) caught the pet while it was falling.
+  // The current press (drag-lock) caught the pet during an active or suspended fall.
   let caughtMidAir = false;
 
   function isWindowAlive() {
@@ -78,7 +79,8 @@ module.exports = function initGravity(ctx, options = {}) {
     const cy = bounds.y + height / 2;
     const wa = ctx.getNearestWorkArea(cx, cy);
     if (!wa) return null;
-    // Edge pinning can put the floor below the work area bottom.
+    // Probe well below the display so the rest clamp returns the lowest
+    // resting spot, which edge pinning can put below the work area bottom.
     const probeY = wa.y + wa.height * 2 + height;
     const lowest = ctx.clampToScreenVisual(bounds.x, probeY, width, height, { workArea: wa });
     if (!lowest || !Number.isFinite(lowest.y)) return null;
@@ -104,6 +106,7 @@ module.exports = function initGravity(ctx, options = {}) {
   // setFallEndHandler one); landed is false (landing null) when the pet was
   // caught mid-air or the fall was interrupted, otherwise landing = { intensity }.
   function startFall(onEnd) {
+    suspended = false;
     if (!enabled || !isWindowAlive() || isMiniBusy()) return false;
     // A new placement (Send to Display, Bring to Primary, a drag-end) takes
     // over a running fall: the old one ends here, so its next frame cannot
@@ -177,7 +180,8 @@ module.exports = function initGravity(ctx, options = {}) {
   // A new drag catches a falling pet at once, so the held end of the old drag
   // reaction goes out before the new drag starts its own.
   function beginDrag() {
-    caughtMidAir = falling;
+    caughtMidAir = falling || suspended;
+    suspended = false;
     cancel();
   }
 
@@ -213,7 +217,20 @@ module.exports = function initGravity(ctx, options = {}) {
   }
 
   function cancel() {
+    suspended = false;
     finish(false);
+  }
+
+  function suspend() {
+    if (!falling) return;
+    finish(false);
+    suspended = true;
+  }
+
+  function resumeSuspended() {
+    if (!suspended) return false;
+    suspended = false;
+    return startFall();
   }
 
   function isFalling() {
@@ -226,6 +243,8 @@ module.exports = function initGravity(ctx, options = {}) {
     beginDrag,
     endPress,
     cancel,
+    suspend,
+    resumeSuspended,
     isFalling,
     setEnabled,
     isEnabled,

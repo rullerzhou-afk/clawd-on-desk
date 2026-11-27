@@ -32,27 +32,24 @@ for (const [event, handler] of [
   ["display-removed", "handleDisplayRemoved"],
   ["display-added", "handleDisplayAdded"],
 ]) {
-  it(`gravity: ${event} cancels before reflow and resumes only an active fall`, () => {
+  it(`gravity: ${event} suspends before reflow and resumes after size notification`, () => {
     const start = source.indexOf(`screen.on("${event}", () => {`);
     assert.ok(start >= 0, `missing ${event} listener`);
     const body = source.slice(start, source.indexOf("\n  });", start));
     assert.match(body, new RegExp(
-      String.raw`const wasFalling = _gravity\.isFalling\(\);\s*_gravity\.cancel\(\);\s*`
-      + String.raw`petWindowRuntime\.${handler}\(\);[\s\S]*if \(wasFalling\) _gravity\.startFall\(\);`,
+      String.raw`_gravity\.suspend\(\);\s*petWindowRuntime\.${handler}\(\);\s*`
+      + String.raw`settingsWindowRuntime\.notifySizeContextChanged\(\);\s*_gravity\.resumeSuspended\(\);`,
     ));
   });
 }
 
-it("gravity: display metrics cancel immediately and resume an active fall only after debounced reflow", () => {
-  const start = source.indexOf('screen.on("display-metrics-changed", () => {');
-  assert.ok(start >= 0, "missing display-metrics-changed listener");
-  const body = source.slice(start, source.indexOf("\n  });", start));
-  assert.match(body, /if \(_gravity\.isFalling\(\)\) resumeGravityAfterMetricsChange = true;\s*_gravity\.cancel\(\);/);
-  assert.match(body, /_gravity\.cancel\(\);[\s\S]*reapplyDisplayGeometryAfterMetricsChange\(\);/);
-  assert.doesNotMatch(body, /_gravity\.startFall\(/);
+it("gravity: a separate display metrics listener suspends the fall immediately", () => {
+  assert.ok(source.includes('screen.on("display-metrics-changed", () => _gravity.suspend());'));
+});
 
+it("gravity: debounced display metrics suspend before reflow and resume after size notification", () => {
   const debounce = source.match(/displayMetricsGeometryTimer = setTimeout\(\(\) => \{([\s\S]*?)\n    \}, 400\);/);
   assert.ok(debounce, "missing debounced display metrics handler");
-  assert.match(debounce[1], /petWindowRuntime\.handleDisplayMetricsChanged\(\);[\s\S]*if \(resumeGravityAfterMetricsChange\) \{/);
-  assert.match(debounce[1], /if \(resumeGravityAfterMetricsChange\) \{\s*_gravity\.startFall\(\);\s*resumeGravityAfterMetricsChange = false;/);
+  assert.match(debounce[1], /_gravity\.suspend\(\);\s*petWindowRuntime\.handleDisplayMetricsChanged\(\);/);
+  assert.match(debounce[1], /settingsWindowRuntime\.notifySizeContextChanged\(\);\s*_gravity\.resumeSuspended\(\);/);
 });

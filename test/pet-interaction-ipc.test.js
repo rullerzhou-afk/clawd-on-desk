@@ -335,7 +335,7 @@ for (const landed of [true, false]) {
   });
 }
 
-test("gravity: drag-end starts one fall with the registered end handler after normal cleanup", () => {
+test("gravity: drag-end starts one fall with the registered end handler after refreshing the idle visual", () => {
   let finishGravityFall;
   const harness = createHarness({
     refreshIdleVisualAfterDrag: () => harness.calls.push(["refreshIdleVisualAfterDrag"]),

@@ -110,8 +110,7 @@ function registerPetInteractionIpc(options = {}) {
     dragReactionEndHeld = false;
     sendToRenderer("end-drag-reaction");
   }
-  // Send to Display, Bring to Primary, enabling gravity, and resuming after
-  // a click also use this handler.
+  // All fall entry points share this end handler.
   setGravityFallEndHandler(finishGravityFall);
 
   function on(channel, listener) {
