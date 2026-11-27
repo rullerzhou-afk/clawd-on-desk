@@ -79,9 +79,11 @@ function registerPetInteractionIpc(options = {}) {
   // while a drag is in flight; drag-lock release must re-run the sync so the
   // state the drag ended in (overlapping or not) gets applied.
   const syncImeEditingPetDodge = options.syncImeEditingPetDodge || (() => {});
-  // Gravity: a drag released in mid-air falls to the floor.
+  // Gravity: a drag released in mid-air falls to the floor, or is thrown when
+  // released fast.
   const startGravityFall = options.startGravityFall || (() => false);
   const beginGravityDrag = options.beginGravityDrag || (() => {});
+  const recordGravityDragSample = options.recordGravityDragSample || (() => {});
   const endGravityPress = options.endGravityPress || (() => false);
   const isGravityFalling = options.isGravityFalling || (() => false);
   const setGravityFallEndHandler = options.setGravityFallEndHandler || (() => {});
@@ -119,7 +121,11 @@ function registerPetInteractionIpc(options = {}) {
   }
 
   on("show-context-menu", showContextMenu);
-  on("drag-move", () => moveWindowForDrag());
+  on("drag-move", () => {
+    moveWindowForDrag();
+    // Positions during the drag measure the throw on release.
+    recordGravityDragSample();
+  });
   on("pet-visual-ready", (event) => recoverVisiblePetAfterRendererLoad(event));
   on("pet-visual-settled", (event, payload) => settleVisual(event, payload));
 

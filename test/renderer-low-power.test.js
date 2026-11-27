@@ -6460,3 +6460,62 @@ describe("preload theme config transport", () => {
     }
   });
 });
+
+describe("renderer gravity spin", () => {
+  // The body box center sits 3/4 across and halfway up the visible height.
+  const layout = {
+    contentBox: { x: 0, y: 0, width: 128, height: 128 },
+    centerX: 32,
+    baselineY: 128,
+    visibleHeightRatio: 0.5,
+    centerXRatio: 0.5,
+    baselineBottomRatio: 0.125,
+  };
+  const motionStageOf = (harness) => harness.context.document.getElementById("pet-motion-stage");
+
+  it("spins #pet-motion-stage around the theme's body center and clears it when upright", () => {
+    const harness = createRendererHarness({ themeConfig: { layout } });
+    const stage = motionStageOf(harness);
+
+    harness.electronHandlers.onGravityRotation(120);
+    assert.strictEqual(stage.style.rotate, "120deg");
+    // unit = 0.5 / 128: x = 0.5 + (64 - 32) * unit, y = 1 - 0.125 - (128 - 64) * unit.
+    assert.strictEqual(stage.style.transformOrigin, "62.5% calc(62.5% - 0px)");
+
+    harness.electronHandlers.onViewportOffset(20);
+    harness.electronHandlers.onGravityRotation(-45);
+    assert.strictEqual(stage.style.rotate, "-45deg");
+    assert.strictEqual(stage.style.transformOrigin, "62.5% calc(62.5% - 20px)", "follows the viewport offset");
+
+    harness.electronHandlers.onGravityRotation(0);
+    assert.strictEqual(stage.style.rotate, "");
+    assert.strictEqual(stage.style.transformOrigin, "");
+  });
+
+  it("keeps the pet upright under reduced motion and Do Not Disturb", () => {
+    const reduced = createRendererHarness({ themeConfig: { layout } });
+    reduced.context.window.matchMedia = (query) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      addEventListener() {},
+    });
+    reduced.electronHandlers.onGravityRotation(90);
+    assert.strictEqual(motionStageOf(reduced).style.rotate, "");
+
+    const dnd = createRendererHarness({ themeConfig: { layout } });
+    dnd.electronHandlers.onDndChange(true);
+    dnd.electronHandlers.onGravityRotation(90);
+    assert.strictEqual(motionStageOf(dnd).style.rotate, "");
+  });
+
+  it("preload's onGravityRotation turns a non-finite angle into upright at the bridge", () => {
+    const loader = loadPreloadWithElectron();
+    try {
+      const received = [];
+      loader.electronAPI.onGravityRotation((degrees) => received.push(degrees));
+      for (const value of [NaN, Infinity, undefined, "90", 37.5]) loader.emitFromMain("gravity-rotation", value);
+      assert.deepStrictEqual(received, [0, 0, 0, 0, 37.5]);
+    } finally {
+      loader.restore();
+    }
+  });
+});

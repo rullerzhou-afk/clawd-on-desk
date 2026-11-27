@@ -263,3 +263,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## VS Code chat pet
+
+The throw in `src/gravity.js` (the release-velocity rules, `advanceThrow` and
+the wall pose) is adapted from the chat pet of Visual Studio Code:
+
+- https://github.com/microsoft/vscode/blob/968fb17/src/vs/workbench/contrib/chat/browser/widget/chatPetWidget.ts
+- License: MIT, Copyright (c) 2015 - present Microsoft Corporation; the full
+  text is reproduced at the end of `src/gravity.js`

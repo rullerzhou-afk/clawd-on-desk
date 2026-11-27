@@ -10,7 +10,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "ut
 it("gravity: starts from the gravity pref", () => {
   assert.match(
     source,
-    /require\("\.\/gravity"\)\(_roamCtx,\s*\{\s*enabled:\s*_settingsController\.get\("gravity"\) === true,\s*\}\)/,
+    /require\("\.\/gravity"\)\(_roamCtx,\s*\{\s*enabled:\s*_settingsController\.get\("gravity"\) === true,/,
   );
 });
 

@@ -75,6 +75,7 @@ function createHarness(overrides = {}) {
     syncImeEditingPetDodge: () => calls.push(["syncImeEditingPetDodge"]),
     startGravityFall: overrides.startGravityFall,
     beginGravityDrag: overrides.beginGravityDrag,
+    recordGravityDragSample: overrides.recordGravityDragSample,
     endGravityPress: overrides.endGravityPress,
     isGravityFalling: overrides.isGravityFalling,
     setGravityFallEndHandler: overrides.setGravityFallEndHandler,
@@ -307,6 +308,23 @@ test("gravity: the press catches a falling pet and its release lets a clicked pe
   // The release runs after the lock is down, so the new fall is not caught at once.
   const unlock = calls.findIndex((c) => c[0] === "setDragLocked" && c[1] === false);
   assert.ok(unlock >= 0 && names.indexOf("endGravityPress") > unlock);
+});
+
+test("gravity: every drag move records a throw sample after moving the window", () => {
+  const harness = createHarness({
+    recordGravityDragSample: () => harness.calls.push(["recordGravityDragSample"]),
+  });
+  const { ipcMain, calls } = harness;
+
+  ipcMain.send("drag-move");
+  ipcMain.send("drag-move");
+
+  assert.deepStrictEqual(calls.map((c) => c[0]), [
+    "moveWindowForDrag",
+    "recordGravityDragSample",
+    "moveWindowForDrag",
+    "recordGravityDragSample",
+  ]);
 });
 
 for (const landed of [true, false]) {
