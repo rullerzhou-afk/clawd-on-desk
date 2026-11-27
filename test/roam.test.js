@@ -1397,6 +1397,154 @@ describe("hidden pet: roam holds still", () => {
   });
 });
 
+describe("gravity fall: roam holds still", () => {
+  beforeEach(() => {
+    mock.method(Math, "random", () => 0.9);
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("gravity fall: does not start a walk while the pet falls and keeps the consumed 4s phase", () => {
+    let falling = false;
+    const ctx = makeCtx({ isGravityFalling: () => falling });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick(); // schedules the first 8s timer and consumes firstRoam
+
+    falling = true;
+    for (let elapsed = 0; elapsed < 9000; elapsed += 1000) {
+      roam.tick();
+      mock.timers.tick(1000);
+    }
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    falling = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("gravity fall: stops an active walk on the next frame, before it writes again", () => {
+    let falling = false;
+    let releases = 0;
+    const ctx = makeCtx({
+      isGravityFalling: () => falling,
+      releaseReconcileProtection: () => { releases++; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), true);
+    const writes = ctx._appliedBounds.length;
+
+    falling = true; // the menu can start a fall while the pet walks
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), false);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    assert.strictEqual(releases, 1);
+    mock.timers.tick(1000);
+    assert.strictEqual(ctx._appliedBounds.length, writes, "only the fall moves the pet now");
+
+    falling = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("gravity fall: a queued walk rechecks the fall when its timer fires", () => {
+    let falling = false;
+    const ctx = makeCtx({ isGravityFalling: () => falling });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    falling = true; // the fall starts after the walk was queued, with no tick in between
+    mock.timers.tick(8000);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+  });
+});
+
+describe("gravity on: roam walks along the floor", () => {
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  function walkOnce(roam) {
+    roam.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000 && roam.isRoamAnimating(); i++) {
+      mock.timers.tick(16);
+    }
+  }
+
+  it("gravity on: every walk goes sideways and keeps the pet's height", () => {
+    // With 0.99 the free picker walks diagonally and the axis-constrained one vertically.
+    mock.method(Math, "random", () => 0.99);
+    for (const constrainAxis of [false, true]) {
+      const ctx = makeCtx({ isGravityEnabled: () => true });
+      const roam = roamModule(ctx);
+      roam.setEnabled(true);
+      roam.setConstrainAxis(constrainAxis);
+      walkOnce(roam);
+      assert.ok(ctx._appliedBounds.length > 0, "walked");
+      assert.ok(ctx._appliedBounds.every((b) => b.y === 300), "kept its height");
+      assert.notStrictEqual(ctx._realBounds.x, 400, "moved sideways");
+      roam.setEnabled(false);
+    }
+  });
+
+  it("gravity on: a roam fence that leaves out the pet's height holds it in place", () => {
+    mock.method(Math, "random", () => 0.5);
+    const ctx = makeCtx({ isGravityEnabled: () => true });
+    // The pet stands on the floor; the fence covers only the area above it.
+    ctx._bounds.y = 960;
+    ctx._realBounds.y = 960;
+    ctx.roamFence = {
+      get: () => ({ active: true, left: 0, top: 0.1, right: 1, bottom: 0.8 }),
+      refresh: () => {},
+    };
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    walkOnce(roam);
+    assert.deepStrictEqual(ctx._appliedBounds, [], "reaching the fence would mean leaving the ground");
+    assert.deepStrictEqual(ctx._stateLog, []);
+  });
+
+  it("gravity off: walks exactly as without the gravity predicate", () => {
+    mock.method(Math, "random", () => 0.99);
+    const off = makeCtx({ isGravityEnabled: () => false });
+    const none = makeCtx();
+    const roamOff = roamModule(off);
+    const roamNone = roamModule(none);
+    roamOff.setEnabled(true);
+    roamNone.setEnabled(true);
+    roamOff.tick();
+    roamNone.tick();
+    mock.timers.tick(8000);
+    for (let i = 0; i < 2000 && roamNone.isRoamAnimating(); i++) {
+      mock.timers.tick(16);
+    }
+    assert.ok(none._appliedBounds.some((b) => b.y !== 300), "a free walk also moves vertically");
+    assert.deepStrictEqual(off._appliedBounds, none._appliedBounds);
+  });
+});
+
 describe("roam pauses during settings size preview", () => {
   beforeEach(() => {
     mock.method(Math, "random", () => 0.9);

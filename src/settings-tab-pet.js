@@ -14,6 +14,7 @@
     "eyeTrackingEnabled",
     "freeRoam",
     "roamConstrainAxis",
+    "gravity",
     "idleActivities",
     "idleActivityFrequency",
     "fullscreenAutoHide",
@@ -629,6 +630,11 @@
 
     parent.appendChild(helpers.buildSection(t("sectionPetMovement"), [
       buildIdleBehaviorGroup(),
+      helpers.buildSwitchRow({
+        key: "gravity",
+        labelKey: "rowGravity",
+        descKey: "rowGravityDesc",
+      }),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",

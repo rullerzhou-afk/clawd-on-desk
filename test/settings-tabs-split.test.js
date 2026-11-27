@@ -61,6 +61,7 @@ const FROZEN_KEYS = [
   "eyeTrackingEnabled",
   "freeRoam",
   "roamConstrainAxis",
+  "gravity",
   "idleActivities",
   "idleActivityFrequency",
   "keepSizeAcrossDisplays",
@@ -104,6 +105,7 @@ const EXPECTED_KEYS = {
     "eyeTrackingEnabled",
     "freeRoam",
     "roamConstrainAxis",
+    "gravity",
     "idleActivities",
     "idleActivityFrequency",
     "fullscreenAutoHide",
@@ -759,7 +761,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "窗口置顶", "眼睛跟随", "反应"]);
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
-      ["空闲时", "移动方式", "活动范围", "出现频率", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["空闲时", "移动方式", "活动范围", "出现频率", "重力", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
       ["桌宠保持在最前"],
       ["跟随鼠标光标"],
       ["测试结果动画"],

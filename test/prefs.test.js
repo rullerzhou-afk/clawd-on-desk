@@ -105,6 +105,8 @@ describe("prefs.getDefaults", () => {
     // is preserved until the user opts in via the General tab switch.
     assert.strictEqual(d.freeRoam, false);
     assert.strictEqual(d.roamConstrainAxis, false);
+    // Gravity is opt-in: a released pet stays where it is until turned on.
+    assert.strictEqual(d.gravity, false);
     // #1252: idle activities are opt-in and default to the medium cadence.
     assert.strictEqual(d.idleActivities, false);
     assert.strictEqual(d.idleActivityFrequency, "medium");
@@ -345,6 +347,7 @@ describe("prefs.validate", () => {
       disableMiniMode: "yes",
       freeRoam: "yes",        // wrong type → default false
       roamConstrainAxis: 1,   // wrong type → default false
+      gravity: "yes",         // wrong type → default false
       idleActivities: "yes",  // wrong type → default false
       idleActivityFrequency: "often", // not in the enum → default "medium"
       savedPixelWidth: -1,
@@ -375,6 +378,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.disableMiniMode, false);
     assert.strictEqual(v.freeRoam, false);
     assert.strictEqual(v.roamConstrainAxis, false);
+    assert.strictEqual(v.gravity, false);
     assert.strictEqual(v.idleActivities, false);
     assert.strictEqual(v.idleActivityFrequency, "medium");
     assert.strictEqual(v.savedPixelWidth, 0);
@@ -518,6 +522,7 @@ describe("prefs.validate", () => {
       keepSizeAcrossDisplays: true,
       freeRoam: true,
       roamConstrainAxis: true,
+      gravity: true,
       idleActivities: false,
       idleActivityFrequency: "high",
       savedPixelWidth: 286,
@@ -547,6 +552,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.freeRoam, true);
     assert.strictEqual(v.roamConstrainAxis, true);
+    assert.strictEqual(v.gravity, true);
     assert.strictEqual(v.idleActivities, false);
     assert.strictEqual(v.idleActivityFrequency, "high");
     assert.strictEqual(v.savedPixelWidth, 286);

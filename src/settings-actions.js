@@ -619,6 +619,7 @@ const updateRegistry = {
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
   eyeTrackingEnabled: requireBoolean("eyeTrackingEnabled"),
+  gravity: requireBoolean("gravity"),
   freeRoam(value, deps = {}) {
     const base = requireBoolean("freeRoam")(value);
     if (base.status !== "ok") return base;

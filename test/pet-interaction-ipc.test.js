@@ -73,6 +73,8 @@ function createHarness(overrides = {}) {
     setAccessoryMirror: overrides.setAccessoryMirror
       || ((value) => calls.push(["setAccessoryMirror", value])),
     syncImeEditingPetDodge: () => calls.push(["syncImeEditingPetDodge"]),
+    beginGravityDrag: overrides.beginGravityDrag,
+    endGravityPress: overrides.endGravityPress,
     isMiniMode: () => state.miniMode,
     checkMiniModeSnap: overrides.checkMiniModeSnap
       ? () => overrides.checkMiniModeSnap({ calls, state })
@@ -284,6 +286,24 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
     // is in flight — releasing the lock must re-run the sync.
     ["syncImeEditingPetDodge"],
   ]);
+});
+
+test("gravity: the press catches a falling pet and its release lets a clicked pet fall again", () => {
+  const harness = createHarness({
+    beginGravityDrag: () => harness.calls.push(["beginGravityDrag"]),
+    endGravityPress: () => harness.calls.push(["endGravityPress"]),
+  });
+  const { ipcMain, calls } = harness;
+
+  // A click: drag-lock(true) then drag-lock(false), with no drag-end.
+  ipcMain.send("drag-lock", true);
+  ipcMain.send("drag-lock", false);
+
+  const names = calls.map((c) => c[0]);
+  assert.deepStrictEqual(names.filter((n) => n.includes("Gravity")), ["beginGravityDrag", "endGravityPress"]);
+  // The release runs after the lock is down, so the new fall is not caught at once.
+  const unlock = calls.findIndex((c) => c[0] === "setDragLocked" && c[1] === false);
+  assert.ok(unlock >= 0 && names.indexOf("endGravityPress") > unlock);
 });
 
 test("pet interaction IPC requires the roam cancel dependency", () => {

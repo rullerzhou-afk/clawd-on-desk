@@ -380,6 +380,9 @@ const SCHEMA = {
   // #686: constrain roam movement to horizontal or vertical only (axis-aligned).
   // When enabled, each roam picks a random target that varies in only one axis.
   roamConstrainAxis: { type: "boolean", default: false },
+  // Gravity: a pet released in mid-air falls to the floor of its display, and
+  // Free roam walks along that floor while this is on (src/gravity.js).
+  gravity: { type: "boolean", default: false },
   // #1252: while no agent is active, occasionally play another animation from
   // the theme's state set (thinking / working / happy / sweeping / …) for a
   // few seconds. Off by default; purely cosmetic and never changes the

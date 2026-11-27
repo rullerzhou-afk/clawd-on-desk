@@ -1283,7 +1283,7 @@ const petWindowRuntime = createPetWindowRuntime({
   // Issue #690 plan §4.3.10's fourth reconcile protection period (lazy-bound
   // like isMiniAnimating above — _roam is constructed after petWindowRuntime,
   // but this closure isn't invoked until well after module load finishes).
-  isRoamAnimating: () => _roam.isRoamAnimating(),
+  isRoamAnimating: () => _roam.isRoamAnimating() || _gravity.isFalling(),
   isNearWorkAreaEdge: (bounds) => isNearWorkAreaEdge(bounds),
   flushRuntimeStateToPrefs: () => flushRuntimeStateToPrefs(),
   handleMiniDisplayChange: () => _mini.handleDisplayChange(),
@@ -1620,7 +1620,10 @@ function bringPetToPrimaryDisplay() {
     meetingMode.noteUserOverride("pet-shown");
   }
   prepManualPetVisibility();
-  return petWindowRuntime.bringPetToPrimaryDisplay();
+  const result = petWindowRuntime.bringPetToPrimaryDisplay();
+  // Gravity on: the centered pet drops to the floor of the primary display.
+  _gravity.startFall();
+  return result;
 }
 
 function sendRawToRenderer(channel, ...args) {
@@ -5017,6 +5020,7 @@ const _menuCtx = {
   miniHandleResize: (sizeKey) => _mini.handleResize(sizeKey),
   checkForUpdates: (...args) => checkForUpdates(...args),
   getUpdateMenuItem: () => getUpdateMenuItem(),
+  startGravityFall: () => _gravity.startFall(),
   openDashboard: () => showDashboard(),
   launchClaudeSession: (mode, cwd, sessionId) => launchClaudeSession(mode, cwd, sessionId),
   newSessionWithFolder: async (t) => {
@@ -5819,6 +5823,11 @@ function createWindow() {
     },
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
     cancelRoam: () => _roam.cancelRoam(),
+    startGravityFall: (onEnd) => _gravity.release(onEnd),
+    beginGravityDrag: () => _gravity.beginDrag(),
+    endGravityPress: () => _gravity.endPress(),
+    isGravityFalling: () => _gravity.isFalling(),
+    setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
     syncHitWin: () => syncHitWin(),
@@ -6121,6 +6130,10 @@ const _roamCtx = {
   resolveDisplayState,
   get win() { return win; },
   get dragLocked() { return petWindowRuntime.isDragLocked(); },
+  // Gravity (_gravity is built below): roam holds still while the pet falls
+  // and, with gravity on, walks only along the floor.
+  isGravityFalling: () => _gravity.isFalling(),
+  isGravityEnabled: () => _gravity.isEnabled(),
   getPetWindowBounds,
   applyPetWindowBounds,
   // #569: lets roam anchor to the keep-size frozen size when that toggle is on
@@ -6176,6 +6189,11 @@ const _roamCtx = {
   roamFence: roamFenceLoader,
 };
 const _roam = require("./roam")(_roamCtx);
+// Gravity: the fall reuses roam's window context. It starts from the
+// `gravity` pref and follows its changes below, next to Free roam's.
+const _gravity = require("./gravity")(_roamCtx, {
+  enabled: _settingsController.get("gravity") === true,
+});
 // #810: resolve the fence's initial status right away so the first roam
 // round doesn't have to hold on an UNKNOWN state (get() === null) when a
 // fence file exists — or confirm quickly that none does.
@@ -6193,6 +6211,13 @@ try {
   });
 } catch (err) {
   console.warn("Clawd: freeRoam subscribeKey failed:", err && err.message);
+}
+try {
+  _settingsController.subscribeKey("gravity", (value) => {
+    _gravity.setEnabled(value === true);
+  });
+} catch (err) {
+  console.warn("Clawd: gravity subscribeKey failed:", err && err.message);
 }
 
 // ── Idle activities — decorative state beats while no agent is active (#1252) ──

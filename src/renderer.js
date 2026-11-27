@@ -1929,6 +1929,44 @@ function getAssetUrl(file) {
 // --- IPC-triggered reactions (from hit window via main relay) ---
 window.electronAPI.onStartDragReaction((requestOrDirection, legacyDirection) => startDragReaction(requestOrDirection, legacyDirection));
 window.electronAPI.onEndDragReaction(() => endDragReaction());
+
+// Gravity: squash on landing, scaled by the impact
+// intensity (0..1) and back to normal in 200-360 ms. Only #pet-motion-stage's
+// `scale`: roam's bob animates its `translate`, and the mini-left mirror lives
+// on #pet-facing-stage.
+let gravityLandAnimation = null;
+function playGravityLandSquash(intensity) {
+  if (!(intensity > 0)) return;
+  if (dndEnabled || !motionStage || typeof motionStage.animate !== "function") return;
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (gravityLandAnimation) gravityLandAnimation.cancel();
+  // Pivot on the feet line so the pet squashes onto the floor, not toward its middle.
+  const feetFromBottom = _layout && _layout.baselineBottomRatio != null ? _layout.baselineBottomRatio : 0.05;
+  motionStage.style.transformOrigin = `50% ${(1 - feetFromBottom) * 100}%`;
+  const squash = (x, y, offset) => ({
+    scale: `${1 + (x - 1) * intensity} ${1 + (y - 1) * intensity}`,
+    ...(offset != null ? { offset } : {}),
+  });
+  const animation = motionStage.animate([
+    squash(1, 1),
+    squash(1.35, 0.45, 0.1),
+    squash(1.25, 0.6, 0.35),
+    squash(1.08, 0.88, 0.65),
+    squash(0.97, 1.04, 0.85),
+    squash(1, 1),
+  ], { duration: Math.round(200 + 160 * intensity) });
+  gravityLandAnimation = animation;
+  const done = () => {
+    if (gravityLandAnimation !== animation) return;
+    gravityLandAnimation = null;
+    motionStage.style.transformOrigin = "";
+  };
+  animation.onfinish = done;
+  animation.oncancel = done;
+}
+if (typeof window.electronAPI.onGravityLanded === "function") {
+  window.electronAPI.onGravityLanded((intensity) => playGravityLandSquash(intensity));
+}
 window.electronAPI.onPlayClickReaction((svg, duration, options) => playReaction(svg, duration, options));
 // Settings cancels its own reaction preview when it closes; without this the
 // pet would hold the reaction visual, and its paused cursor polling, until the

@@ -233,7 +233,7 @@ describe("updateRegistry pure-data validators", () => {
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
-      "quotaMergeSources", "freeRoam", "roamConstrainAxis", "idleActivities",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis", "gravity", "idleActivities",
       "petAlwaysOnTop",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
