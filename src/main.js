@@ -5826,6 +5826,7 @@ function createWindow() {
     cancelRoam: () => _roam.cancelRoam(),
     startGravityFall: (onEnd) => _gravity.release(onEnd),
     beginGravityDrag: () => _gravity.beginDrag(),
+    recordGravityDragSample: () => _gravity.recordDragSample(),
     endGravityPress: () => _gravity.endPress(),
     isGravityFalling: () => _gravity.isFalling(),
     setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),
@@ -6201,6 +6202,8 @@ const _roam = require("./roam")(_roamCtx);
 // `gravity` pref and follows its changes below, next to Free roam's.
 const _gravity = require("./gravity")(_roamCtx, {
   enabled: _settingsController.get("gravity") === true,
+  // A throw spins the drawing in the pet window.
+  setRotation: (degrees) => sendToRenderer("gravity-rotation", degrees),
 });
 // #810: resolve the fence's initial status right away so the first roam
 // round doesn't have to hold on an UNKNOWN state (get() === null) when a

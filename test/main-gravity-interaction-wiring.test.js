@@ -14,10 +14,21 @@ it("gravity: the pet's drag and click IPC reaches the fall", () => {
   for (const line of [
     "startGravityFall: (onEnd) => _gravity.release(onEnd),",
     "beginGravityDrag: () => _gravity.beginDrag(),",
+    "recordGravityDragSample: () => _gravity.recordDragSample(),",
     "endGravityPress: () => _gravity.endPress(),",
     "isGravityFalling: () => _gravity.isFalling(),",
     "setGravityFallEndHandler: (handler) => _gravity.setFallEndHandler(handler),",
   ]) {
     assert.ok(options.includes(line), `missing ${line}`);
   }
+});
+
+it("gravity: the throw spin reaches the pet renderer", () => {
+  const start = source.indexOf('const _gravity = require("./gravity")(_roamCtx, {');
+  assert.ok(start >= 0, "missing gravity creation");
+  const options = source.slice(start, source.indexOf("\n});", start));
+  assert.ok(
+    options.includes('setRotation: (degrees) => sendToRenderer("gravity-rotation", degrees),'),
+    "missing setRotation to the gravity-rotation channel",
+  );
 });
