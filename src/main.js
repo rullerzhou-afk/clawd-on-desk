@@ -5963,7 +5963,6 @@ function createWindow() {
     if (displayMetricsGeometryTimer) clearTimeout(displayMetricsGeometryTimer);
     displayMetricsGeometryTimer = setTimeout(() => {
       displayMetricsGeometryTimer = null;
-      _gravity.suspend();
       petWindowRuntime.handleDisplayMetricsChanged();
       settingsWindowRuntime.notifySizeContextChanged();
       _gravity.resumeSuspended();

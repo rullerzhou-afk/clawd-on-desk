@@ -47,9 +47,10 @@ it("gravity: a separate display metrics listener suspends the fall immediately",
   assert.ok(source.includes('screen.on("display-metrics-changed", () => _gravity.suspend());'));
 });
 
-it("gravity: debounced display metrics suspend before reflow and resume after size notification", () => {
+it("gravity: debounced display metrics resume after size notification", () => {
   const debounce = source.match(/displayMetricsGeometryTimer = setTimeout\(\(\) => \{([\s\S]*?)\n    \}, 400\);/);
   assert.ok(debounce, "missing debounced display metrics handler");
-  assert.match(debounce[1], /_gravity\.suspend\(\);\s*petWindowRuntime\.handleDisplayMetricsChanged\(\);/);
+  assert.doesNotMatch(debounce[1], /_gravity\.suspend\s*\(/);
+  assert.match(debounce[1], /petWindowRuntime\.handleDisplayMetricsChanged\(\);/);
   assert.match(debounce[1], /settingsWindowRuntime\.notifySizeContextChanged\(\);\s*_gravity\.resumeSuspended\(\);/);
 });
