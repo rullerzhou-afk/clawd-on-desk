@@ -2319,7 +2319,13 @@ describe("updater #329 background scheduler", () => {
   // Tiny in-memory prefs store. Mirrors the controller API surface the
   // updater touches (get / applyUpdate via setUpdatePref shim).
   function makePrefs(initial = {}) {
-    const store = { autoUpdateCheck: true, pendingUpdateVersion: "", dismissedUpdateVersions: {}, ...initial };
+    const store = {
+      autoUpdateCheck: true,
+      pendingUpdateVersion: "",
+      downloadedUpdateVersion: "",
+      dismissedUpdateVersions: {},
+      ...initial,
+    };
     return {
       get: (k) => store[k],
       set: (k, v) => { store[k] = v; },
@@ -2355,6 +2361,40 @@ describe("updater #329 background scheduler", () => {
     assert.deepStrictEqual(visualStates, []);
     assert.deepStrictEqual(applied, []);
     assert.deepStrictEqual(bubbles, []);
+  });
+
+  it("reconciles a downloaded package after restart without starting another download", () => {
+    const prefs = makePrefs({
+      pendingUpdateVersion: "v0.9.0",
+      downloadedUpdateVersion: "v0.9.0",
+    });
+    let checks = 0;
+    let downloads = 0;
+    let installs = 0;
+    const handlers = {};
+    const updater = initUpdater(makeCtxWithPrefs(prefs), makeDeps({
+      app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.9.0", assets: [] }),
+      autoUpdaterFactory: () => ({
+        on(event, handler) { handlers[event] = handler; },
+        async checkForUpdates() {
+          checks += 1;
+          await handlers["update-available"]({ version: "0.9.0" });
+        },
+        downloadUpdate() {
+          downloads += 1;
+          void handlers["update-downloaded"]({ version: "v0.9.0" });
+        },
+        quitAndInstall() { installs += 1; },
+      }),
+    }));
+
+    updater.setupAutoUpdater();
+    updater.reconcilePendingOnStartup();
+    assert.equal(updater.getUpdateMenuLabel(), "Update Ready");
+    return updater.getUpdateMenuItem().click().then(() => {
+      assert.deepEqual({ checks, downloads, installs }, { checks: 1, downloads: 1, installs: 1 });
+    });
   });
 
   it("quietDiscover() returns no-update when running version is newer", async () => {
