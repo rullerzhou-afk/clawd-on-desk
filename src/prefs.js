@@ -676,6 +676,10 @@ const SCHEMA = {
   // About version-row hint. Cleared on install or by
   // reconcilePendingOnStartup() when app.getVersion() catches up.
   pendingUpdateVersion: { type: "string", default: "" },
+  // Version whose verified installer is already in the electron-updater cache.
+  // This survives a closed update bubble or an app restart so the next action
+  // installs the cached package instead of starting another download.
+  downloadedUpdateVersion: { type: "string", default: "" },
   // Versions the user explicitly dismissed (clicked Later on the scheduler
   // bubble after actually seeing it). Object map of `{ "v0.9.0": true }`
   // Keep this as a true-only object map so membership remains explicit and

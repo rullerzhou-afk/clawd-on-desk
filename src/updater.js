@@ -493,6 +493,13 @@ function initUpdater(ctx, deps = {}) {
     rebuildMenus();
   }
 
+  function setDownloadedUpdate(version) {
+    const next = String(version || "");
+    downloadedUpdate = next ? Object.freeze({ version: next }) : null;
+    writePref("downloadedUpdateVersion", next);
+    return downloadedUpdate;
+  }
+
   function clearPendingUpdate() {
     const storedPending = String(readPref("pendingUpdateVersion", "") || "");
     if (!pendingUpdateVersion && !pendingUpdateRelease && !pendingPromptDeferred && !storedPending) return;
@@ -511,6 +518,16 @@ function initUpdater(ctx, deps = {}) {
   function reconcilePendingOnStartup() {
     const current = app.getVersion();
     const storedPending = String(readPref("pendingUpdateVersion", "") || "");
+    const storedDownloaded = String(readPref("downloadedUpdateVersion", "") || "");
+    if (storedDownloaded && compareVersions(current, storedDownloaded) >= 0) {
+      writePref("downloadedUpdateVersion", "");
+    } else if (storedDownloaded && compareVersions(current, storedDownloaded) < 0) {
+      downloadedUpdate = Object.freeze({ version: storedDownloaded });
+      if (!pendingUpdateVersion && compareVersions(current, storedDownloaded) < 0) {
+        pendingUpdateVersion = storedDownloaded;
+        writePref("pendingUpdateVersion", storedDownloaded);
+      }
+    }
     if (storedPending) {
       if (compareVersions(current, storedPending) >= 0) {
         pendingUpdateVersion = "";
@@ -521,6 +538,7 @@ function initUpdater(ctx, deps = {}) {
       }
     }
     pruneDismissedBelow(current);
+    if (downloadedUpdate) publishUpdateCheckSnapshot("ready", downloadedUpdate);
     rebuildMenus();
   }
 
@@ -1506,7 +1524,7 @@ function initUpdater(ctx, deps = {}) {
       if (!version || installRequested) return;
       if (downloadedUpdate && downloadedUpdate.version === version) return;
       invalidateReadyPrompt();
-      downloadedUpdate = Object.freeze({ version });
+      setDownloadedUpdate(version);
       clearActiveCheck();
       installRequested = false;
       publishUpdateCheckSnapshot("ready", downloadedUpdate);
@@ -1530,7 +1548,7 @@ function initUpdater(ctx, deps = {}) {
       // macOS stages in Squirrel after update-downloaded; retry the download
       // (served from electron-updater's cache while it is still there) to
       // start staging again.
-      downloadedUpdate = null;
+      setDownloadedUpdate("");
       clearActiveCheck();
       if (!shouldShowErrorBubble) {
         const report = buildUpdateErrorReport(err, {
@@ -1742,6 +1760,7 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function getUpdateMenuLabel() {
+    if (downloadedUpdate) return t("updateReady", "Update Ready");
     switch (updateStatus) {
       case "checking":
         return t("checkingForUpdates", "Checking for Updates...");
@@ -1765,8 +1784,8 @@ function initUpdater(ctx, deps = {}) {
     return {
       label: getUpdateMenuLabel(),
       enabled: !["checking", "downloading"].includes(updateStatus) && !hasActiveAvailableFlow,
-      click: () => updateStatus === "ready"
-        ? requestInstall(updateCheckSnapshot.version)
+      click: () => downloadedUpdate || updateStatus === "ready"
+        ? requestInstall(downloadedUpdate?.version || updateCheckSnapshot.version)
         : checkForUpdates(true),
     };
   }
