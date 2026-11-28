@@ -2371,20 +2371,30 @@ describe("updater #329 background scheduler", () => {
     let checks = 0;
     let downloads = 0;
     let installs = 0;
+    const handlers = {};
     const updater = initUpdater(makeCtxWithPrefs(prefs), makeDeps({
       app: { isPackaged: true, getVersion: () => "0.5.0", relaunch() {}, exit() {} },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.9.0", assets: [] }),
       autoUpdaterFactory: () => ({
-        on() {},
-        checkForUpdates() { checks += 1; },
-        downloadUpdate() { downloads += 1; },
+        on(event, handler) { handlers[event] = handler; },
+        async checkForUpdates() {
+          checks += 1;
+          await handlers["update-available"]({ version: "0.9.0" });
+        },
+        downloadUpdate() {
+          downloads += 1;
+          void handlers["update-downloaded"]({ version: "v0.9.0" });
+        },
         quitAndInstall() { installs += 1; },
       }),
     }));
 
+    updater.setupAutoUpdater();
     updater.reconcilePendingOnStartup();
     assert.equal(updater.getUpdateMenuLabel(), "Update Ready");
-    updater.getUpdateMenuItem().click();
-    assert.deepEqual({ checks, downloads, installs }, { checks: 0, downloads: 0, installs: 1 });
+    return updater.getUpdateMenuItem().click().then(() => {
+      assert.deepEqual({ checks, downloads, installs }, { checks: 1, downloads: 1, installs: 1 });
+    });
   });
 
   it("quietDiscover() returns no-update when running version is newer", async () => {

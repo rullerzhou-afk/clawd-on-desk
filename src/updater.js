@@ -318,6 +318,7 @@ function initUpdater(ctx, deps = {}) {
   // a bubble closing must not discard it or invent a persisted installer path.
   // Discard this record when the updater reports an error.
   let downloadedUpdate = null;
+  let installAfterDownload = false;
   let readyPrompt = null;
   let readyPromptGeneration = 0;
   let overlayKind = null;
@@ -495,9 +496,13 @@ function initUpdater(ctx, deps = {}) {
 
   function setDownloadedUpdate(version) {
     const next = String(version || "");
-    downloadedUpdate = next ? Object.freeze({ version: next }) : null;
+    downloadedUpdate = next ? Object.freeze({ version: next, cached: true }) : null;
     writePref("downloadedUpdateVersion", next);
     return downloadedUpdate;
+  }
+
+  function hasCachedDownloadedUpdate() {
+    return !!downloadedUpdate && downloadedUpdate.cached === true;
   }
 
   function clearPendingUpdate() {
@@ -522,7 +527,7 @@ function initUpdater(ctx, deps = {}) {
     if (storedDownloaded && compareVersions(current, storedDownloaded) >= 0) {
       writePref("downloadedUpdateVersion", "");
     } else if (storedDownloaded && compareVersions(current, storedDownloaded) < 0) {
-      downloadedUpdate = Object.freeze({ version: storedDownloaded });
+      downloadedUpdate = Object.freeze({ version: storedDownloaded, cached: false });
       if (!pendingUpdateVersion && compareVersions(current, storedDownloaded) < 0) {
         pendingUpdateVersion = storedDownloaded;
         writePref("pendingUpdateVersion", storedDownloaded);
@@ -1144,6 +1149,11 @@ function initUpdater(ctx, deps = {}) {
   async function requestInstall(version) {
     if (usesExternalUpdate) return openExternalUpdate(version);
     if (installRequested || !downloadedUpdate || version !== downloadedUpdate.version) return null;
+    if (downloadedUpdate.cached !== true) {
+      installAfterDownload = true;
+      await checkForUpdates({ trigger: "manual", intent: "download" });
+      return null;
+    }
     invalidateReadyPrompt();
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) {
@@ -1460,7 +1470,7 @@ function initUpdater(ctx, deps = {}) {
     if (!autoUpdater) return;
 
     autoUpdater.on("update-available", async (info) => {
-      if (downloadedUpdate || installRequested || updateStatus === "downloading") return;
+      if (hasCachedDownloadedUpdate() || installRequested || updateStatus === "downloading") return;
       const wasManual = isManualCheck();
       const wantsAutoPrimary = isDownloadIntent();
 
@@ -1477,7 +1487,7 @@ function initUpdater(ctx, deps = {}) {
       rebuildMenus();
 
       const onPrimary = async () => {
-        if (downloadedUpdate || installRequested || updateStatus === "downloading") return;
+        if (hasCachedDownloadedUpdate() || installRequested || updateStatus === "downloading") return;
         publishUpdateCheckSnapshot("downloading", { version: info.version });
         setOverlay("downloading");
         rebuildMenus();
@@ -1486,7 +1496,7 @@ function initUpdater(ctx, deps = {}) {
           t("updateDownloading", "Downloading Update..."),
           t("updateDownloading", "Downloading Update...")
         );
-        if (downloadedUpdate || installRequested) return;
+        if (hasCachedDownloadedUpdate() || installRequested) return;
         autoUpdater.downloadUpdate();
       };
 
@@ -1507,7 +1517,11 @@ function initUpdater(ctx, deps = {}) {
     });
 
     autoUpdater.on("update-not-available", async () => {
-      if (downloadedUpdate || installRequested) return;
+      if (downloadedUpdate && downloadedUpdate.cached !== true) {
+        setDownloadedUpdate("");
+        clearPendingUpdate();
+      }
+      if (hasCachedDownloadedUpdate() || installRequested) return;
       const wasManual = isManualCheck();
       clearActiveCheck();
       publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
@@ -1522,7 +1536,7 @@ function initUpdater(ctx, deps = {}) {
     autoUpdater.on("update-downloaded", async (info) => {
       const version = String(info && info.version || "");
       if (!version || installRequested) return;
-      if (downloadedUpdate && downloadedUpdate.version === version) return;
+      if (hasCachedDownloadedUpdate() && downloadedUpdate.version === version) return;
       invalidateReadyPrompt();
       setDownloadedUpdate(version);
       clearActiveCheck();
@@ -1530,6 +1544,11 @@ function initUpdater(ctx, deps = {}) {
       publishUpdateCheckSnapshot("ready", downloadedUpdate);
       rebuildMenus();
       clearOverlay();
+      if (installAfterDownload) {
+        installAfterDownload = false;
+        await requestInstall(version);
+        return;
+      }
       await promptReadyUpdate({ celebrate: true });
     });
 
@@ -1545,6 +1564,7 @@ function initUpdater(ctx, deps = {}) {
         ? "install"
         : (failedWhileDownloading ? "download" : "availability-check");
       installRequested = false;
+      installAfterDownload = false;
       // macOS stages in Squirrel after update-downloaded; retry the download
       // (served from electron-updater's cache while it is still there) to
       // start staging again.
@@ -1597,7 +1617,8 @@ function initUpdater(ctx, deps = {}) {
 
   async function checkForUpdates(arg = true) {
     const opts = normalizeCheckOpts(arg);
-    if (downloadedUpdate || installRequested) {
+    const downloadIntent = opts.intent === "download";
+    if (hasCachedDownloadedUpdate() || installRequested) {
       if (opts.trigger === "manual" && !installRequested) {
         clearActiveCheck();
         publishUpdateCheckSnapshot("ready", downloadedUpdate);
@@ -1609,7 +1630,10 @@ function initUpdater(ctx, deps = {}) {
       return getUpdateCheckSnapshot();
     }
     const hasActiveAvailableFlow = updateStatus === "available" && !!activeCheck;
-    if (["checking", "downloading", "ready"].includes(updateStatus) || hasActiveAvailableFlow) {
+    const needsCachedReadyValidation = downloadIntent
+      && downloadedUpdate && downloadedUpdate.cached !== true;
+    if ((["checking", "downloading", "ready"].includes(updateStatus)
+      && !(updateStatus === "ready" && needsCachedReadyValidation)) || hasActiveAvailableFlow) {
       log(`Check skipped: already ${updateStatus}`);
       return getUpdateCheckSnapshot();
     }
@@ -1617,8 +1641,6 @@ function initUpdater(ctx, deps = {}) {
     invalidateNativeArm64Prompt();
 
     const manual = opts.trigger === "manual";
-    const downloadIntent = opts.intent === "download";
-
     const repoRoot = getRepoRoot();
     if (repoRoot) return gitCheckForUpdates(repoRoot, manual);
 
@@ -1645,7 +1667,7 @@ function initUpdater(ctx, deps = {}) {
       latestRelease = await fetchLatestRelease();
       latestVersion = latestRelease.tag_name;
     } catch (err) {
-      if (downloadedUpdate || installRequested) return getUpdateCheckSnapshot();
+      if (hasCachedDownloadedUpdate() || installRequested) return getUpdateCheckSnapshot();
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
@@ -1661,7 +1683,7 @@ function initUpdater(ctx, deps = {}) {
       return getUpdateCheckSnapshot();
     }
 
-    if (downloadedUpdate || installRequested) return getUpdateCheckSnapshot();
+    if (hasCachedDownloadedUpdate() || installRequested) return getUpdateCheckSnapshot();
 
     if (compareVersions(currentVersion, latestVersion) <= 0 &&
         isRunningX64OnWindowsArm64() &&
@@ -1741,7 +1763,7 @@ function initUpdater(ctx, deps = {}) {
         }
       }
     } catch (err) {
-      if (downloadedUpdate || installRequested) return getUpdateCheckSnapshot();
+      if (hasCachedDownloadedUpdate() || installRequested) return getUpdateCheckSnapshot();
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
